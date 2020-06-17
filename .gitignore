@@ -1,3 +1,4 @@
 build/
 vendor/
+macadmins_extension
 *.zip

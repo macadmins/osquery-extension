@@ -36,8 +36,10 @@ init:
 	go mod init github.com/macadmins/osquery-extension
 
 clean:
-	rm -rf build/
-	rm -rf ${PKGDIR_TMP}_darwin
+	/bin/rm -rf build/
+	/bin/rm -rf macadmins_extension
+	/bin/rm -rf ${PKGDIR_TMP}_darwin
+	/bin/rm -f macadmins_extension.zip
 
 build: .pre-build
 	GOOS=darwin go build -i -o build/darwin/${APP_NAME}.ext -pkgdir ${PKGDIR_TMP}
@@ -47,3 +49,7 @@ build: .pre-build
 
 osqueryi: build
 	OSQUERYI
+
+zip: build
+	mv build macadmins_extension
+	zip -r macadmins_extension.zip macadmins_extension
