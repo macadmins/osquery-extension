@@ -3,7 +3,9 @@ package unifiedlog
 import (
 	"context"
 	"encoding/json"
+	"math/big"
 	"os/exec"
+	"strconv"
 
 	"github.com/kolide/osquery-go/plugin/table"
 )
@@ -22,7 +24,7 @@ type UnifiedLog struct {
 	ProcessImagePath         string    `json:"processImagePath"`
 	Timestamp                string    `json:"timestamp"`
 	SenderImagePath          string    `json:"senderImagePath"`
-	CreatorActivityID        int64     `json:"creatorActivityID"`
+	CreatorActivityID        big.Int   `json:"creatorActivityID"`
 	MachTimestamp            int64     `json:"machTimestamp"`
 	EventMessage             string    `json:"eventMessage"`
 	ProcessImageUUID         string    `json:"processImageUUID"`
@@ -41,11 +43,26 @@ type Backtrace struct {
 
 func UnifiedLogColumns() []table.ColumnDefinition {
 	return []table.ColumnDefinition{
-		table.TextColumn("timestamp"),
-		table.TextColumn("process_image_path"),
-		table.TextColumn("event_message"),
+		table.TextColumn("trace_id"),
 		table.TextColumn("event_type"),
+		table.TextColumn("format_string"),
+		table.TextColumn("activity_identifier"),
 		table.TextColumn("subsystem"),
+		table.TextColumn("category"),
+		table.TextColumn("thread_id"),
+		table.TextColumn("sender_image_uuid"),
+		table.TextColumn("boot_uuid"),
+		table.TextColumn("process_image_path"),
+		table.TextColumn("timestamp"),
+		table.TextColumn("sender_image_path"),
+		table.TextColumn("creator_activity_id"),
+		table.TextColumn("mach_timestamp"),
+		table.TextColumn("event_message"),
+		table.TextColumn("process_image_uuid"),
+		table.TextColumn("process_id"),
+		table.TextColumn("sender_program_counter"),
+		table.TextColumn("parent_activity_identifier"),
+		table.TextColumn("time_zone_name"),
 		table.TextColumn("predicate"),
 		table.TextColumn("last"),
 	}
@@ -108,13 +125,28 @@ func execute(predicate string, last string) ([]map[string]string, error) {
 
 	for _, item := range unifiedlogs {
 		output = append(output, map[string]string{
-			"timestamp":          item.Timestamp,
-			"process_image_path": item.ProcessImagePath,
-			"event_message":      item.EventMessage,
-			"event_type":         item.EventType,
-			"subsystem":          item.Subsystem,
-			"predicate":          predicate,
-			"last":               last,
+			"trace_id":                   strconv.FormatInt(item.TraceID, 10),
+			"event_type":                 item.EventType,
+			"format_string":              item.FormatString,
+			"activity_identifier":        strconv.Itoa(item.ActivityIdentifier),
+			"subsystem":                  item.Subsystem,
+			"category":                   item.Category,
+			"thread_id":                  strconv.Itoa(item.ThreadID),
+			"sender_image_uuid":          item.SenderImageUUID,
+			"boot_uuid":                  item.BootUUID,
+			"process_image_path":         item.ProcessImagePath,
+			"timestamp":                  item.Timestamp,
+			"sender_image_path":          item.SenderImagePath,
+			"creator_activity_id":        item.CreatorActivityID.String(),
+			"mach_timestamp":             strconv.FormatInt(item.MachTimestamp, 10),
+			"event_message":              item.EventMessage,
+			"process_image_uuid":         item.ProcessImageUUID,
+			"process_id":                 strconv.Itoa(item.ProcessID),
+			"sender_program_countre":     strconv.Itoa(item.SenderProgramCounter),
+			"parent_activity_identifier": strconv.Itoa(item.ParentActivityIdentifier),
+			"timezone_name":              item.TimezoneName,
+			"predicate":                  predicate,
+			"last":                       last,
 		})
 	}
 

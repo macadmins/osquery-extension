@@ -21,7 +21,7 @@ endif
 all: build
 
 .pre-build: clean
-	mkdir -p build/darwin
+	mkdir -p build/Darwin
 	mkdir -p build/windows
 	mkdir -p build/linux
 
@@ -42,7 +42,7 @@ clean:
 	/bin/rm -f macadmins_extension.zip
 
 build: .pre-build
-	GOOS=darwin go build -i -o build/darwin/${APP_NAME}.ext -pkgdir ${PKGDIR_TMP}
+	GOOS=darwin go build -i -o build/Darwin/${APP_NAME}.ext -pkgdir ${PKGDIR_TMP}
 	GOOS=linux go build -i -o build/linux/${APP_NAME}.ext -pkgdir ${PKGDIR_TMP}
 	GOOS=windows go build -i -o build/windows/${APP_NAME}.ext.exe -pkgdir ${PKGDIR_TMP}
 
