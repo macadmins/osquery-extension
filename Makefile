@@ -12,7 +12,7 @@ ifneq ($(OS), Windows_NT)
 	ifeq ($(shell uname), Darwin)
 		SHELL := /bin/sh
 		CURRENT_PLATFORM = darwin
-		OSQUERYI = sudo osqueryi --extension build/darwin/macadmins_extension.ext --allow_unsafe --extensions_autoload=/ --config-path=/ --extensions_timeout=60
+		OSQUERYI = sudo osqueryi --extension build/Darwin/macadmins_extension.ext --allow_unsafe --extensions_autoload=/ --config-path=/ --extensions_timeout=60
 	endif
 else
 	CURRENT_PLATFORM = windows
