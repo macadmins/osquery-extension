@@ -14,9 +14,8 @@ type profilesOutput struct {
 }
 
 type profilePayload struct {
-	ProfileIdentifier  string
-	ProfileInstallDate string
-	// ProfileItems       []profileItem
+	ProfileIdentifier        string
+	ProfileInstallDate       string
 	ProfileDisplayName       string
 	ProfileDescription       string
 	ProfileVerificationState string
@@ -24,21 +23,6 @@ type profilePayload struct {
 	ProfileOrganization      string
 	ProfileType              string
 }
-
-// type profileItem struct {
-// 	PayloadContent *payloadContent
-// 	PayloadType    string
-// }
-
-// type payloadContent struct {
-// 	AccessRights            int
-// 	CheckInURL              string
-// 	ServerURL               string
-// 	ServerCapabilities      []string
-// 	Topic                   string
-// 	IdentityCertificateUUID string
-// 	SignMessage             bool
-// }
 
 func MacOSProfilesColumns() []table.ColumnDefinition {
 	return []table.ColumnDefinition{
