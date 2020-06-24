@@ -8,6 +8,7 @@ import (
 
 	osquery "github.com/kolide/osquery-go"
 	"github.com/kolide/osquery-go/plugin/table"
+	macosprofiles "github.com/macadmins/osquery-extension/macos_profiles"
 	"github.com/macadmins/osquery-extension/tables/chromeuserprofiles"
 	"github.com/macadmins/osquery-extension/tables/filevaultusers"
 	"github.com/macadmins/osquery-extension/tables/mdm"
@@ -53,10 +54,11 @@ func main() {
 	// }
 
 	if runtime.GOOS == "darwin" {
+		plugins = append(plugins, table.NewPlugin("filevault_users", filevaultusers.FileVaultUsersColumns(), filevaultusers.FileVaultUsersGenerate))
+		plugins = append(plugins, table.NewPlugin("macos_profiles", macosprofiles.MacOSProfilesColumns(), macosprofiles.MacOSProfilesGenerate))
+		plugins = append(plugins, table.NewPlugin("mdm", mdm.MDMInfoColumns(), mdm.MDMInfoGenerate))
 		plugins = append(plugins, table.NewPlugin("munki_info", munki.MunkiInfoColumns(), munki.MunkiInfoGenerate))
 		plugins = append(plugins, table.NewPlugin("munki_installs", munki.MunkiInstallsColumns(), munki.MunkiInstallsGenerate))
-		plugins = append(plugins, table.NewPlugin("mdm", mdm.MDMInfoColumns(), mdm.MDMInfoGenerate))
-		plugins = append(plugins, table.NewPlugin("filevault_users", filevaultusers.FileVaultUsersColumns(), filevaultusers.FileVaultUsersGenerate))
 		plugins = append(plugins, table.NewPlugin("unified_log", unifiedlog.UnifiedLogColumns(), unifiedlog.UnifiedLogGenerate))
 	}
 
