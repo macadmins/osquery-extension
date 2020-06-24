@@ -67,7 +67,7 @@ func getInstalledProfiles() (*profilesOutput, error) {
 	cmd := exec.Command("/usr/bin/profiles", "-C", "-o", "stdout-xml")
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, errors.Wrap(err, "calling /usr/bin/profiles to get MDM profile payload")
+		return nil, errors.Wrap(err, "calling /usr/bin/profiles to get profile payloads")
 	}
 
 	var profiles profilesOutput
