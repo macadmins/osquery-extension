@@ -5,18 +5,7 @@ SHELL = /bin/sh
 
 APP_NAME = macadmins_extension
 PKGDIR_TMP = ${TMPDIR}golang
-OSQUERYI = sudo osqueryi --extension build/linux/macadmins_extension.ext --allow_unsafe --extensions_autoload=/ --config-path=/ --extensions_timeout=60
-
-ifneq ($(OS), Windows_NT)
-	CURRENT_PLATFORM = linux
-	ifeq ($(shell uname), Darwin)
-		SHELL := /bin/sh
-		CURRENT_PLATFORM = darwin
-		OSQUERYI = sudo osqueryi --extension build/Darwin/macadmins_extension.ext --allow_unsafe --extensions_autoload=/ --config-path=/ --extensions_timeout=60
-	endif
-else
-	CURRENT_PLATFORM = windows
-endif
+OSQUERYI = sudo osqueryi --extension=build/Darwin/macadmins_extension.ext --allow_unsafe --extensions_autoload=/ --config-path=/ --extensions_timeout=60
 
 all: build
 
@@ -48,6 +37,7 @@ build: .pre-build
 
 
 osqueryi: build
+	sleep 2
 	OSQUERYI
 
 zip: build

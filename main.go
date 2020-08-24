@@ -9,6 +9,7 @@ import (
 	osquery "github.com/kolide/osquery-go"
 	"github.com/kolide/osquery-go/plugin/table"
 	"github.com/macadmins/osquery-extension/tables/chromeuserprofiles"
+	"github.com/macadmins/osquery-extension/tables/fileline"
 	"github.com/macadmins/osquery-extension/tables/filevaultusers"
 	macosprofiles "github.com/macadmins/osquery-extension/tables/macos_profiles"
 	"github.com/macadmins/osquery-extension/tables/mdm"
@@ -46,6 +47,7 @@ func main() {
 		table.NewPlugin("puppet_logs", puppet.PuppetLogsColumns(), puppet.PuppetLogsGenerate),
 		table.NewPlugin("puppet_state", puppet.PuppetStateColumns(), puppet.PuppetStateGenerate),
 		table.NewPlugin("google_chrome_profiles", chromeuserprofiles.GoogleChromeProfilesColumns(), chromeuserprofiles.GoogleChromeProfilesGenerate),
+		table.NewPlugin("file_lines", fileline.FileLineColumns(), fileline.FileLineGenerate),
 	}
 
 	// Platform specific tables
