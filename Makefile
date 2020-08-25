@@ -27,7 +27,7 @@ init:
 clean:
 	/bin/rm -rf build/
 	/bin/rm -rf macadmins_extension
-	/bin/rm -rf ${PKGDIR_TMP}_darwin
+	/bin/rm -rf ${PKGDIR_TMP}*
 	/bin/rm -f macadmins_extension.zip
 
 build: .pre-build

@@ -27,55 +27,67 @@ func FileLineColumns() []table.ColumnDefinition {
 func FileLineGenerate(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
 
 	path := ""
+	wildcard := false
 
 	if constraintList, present := queryContext.Constraints["path"]; present {
 		// 'path' is in the where clause
 		for _, constraint := range constraintList.Constraints {
+			// LIKE
+			if constraint.Operator == table.OperatorLike {
+				path = constraint.Expression
+				wildcard = true
+			}
+			// =
 			if constraint.Operator == table.OperatorEquals {
 				path = constraint.Expression
+				wildcard = false
 			}
 		}
 	}
-
-	output, err := processFile(path)
+	var results []map[string]string
+	output, err := processFile(path, wildcard)
 	if err != nil {
-		return nil, err
+		return results, err
 	}
 
-	return output, nil
+	for _, item := range output {
+		results = append(results, map[string]string{
+			"line": item.Line,
+			"path": item.Path,
+		})
+	}
+
+	return results, nil
 }
 
-func processFile(path string) ([]map[string]string, error) {
+func processFile(path string, wildcard bool) ([]FileLine, error) {
 
-	var output []map[string]string
+	var output []FileLine
 
-	// Replace % for * for glob
-	replacedPath := strings.ReplaceAll(path, "%", "*")
+	if wildcard {
+		replacedPath := strings.ReplaceAll(path, "%", "*")
 
-	files, err := filepath.Glob(replacedPath)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, file := range files {
-		// get slice of lines
-		lines, _ := readLines(file)
-
-		for _, line := range lines {
-			output = append(output, map[string]string{
-				"line": line,
-				"path": file,
-			})
+		files, err := filepath.Glob(replacedPath)
+		if err != nil {
+			return nil, err
 		}
+		for _, file := range files {
+			lines, _ := readLines(file)
+			output = append(output, lines...)
+
+		}
+	} else {
+		lines, _ := readLines(path)
+		output = append(output, lines...)
 	}
 
 	return output, nil
 
 }
 
-func readLines(path string) ([]string, error) {
-	var output []string
-	fmt.Println(path)
+func readLines(path string) ([]FileLine, error) {
+	var output []FileLine
+
 	if !fileExists(path) {
 		err := errors.New("File does not exist")
 		return nil, err
@@ -87,12 +99,16 @@ func readLines(path string) ([]string, error) {
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
+	scanner.Split(bufio.ScanLines)
+
 	for scanner.Scan() {
-		output = append(output, scanner.Text())
+		line := scanner.Text()
+		item := FileLine{Path: path, Line: line}
+		output = append(output, item)
 	}
 
-	if err := scanner.Err(); err != nil {
-		return nil, err
+	if scanner.Err() != nil {
+		fmt.Printf("error: %s\n", scanner.Err())
 	}
 
 	return output, nil
