@@ -9,6 +9,7 @@ import (
 	osquery "github.com/kolide/osquery-go"
 	"github.com/kolide/osquery-go/plugin/table"
 	"github.com/macadmins/osquery-extension/tables/chromeuserprofiles"
+	"github.com/macadmins/osquery-extension/tables/crowdstrikefalconagent"
 	"github.com/macadmins/osquery-extension/tables/fileline"
 	"github.com/macadmins/osquery-extension/tables/filevaultusers"
 	macosprofiles "github.com/macadmins/osquery-extension/tables/macos_profiles"
@@ -62,6 +63,7 @@ func main() {
 		plugins = append(plugins, table.NewPlugin("munki_info", munki.MunkiInfoColumns(), munki.MunkiInfoGenerate))
 		plugins = append(plugins, table.NewPlugin("munki_installs", munki.MunkiInstallsColumns(), munki.MunkiInstallsGenerate))
 		plugins = append(plugins, table.NewPlugin("unified_log", unifiedlog.UnifiedLogColumns(), unifiedlog.UnifiedLogGenerate))
+		plugins = append(plugins, table.NewPlugin("crowdstrikefalconagent", crowdstrikefalconagent.InfoColums(), crowdstrikefalconagent.InfoGenerate))
 	}
 
 	for _, p := range plugins {
