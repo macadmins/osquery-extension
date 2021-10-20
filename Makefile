@@ -31,10 +31,10 @@ clean:
 	/bin/rm -f macadmins_extension.zip
 
 build: .pre-build
-	GOOS=darwin go build -i -o build/Darwin/${APP_NAME}.ext -pkgdir ${PKGDIR_TMP}
-	GOOS=linux go build -i -o build/linux/${APP_NAME}.ext -pkgdir ${PKGDIR_TMP}
-	GOOS=windows go build -i -o build/windows/${APP_NAME}.ext.exe -pkgdir ${PKGDIR_TMP}
-
+	GOOS=darwin GOARCH=amd64 go build -o build/darwin/${APP_NAME}.amd64.ext -pkgdir ${PKGDIR_TMP}
+	GOOS=darwin GOARCH=arm64 go build -o build/darwin/${APP_NAME}.arm64.ext -pkgdir ${PKGDIR_TMP}
+	GOOS=linux go build -o build/linux/${APP_NAME}.ext -pkgdir ${PKGDIR_TMP}
+	GOOS=windows go build -o build/windows/${APP_NAME}.ext.exe -pkgdir ${PKGDIR_TMP}
 
 osqueryi: build
 	sleep 2
