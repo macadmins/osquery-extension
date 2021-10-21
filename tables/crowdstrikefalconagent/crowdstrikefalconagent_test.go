@@ -102,7 +102,7 @@ func TestInfoColumns(t *testing.T) {
 	ret := InfoColums()
 
 	for _, v := range ret {
-		if v.Name != _AGENTID && v.Type == "TEXT" {
+		if v.Name == _AGENTID && v.Type == "TEXT" {
 			return
 		}
 	}
