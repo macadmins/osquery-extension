@@ -198,8 +198,6 @@ func filterString(val string) string {
 }
 
 func getStatsOutput(path string, opts ...string) ([]byte, error) {
-	path = filterString(path)
-
 	for _, v := range opts {
 		v = filterString(v)
 	}
