@@ -140,50 +140,45 @@ func InfoGenerate(ctx context.Context, queryContext table.QueryContext) ([]map[s
 }
 
 func prepareError(reason string) ([]map[string]string, error) {
-	out := make(map[string]string)
-
-	out[_SENOR_OPERATIONAL] = reason
-
 	return []map[string]string{
-		out,
+		{
+			_SENOR_OPERATIONAL: reason,
+		},
 	}, nil
 }
 
 func prepareResults(in *TopLevel) ([]map[string]string, error) {
-	result := map[string]string{
-		_AGENTID:               in.AgentInfo.AgentID,
-		_CUSTOMERID:            in.AgentInfo.CustomerID,
-		_SENOR_OPERATIONAL:     in.AgentInfo.SensorOperational,
-		_VERSION:               in.AgentInfo.Version,
-		_DC_ENABLED:            fmt.Sprintf("%v", in.DeviceControl.Enabled),
-		_DC_FSAUTH:             fmt.Sprintf("%v", in.DeviceControl.FSAuth),
-		_DC_RULECOUNT:          fmt.Sprintf("%v", in.DeviceControl.RuleCount),
-		_ES_AUTH:               fmt.Sprintf("%v", in.EndpointSecurity.Auth),
-		_ES_NOTIFY:             fmt.Sprintf("%v", in.EndpointSecurity.Notify),
-		_SA_AVG:                fmt.Sprintf("%v", in.StaticAnalysis.AVG),
-		_SA_MAX:                fmt.Sprintf("%v", in.StaticAnalysis.Max),
-		_SA_READY:              fmt.Sprintf("%v", in.StaticAnalysis.Ready),
-		_SA_REQUESTS:           fmt.Sprintf("%v", in.StaticAnalysis.Requests),
-		_SA_SUCCESSES:          fmt.Sprintf("%v", in.StaticAnalysis.Successes),
-		_BW_FILTER_CALLED:      fmt.Sprintf("%v", in.BlockWait.FilterCalled),
-		_BW_FILTER_FALSE:       fmt.Sprintf("%v", in.BlockWait.FilterFalse),
-		_BW_FILTER_SATISFIED:   fmt.Sprintf("%v", in.BlockWait.FilterSatisfied),
-		_BW_FILTER_TIMEOUTS:    fmt.Sprintf("%v", in.BlockWait.FilterTimeouts),
-		_BW_FILTER_TRUE:        fmt.Sprintf("%v", in.BlockWait.FilterTrue),
-		_BW_LATERESPONSE:       fmt.Sprintf("%v", in.BlockWait.LateResponse),
-		_BW_RECEIVER_CALLED:    fmt.Sprintf("%v", in.BlockWait.ReceiverCalled),
-		_BW_RECEIVER_SATISFIED: fmt.Sprintf("%v", in.BlockWait.ReceiverSatisfied),
-	}
-
 	return []map[string]string{
-		result,
+		{
+			_AGENTID:               in.AgentInfo.AgentID,
+			_CUSTOMERID:            in.AgentInfo.CustomerID,
+			_SENOR_OPERATIONAL:     in.AgentInfo.SensorOperational,
+			_VERSION:               in.AgentInfo.Version,
+			_DC_ENABLED:            fmt.Sprintf("%v", in.DeviceControl.Enabled),
+			_DC_FSAUTH:             fmt.Sprintf("%v", in.DeviceControl.FSAuth),
+			_DC_RULECOUNT:          fmt.Sprintf("%v", in.DeviceControl.RuleCount),
+			_ES_AUTH:               fmt.Sprintf("%v", in.EndpointSecurity.Auth),
+			_ES_NOTIFY:             fmt.Sprintf("%v", in.EndpointSecurity.Notify),
+			_SA_AVG:                fmt.Sprintf("%v", in.StaticAnalysis.AVG),
+			_SA_MAX:                fmt.Sprintf("%v", in.StaticAnalysis.Max),
+			_SA_READY:              fmt.Sprintf("%v", in.StaticAnalysis.Ready),
+			_SA_REQUESTS:           fmt.Sprintf("%v", in.StaticAnalysis.Requests),
+			_SA_SUCCESSES:          fmt.Sprintf("%v", in.StaticAnalysis.Successes),
+			_BW_FILTER_CALLED:      fmt.Sprintf("%v", in.BlockWait.FilterCalled),
+			_BW_FILTER_FALSE:       fmt.Sprintf("%v", in.BlockWait.FilterFalse),
+			_BW_FILTER_SATISFIED:   fmt.Sprintf("%v", in.BlockWait.FilterSatisfied),
+			_BW_FILTER_TIMEOUTS:    fmt.Sprintf("%v", in.BlockWait.FilterTimeouts),
+			_BW_FILTER_TRUE:        fmt.Sprintf("%v", in.BlockWait.FilterTrue),
+			_BW_LATERESPONSE:       fmt.Sprintf("%v", in.BlockWait.LateResponse),
+			_BW_RECEIVER_CALLED:    fmt.Sprintf("%v", in.BlockWait.ReceiverCalled),
+			_BW_RECEIVER_SATISFIED: fmt.Sprintf("%v", in.BlockWait.ReceiverSatisfied),
+		},
 	}, nil
 }
 
-func parseRead(in []byte) (*TopLevel, error) {
-	var out TopLevel
-	err := plist.Unmarshal(in, &out)
-	return &out, err
+func parseRead(in []byte) (out *TopLevel, err error) {
+	err = plist.Unmarshal(in, &out)
+	return
 }
 
 func checkFalconCtl(path string) (err error) {
@@ -192,9 +187,8 @@ func checkFalconCtl(path string) (err error) {
 }
 
 func filterString(val string) string {
-	// keep alphanumberic and dash
-	val = m.ReplaceAllString(val, "")
-	return val
+	// keep alphanumeric and dash
+	return m.ReplaceAllString(val, "")
 }
 
 func getStatsOutput(path string, opts ...string) ([]byte, error) {
