@@ -12,6 +12,8 @@ import (
 
 const (
 	_FALCONCTL             = "/Applications/Falcon.app/Contents/Resources/falconctl"
+	_FALCONCTL_STATS       = "stats"
+	_FALCONCTL_PLIST       = "--plist"
 	_AGENTID               = "agentID"
 	_CUSTOMERID            = "customerID"
 	_SENOR_OPERATIONAL     = "sensor_operational"
@@ -34,6 +36,9 @@ const (
 	_SA_READY              = "sa_ready"
 	_SA_REQUESTS           = "sa_requests"
 	_SA_SUCCESSES          = "sa_successes"
+	_ERR_NOT_LOADED        = "not_loaded"
+	_ERR_NOT_FOUND         = "not_found"
+	_ERR_PARSE_ERROR       = "parse_error"
 )
 
 type TopLevel struct {
@@ -112,17 +117,17 @@ func InfoGenerate(ctx context.Context, queryContext table.QueryContext) ([]map[s
 
 	err := checkFalconCtl(_FALCONCTL)
 	if err != nil {
-		return prepareError("not_found")
+		return prepareError(_ERR_NOT_FOUND)
 	}
 
 	stats, err := getStatsOutputPlist(_FALCONCTL)
 	if err != nil {
-		return prepareError("not_loaded")
+		return prepareError(_ERR_NOT_LOADED)
 	}
 
 	parsed, err := parseRead(stats)
 	if err != nil {
-		return prepareError("parse_error")
+		return prepareError(_ERR_PARSE_ERROR)
 	}
 
 	return prepareResults(parsed)
@@ -170,13 +175,8 @@ func prepareResults(in *TopLevel) ([]map[string]string, error) {
 }
 
 func parseRead(in []byte) (*TopLevel, error) {
-
 	var out TopLevel
 	err := plist.Unmarshal(in, &out)
-	if err != nil {
-		return nil, err
-	}
-
 	return &out, err
 }
 
@@ -186,11 +186,6 @@ func checkFalconCtl(path string) (err error) {
 }
 
 func getStatsOutputPlist(path string) ([]byte, error) {
-	cmd := exec.Command(path, "stats", "--plist")
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, err
-	}
-
-	return out, nil
+	cmd := exec.Command(path, _FALCONCTL_STATS, _FALCONCTL_PLIST)
+	return cmd.Output()
 }
