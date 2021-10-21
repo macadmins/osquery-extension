@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 
 	"github.com/groob/plist"
 	"github.com/kolide/osquery-go/plugin/table"
@@ -39,6 +40,11 @@ const (
 	_ERR_NOT_LOADED        = "not_loaded"
 	_ERR_NOT_FOUND         = "not_found"
 	_ERR_PARSE_ERROR       = "parse_error"
+	_REGEX_FILTER          = "[^0-9a-zA-Z-]+"
+)
+
+var (
+	m = regexp.MustCompile(_REGEX_FILTER)
 )
 
 type TopLevel struct {
@@ -120,7 +126,7 @@ func InfoGenerate(ctx context.Context, queryContext table.QueryContext) ([]map[s
 		return prepareError(_ERR_NOT_FOUND)
 	}
 
-	stats, err := getStatsOutputPlist(_FALCONCTL)
+	stats, err := getStatsOutput(_FALCONCTL, _FALCONCTL_STATS, _FALCONCTL_PLIST)
 	if err != nil {
 		return prepareError(_ERR_NOT_LOADED)
 	}
@@ -185,7 +191,19 @@ func checkFalconCtl(path string) (err error) {
 	return
 }
 
-func getStatsOutputPlist(path string) ([]byte, error) {
-	cmd := exec.Command(path, _FALCONCTL_STATS, _FALCONCTL_PLIST)
+func filterString(val string) string {
+	// keep alphanumberic and dash
+	val = m.ReplaceAllString(val, "")
+	return val
+}
+
+func getStatsOutput(path string, opts ...string) ([]byte, error) {
+	path = filterString(path)
+
+	for _, v := range opts {
+		v = filterString(v)
+	}
+
+	cmd := exec.Command(path, opts...)
 	return cmd.Output()
 }

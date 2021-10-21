@@ -1,8 +1,8 @@
 package crowdstrikefalconagent
 
 import (
-	"testing"
 	"os"
+	"testing"
 )
 
 const (
@@ -26,8 +26,10 @@ const (
 	</plist>
 	`
 	_PLIST_TEMP_NAME = "deleteme.tmp"
-	_FAKE_UUID = "12345678-0000-0000-0000-123456789012"
-	_FAKE_REASON = "because unit tests say so"
+	_FAKE_UUID       = "12345678-0000-0000-0000-123456789012"
+	_FAKE_REASON     = "because unit tests say so"
+	_BAD_INPUT       = "ab;cd;ef&&gh&&ih-0-1-2-3-4-5--6--7\n\n\n8___!="
+	_SANITIZED_INPUT = "abcdefghih-0-1-2-3-4-5--6--78"
 )
 
 func TestCheckForCTLExistence(t *testing.T) {
@@ -45,13 +47,14 @@ func TestCheckForCTLExistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
 
+func TestCheckForCTLExistenceFailure(t *testing.T) {
 	// this test should error
-	err = checkFalconCtl(_PLIST_TEMP_NAME)
+	err := checkFalconCtl(_PLIST_TEMP_NAME)
 	if err == nil {
-		t.Fatalf("this should fail, as the temp file should not exist.")
+		t.Fatal("this should fail, as the temp file should not exist.")
 	}
-
 }
 
 func TestParseRead(t *testing.T) {
@@ -64,11 +67,11 @@ func TestParseRead(t *testing.T) {
 	}
 
 	if ret.AgentInfo.SensorOperational != "true" {
-		t.Fatalf("ret.AgentInfo.Sensoroperational not expected value")
+		t.Fatal("ret.AgentInfo.Sensoroperational not expected value")
 	}
 
 	if ret.AgentInfo.AgentID != _FAKE_UUID {
-		t.Fatalf("ret.AgentInfo.AgentID not expected value")
+		t.Fatal("ret.AgentInfo.AgentID not expected value")
 	}
 }
 
@@ -108,4 +111,12 @@ func TestInfoColumns(t *testing.T) {
 	}
 
 	t.Fatal("unable to find correct value.")
+}
+
+func TestFilterString(t *testing.T) {
+	ret := filterString(_BAD_INPUT)
+
+	if ret != _SANITIZED_INPUT {
+		t.Fatal("sanitized input failure.")
+	}
 }
