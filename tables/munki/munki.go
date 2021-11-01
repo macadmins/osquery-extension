@@ -55,6 +55,10 @@ func MunkiInfoGenerate(ctx context.Context, queryContext table.QueryContext) ([]
 		return nil, err
 	}
 
+	if report == nil { // no files found
+		return nil, nil
+	}
+
 	errors := strings.Join(report.Errors, ";")
 	warnings := strings.Join(report.Warnings, ";")
 	problemInstalls := strings.Join(report.ProblemInstalls, ";")
@@ -89,6 +93,9 @@ func MunkiInstallsGenerate(ctx context.Context, queryContext table.QueryContext)
 	report, err := loadMunkiReport()
 	if err != nil {
 		return nil, err
+	}
+	if report == nil {
+		return nil, nil
 	}
 	var results []map[string]string
 
