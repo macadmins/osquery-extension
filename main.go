@@ -6,8 +6,6 @@ import (
 	"runtime"
 	"time"
 
-	osquery "github.com/kolide/osquery-go"
-	"github.com/kolide/osquery-go/plugin/table"
 	"github.com/macadmins/osquery-extension/tables/chromeuserprofiles"
 	"github.com/macadmins/osquery-extension/tables/fileline"
 	"github.com/macadmins/osquery-extension/tables/filevaultusers"
@@ -16,6 +14,8 @@ import (
 	"github.com/macadmins/osquery-extension/tables/munki"
 	"github.com/macadmins/osquery-extension/tables/puppet"
 	"github.com/macadmins/osquery-extension/tables/unifiedlog"
+	osquery "github.com/osquery/osquery-go"
+	"github.com/osquery/osquery-go/plugin/table"
 )
 
 func main() {
