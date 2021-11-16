@@ -90,6 +90,14 @@ func UnifiedLogGenerate(ctx context.Context, queryContext table.QueryContext) ([
 		}
 	}
 
+	// If there's no predicate, return empty results. This prevents crashing
+	// osquery or the extension when the table attempts to load everything in
+	// the unified log. This behavior is consistent with osquery tables like
+	// `file` and `hash`.
+	if predicate == "" && last == "" {
+		return []map[string]string{}, nil
+	}
+
 	output, err := execute(predicate, last)
 	if err != nil {
 		return nil, err
