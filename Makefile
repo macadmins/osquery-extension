@@ -33,8 +33,11 @@ clean:
 build: .pre-build
 	GOOS=darwin GOARCH=amd64 go build -o build/darwin/${APP_NAME}.amd64.ext -pkgdir ${PKGDIR_TMP}
 	GOOS=darwin GOARCH=arm64 go build -o build/darwin/${APP_NAME}.arm64.ext -pkgdir ${PKGDIR_TMP}
+	/usr/bin/lipo -create -output build/darwin/${APP_NAME}.ext build/darwin/${APP_NAME}.amd64.ext build/darwin/${APP_NAME}.arm64.ext
 	GOOS=linux go build -o build/linux/${APP_NAME}.ext -pkgdir ${PKGDIR_TMP}
 	GOOS=windows go build -o build/windows/${APP_NAME}.ext.exe -pkgdir ${PKGDIR_TMP}
+	/bin/rm build/darwin/${APP_NAME}.amd64.ext
+	/bin/rm build/darwin/${APP_NAME}.arm64.ext
 
 osqueryi: build
 	sleep 2
