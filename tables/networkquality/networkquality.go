@@ -34,7 +34,7 @@ func NetworkQualityColumns() []table.ColumnDefinition {
 }
 
 // Generate will be called whenever the table is queried. Since our data in these
-// plugins is flat it will return a single row.
+// results is flat it will return a single row.
 func NetworkQualityGenerate(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
 	var results []map[string]string
 	output, err := runNetworkQuality()
