@@ -3,9 +3,13 @@ package mdm
 import (
 	"bytes"
 	"context"
-	"fmt"
+	"encoding/json"
+	"io/ioutil"
+	"os"
 	"os/exec"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/groob/plist"
 	"github.com/kolide/osquery-go/plugin/table"
@@ -43,8 +47,11 @@ type profileStatus struct {
 }
 
 type depStatus struct {
-	DEPCapable bool
+	DEPCapable  bool
+	RateLimited bool
 }
+
+const DepStatusCacheFilename = "/private/var/tmp/profiles_status_enrollment.json"
 
 func MDMInfoColumns() []table.ColumnDefinition {
 	return []table.ColumnDefinition{
@@ -160,20 +167,70 @@ func getMDMProfileStatus() (profileStatus, error) {
 	}, nil
 }
 
+// Either get the live DEP capability status, or return from the cache if needed.
 func getDEPStatus() (depStatus, error) {
-	cmd := exec.Command("/usr/bin/profiles", "show", "-type", "enrollment")
-	out, err := cmd.Output()
-	if err != nil {
-		fmt.Println(err)
-	}
+	needToGetLiveDEPStatus, depstatus := needToGetLiveDEPStatus()
+	if needToGetLiveDEPStatus {
+		cmd := exec.Command("/usr/bin/profiles", "show", "-type", "enrollment")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			if strings.Contains(string(out), "Request too soon") {
 
-	lines := bytes.Split(out, []byte("\n"))
+			}
+			return depstatus, nil
+		}
 
-	depstatus := depStatus{DEPCapable: false}
+		lines := bytes.Split(out, []byte("\n"))
 
-	if len(lines) > 3 {
-		depstatus.DEPCapable = true
+		if len(lines) > 3 {
+			depstatus.DEPCapable = true
+		}
 	}
 
 	return depstatus, nil
+}
+
+// Do we need to run profiles show -type enrollment or can we return the version from the cache?
+func needToGetLiveDEPStatus() (bool, depStatus) {
+	dayAgo := time.Now().Add(-24 * time.Hour)
+
+	file, err := os.Stat(DepStatusCacheFilename)
+
+	if err != nil {
+		// Cannot open the file, need to get status
+		return true, depStatus{}
+	}
+
+	modifiedtime := file.ModTime()
+	if modifiedtime.After(dayAgo) {
+		// modified more than a day ago
+		return true, depStatus{}
+	}
+
+	var depstatus depStatus
+
+	jsonFile, err := os.Open(DepStatusCacheFilename)
+	if err != nil {
+		// could not open file
+		return true, depStatus{}
+	}
+
+	byteValue, err := ioutil.ReadAll(jsonFile)
+	if err != nil {
+		// could not read file to bytes
+		return true, depStatus{}
+	}
+
+	err = json.Unmarshal(byteValue, &depstatus)
+	if err != nil {
+		// could not unmarshal file from bytes to depStatus type
+		return true, depStatus{}
+	}
+
+	if !depstatus.RateLimited {
+		return true, depStatus{}
+	}
+
+	// if we are here, we have passed all of our checks and can return our cached data
+	return false, depstatus
 }
