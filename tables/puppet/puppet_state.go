@@ -3,7 +3,7 @@ package puppet
 import (
 	"context"
 
-	"github.com/kolide/osquery-go/plugin/table"
+	"github.com/osquery/osquery-go/plugin/table"
 )
 
 type ResourceStatus struct {
