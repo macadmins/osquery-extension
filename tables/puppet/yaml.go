@@ -29,7 +29,10 @@ func getPuppetYaml() (*PuppetInfo, error) {
 	}
 
 	buf := new(bytes.Buffer)
-	buf.ReadFrom(yamlFile)
+	_, err = buf.ReadFrom(yamlFile)
+	if err != nil {
+		return &yamlData, err
+	}
 	yamlString := buf.String()
 	yamlString = strings.Replace(yamlString, "\r", "\n", -1)
 

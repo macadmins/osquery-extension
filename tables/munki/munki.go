@@ -13,10 +13,6 @@ import (
 	"github.com/pkg/errors"
 )
 
-type MunkiInfo struct {
-	report *munkiReport
-}
-
 type munkiReport struct {
 	ConsoleUser           string
 	StartTime             string

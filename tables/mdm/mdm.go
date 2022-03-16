@@ -74,7 +74,7 @@ func MDMInfoColumns() []table.ColumnDefinition {
 func MDMInfoGenerate(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
 	profiles, _ := getMDMProfile()
 
-	depEnrolled, depCapable, userApproved := "unknown", "unknown", "unknown"
+	depEnrolled, userApproved := "unknown", "unknown"
 	status, err := getMDMProfileStatus()
 	if err == nil { // only supported on 10.13.4+
 		depEnrolled = strconv.FormatBool(status.DEPEnrolled)
@@ -82,7 +82,7 @@ func MDMInfoGenerate(ctx context.Context, queryContext table.QueryContext) ([]ma
 	}
 
 	depstatus, _ := getDEPStatus(status)
-	depCapable = strconv.FormatBool(depstatus.DEPCapable)
+	depCapable := strconv.FormatBool(depstatus.DEPCapable)
 
 	var enrollProfileItems []profileItem
 	var results []map[string]string
