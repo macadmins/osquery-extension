@@ -208,12 +208,6 @@ func needToGetLiveDEPStatus() (bool, depStatus) {
 		return true, depStatus{}
 	}
 
-	modifiedtime := file.ModTime()
-	if modifiedtime.Before(dayAgo) {
-		// modified more than a day ago
-		return true, depStatus{}
-	}
-
 	var depstatus depStatus
 
 	jsonFile, err := os.Open(DepStatusCacheFilename)
@@ -232,6 +226,12 @@ func needToGetLiveDEPStatus() (bool, depStatus) {
 	if err != nil {
 		// could not unmarshal file from bytes to depStatus type
 		return true, depStatus{}
+	}
+
+	modifiedtime := file.ModTime()
+	if modifiedtime.Before(dayAgo) {
+		// modified more than a day ago
+		return true, depstatus
 	}
 
 	if !depstatus.RateLimited {
