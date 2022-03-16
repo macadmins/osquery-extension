@@ -59,7 +59,7 @@ func main() {
 	if runtime.GOOS == "darwin" {
 		plugins = append(plugins, table.NewPlugin("filevault_users", filevaultusers.FileVaultUsersColumns(), filevaultusers.FileVaultUsersGenerate))
 		plugins = append(plugins, table.NewPlugin("macos_profiles", macosprofiles.MacOSProfilesColumns(), macosprofiles.MacOSProfilesGenerate))
-		plugins = append(plugins, table.NewPlugin("mdm", mdm.MDMInfoColumns(), mdm.MDMInfoGenerate))
+		plugins = append(plugins, table.NewPlugin("new_mdm", mdm.MDMInfoColumns(), mdm.MDMInfoGenerate))
 		plugins = append(plugins, table.NewPlugin("munki_info", munki.MunkiInfoColumns(), munki.MunkiInfoGenerate))
 		plugins = append(plugins, table.NewPlugin("munki_installs", munki.MunkiInstallsColumns(), munki.MunkiInstallsGenerate))
 		plugins = append(plugins, table.NewPlugin("network_quality", networkquality.NetworkQualityColumns(), networkquality.NetworkQualityGenerate))

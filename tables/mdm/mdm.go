@@ -72,10 +72,7 @@ func MDMInfoColumns() []table.ColumnDefinition {
 }
 
 func MDMInfoGenerate(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
-	profiles, err := getMDMProfile()
-	if err != nil {
-		return nil, err
-	}
+	profiles, _ := getMDMProfile()
 
 	depEnrolled, depCapable, userApproved := "unknown", "unknown", "unknown"
 	status, err := getMDMProfileStatus()
@@ -84,10 +81,8 @@ func MDMInfoGenerate(ctx context.Context, queryContext table.QueryContext) ([]ma
 		userApproved = strconv.FormatBool(status.UserApproved)
 	}
 
-	depstatus, err := getDEPStatus()
-	if err == nil {
-		depCapable = strconv.FormatBool(depstatus.DEPCapable)
-	}
+	depstatus, _ := getDEPStatus(status)
+	depCapable = strconv.FormatBool(depstatus.DEPCapable)
 
 	var enrollProfileItems []profileItem
 	var results []map[string]string
@@ -112,7 +107,6 @@ func MDMInfoGenerate(ctx context.Context, queryContext table.QueryContext) ([]ma
 					"identity_certificate_uuid": enrollProfile.IdentityCertificateUUID,
 					"installed_from_dep":        depEnrolled,
 					"user_approved":             userApproved,
-					"dep_capable":               depCapable,
 				}
 				break
 			}
@@ -128,6 +122,7 @@ func MDMInfoGenerate(ctx context.Context, queryContext table.QueryContext) ([]ma
 	} else {
 		results = []map[string]string{{"enrolled": "false"}}
 	}
+	results[0]["dep_capable"] = depCapable
 	return results, nil
 }
 
@@ -168,14 +163,22 @@ func getMDMProfileStatus() (profileStatus, error) {
 }
 
 // Either get the live DEP capability status, or return from the cache if needed.
-func getDEPStatus() (depStatus, error) {
+func getDEPStatus(status profileStatus) (depStatus, error) {
+	// if we are enrolled via dep, we are by definion dep capable
+	if status.DEPEnrolled {
+		return depStatus{DEPCapable: true}, nil
+	}
 	needToGetLiveDEPStatus, depstatus := needToGetLiveDEPStatus()
 	if needToGetLiveDEPStatus {
 		cmd := exec.Command("/usr/bin/profiles", "show", "-type", "enrollment")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			if strings.Contains(string(out), "Request too soon") {
-
+				depstatus.RateLimited = true
+				saveDepStatusErr := saveDepStatusCacheToJson(depstatus)
+				if saveDepStatusErr != nil {
+					return depstatus, errors.Wrap(saveDepStatusErr, "saveDepStatusCacheJson")
+				}
 			}
 			return depstatus, nil
 		}
@@ -184,6 +187,11 @@ func getDEPStatus() (depStatus, error) {
 
 		if len(lines) > 3 {
 			depstatus.DEPCapable = true
+		}
+
+		err = saveDepStatusCacheToJson(depstatus)
+		if err != nil {
+			return depstatus, errors.Wrap(err, "saveDepStatusCacheJson")
 		}
 	}
 
@@ -195,14 +203,13 @@ func needToGetLiveDEPStatus() (bool, depStatus) {
 	dayAgo := time.Now().Add(-24 * time.Hour)
 
 	file, err := os.Stat(DepStatusCacheFilename)
-
 	if err != nil {
 		// Cannot open the file, need to get status
 		return true, depStatus{}
 	}
 
 	modifiedtime := file.ModTime()
-	if modifiedtime.After(dayAgo) {
+	if modifiedtime.Before(dayAgo) {
 		// modified more than a day ago
 		return true, depStatus{}
 	}
@@ -228,9 +235,23 @@ func needToGetLiveDEPStatus() (bool, depStatus) {
 	}
 
 	if !depstatus.RateLimited {
-		return true, depStatus{}
+		return true, depstatus
 	}
 
 	// if we are here, we have passed all of our checks and can return our cached data
 	return false, depstatus
+}
+
+func saveDepStatusCacheToJson(depstatus depStatus) error {
+	file, err := json.MarshalIndent(depstatus, "", "    ")
+	if err != nil {
+		return errors.Wrap(err, "Marshal depstatus struct to json")
+	}
+
+	err = ioutil.WriteFile(DepStatusCacheFilename, file, 0644)
+	if err != nil {
+		return errors.Wrap(err, "Write cache file to disk")
+	}
+
+	return nil
 }
