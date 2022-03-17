@@ -47,8 +47,8 @@ type profileStatus struct {
 }
 
 type depStatus struct {
-	DEPCapable  bool
-	RateLimited bool
+	DEPCapable  bool `json:"dep_capable"`
+	RateLimited bool `json:"rate_limited"`
 }
 
 const DepStatusCacheFilename = "/private/var/tmp/profiles_status_enrollment.json"
@@ -202,7 +202,7 @@ func getDEPStatus(status profileStatus) (depStatus, error) {
 func needToGetLiveDEPStatus() (bool, depStatus) {
 	dayAgo := time.Now().Add(-24 * time.Hour)
 
-	file, err := os.Stat(DepStatusCacheFilename)
+	file, err := os.Stat(getDepCacheStatusFilePath())
 	if err != nil {
 		// Cannot open the file, need to get status
 		return true, depStatus{}
@@ -210,7 +210,7 @@ func needToGetLiveDEPStatus() (bool, depStatus) {
 
 	var depstatus depStatus
 
-	jsonFile, err := os.Open(DepStatusCacheFilename)
+	jsonFile, err := os.Open(getDepCacheStatusFilePath())
 	if err != nil {
 		// could not open file
 		return true, depStatus{}
@@ -248,10 +248,18 @@ func saveDepStatusCacheToJson(depstatus depStatus) error {
 		return errors.Wrap(err, "Marshal depstatus struct to json")
 	}
 
-	err = ioutil.WriteFile(DepStatusCacheFilename, file, 0644)
+	err = ioutil.WriteFile(getDepCacheStatusFilePath(), file, 0644)
 	if err != nil {
 		return errors.Wrap(err, "Write cache file to disk")
 	}
 
 	return nil
+}
+
+// Get the path from the PROFILES_ENROLLMENT_STATUS_CACHE_PATH environment variable or return the default
+func getDepCacheStatusFilePath() string {
+	if value, ok := os.LookupEnv("PROFILES_ENROLLMENT_STATUS_CACHE_PATH"); ok {
+		return value
+	}
+	return DepStatusCacheFilename
 }
