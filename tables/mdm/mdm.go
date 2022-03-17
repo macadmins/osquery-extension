@@ -256,9 +256,9 @@ func saveDepStatusCacheToJson(depstatus depStatus) error {
 	return nil
 }
 
-// Get the path from the PROFILES_ENROLLMENT_STATUS_CACHE_PATH environment variable or return the default
+// Get the path from the PROFILES_SHOW_ENROLLMENT_CACHE_PATH environment variable or return the default
 func getDepCacheStatusFilePath() string {
-	if value, ok := os.LookupEnv("PROFILES_ENROLLMENT_STATUS_CACHE_PATH"); ok {
+	if value, ok := os.LookupEnv("PROFILES_SHOW_ENROLLMENT_CACHE_PATH"); ok {
 		return value
 	}
 	return DepStatusCacheFilename
