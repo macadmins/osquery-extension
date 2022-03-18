@@ -226,11 +226,8 @@ func hasCheckedCloudConfigInPast24Hours() bool {
 	}
 
 	dayAgo := time.Now().Add(-24 * time.Hour)
-	if cloudConfigTimerCheck.LastCloudConfigCheckTime.After(dayAgo) {
-		return false
-	}
+	return !cloudConfigTimerCheck.LastCloudConfigCheckTime.After(dayAgo)
 
-	return true
 }
 
 // Will return true if the device appears to be DEP capable based on the on-disk contents, or false if not.
