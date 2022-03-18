@@ -255,14 +255,9 @@ func getCachedDEPStatus() bool {
 		return false
 	}
 
-	// if the CloudConfigFetchError key is present, this isn't a valid serial
+	// if the CloudConfigFetchError key is present, this isn't a valid serial, else it looks good
 	_, ok := cloudConfigRecordFound["CloudConfigFetchError"]
-	if ok {
-		return false
-	}
-
-	// Cloud config record present and no error in it, it looks good
-	return true
+	return !ok
 }
 
 func fileExists(filename string) bool {
