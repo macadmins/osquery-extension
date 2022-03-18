@@ -3,7 +3,6 @@ package mdm
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -51,7 +50,13 @@ type depStatus struct {
 	RateLimited bool `json:"rate_limited"`
 }
 
-const DepStatusCacheFilename = "/private/var/tmp/profiles_status_enrollment.json"
+type cloudConfigTimerCheck struct {
+	LastCloudConfigCheckTime time.Time `plist:"lastCloudConfigCheckTime"`
+}
+
+const CloudConfigRecordFound = "/private/var/db/ConfigurationProfiles/Settings/.cloudConfigRecordFound"
+const CloudConfigRecordNotFound = "/private/var/db/ConfigurationProfiles/Settings/.cloudConfigRecordNotFound"
+const CloudConfigTimerCheck = "/private/var/db/ConfigurationProfiles/Settings/.cloudConfigTimerCheck"
 
 func MDMInfoColumns() []table.ColumnDefinition {
 	return []table.ColumnDefinition{
@@ -168,17 +173,16 @@ func getDEPStatus(status profileStatus) (depStatus, error) {
 	if status.DEPEnrolled {
 		return depStatus{DEPCapable: true}, nil
 	}
-	needToGetLiveDEPStatus, depstatus := needToGetLiveDEPStatus()
-	if needToGetLiveDEPStatus {
+	var depstatus depStatus
+	hasAlreadyChecked := hasCheckedCloudConfigInPast24Hours()
+	if !hasAlreadyChecked {
 		cmd := exec.Command("/usr/bin/profiles", "show", "-type", "enrollment")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			if strings.Contains(string(out), "Request too soon") {
-				depstatus.RateLimited = true
-				saveDepStatusErr := saveDepStatusCacheToJson(depstatus)
-				if saveDepStatusErr != nil {
-					return depstatus, errors.Wrap(saveDepStatusErr, "saveDepStatusCacheJson")
-				}
+				depCapable := getCachedDEPStatus()
+				depstatus.DEPCapable = depCapable
+				return depstatus, nil
 			}
 			return depstatus, nil
 		}
@@ -188,78 +192,86 @@ func getDEPStatus(status profileStatus) (depStatus, error) {
 		if len(lines) > 3 {
 			depstatus.DEPCapable = true
 		}
-
-		err = saveDepStatusCacheToJson(depstatus)
-		if err != nil {
-			return depstatus, errors.Wrap(err, "saveDepStatusCacheJson")
-		}
 	}
+
+	depCapable := getCachedDEPStatus()
+	depstatus.DEPCapable = depCapable
 
 	return depstatus, nil
 }
 
-// Do we need to run profiles show -type enrollment or can we return the version from the cache?
-func needToGetLiveDEPStatus() (bool, depStatus) {
-	dayAgo := time.Now().Add(-24 * time.Hour)
-
-	file, err := os.Stat(getDepCacheStatusFilePath())
-	if err != nil {
-		// Cannot open the file, need to get status
-		return true, depStatus{}
+// Returns true if the device has checked it's cloud config record in the past hour, false if the file is missing or the time is more thab 24 hours ago
+func hasCheckedCloudConfigInPast24Hours() bool {
+	if !fileExists(CloudConfigTimerCheck) {
+		return false
 	}
 
-	var depstatus depStatus
-
-	jsonFile, err := os.Open(getDepCacheStatusFilePath())
+	var cloudConfigTimerCheck cloudConfigTimerCheck
+	plistFile, err := os.Open(CloudConfigTimerCheck)
 	if err != nil {
 		// could not open file
-		return true, depStatus{}
+		return false
 	}
 
-	byteValue, err := ioutil.ReadAll(jsonFile)
+	byteValue, err := ioutil.ReadAll(plistFile)
 	if err != nil {
 		// could not read file to bytes
-		return true, depStatus{}
+		return false
 	}
 
-	err = json.Unmarshal(byteValue, &depstatus)
+	err = plist.Unmarshal(byteValue, &cloudConfigTimerCheck)
 	if err != nil {
-		// could not unmarshal file from bytes to depStatus type
-		return true, depStatus{}
+		// could not unmarshal file from bytes to cloudConfigTimerCheck type
+		return false
 	}
 
-	modifiedtime := file.ModTime()
-	if modifiedtime.Before(dayAgo) {
-		// modified more than a day ago
-		return true, depstatus
+	dayAgo := time.Now().Add(-24 * time.Hour)
+	if cloudConfigTimerCheck.LastCloudConfigCheckTime.After(dayAgo) {
+		return false
 	}
 
-	if !depstatus.RateLimited {
-		return true, depstatus
-	}
-
-	// if we are here, we have passed all of our checks and can return our cached data
-	return false, depstatus
+	return true
 }
 
-func saveDepStatusCacheToJson(depstatus depStatus) error {
-	file, err := json.MarshalIndent(depstatus, "", "    ")
-	if err != nil {
-		return errors.Wrap(err, "Marshal depstatus struct to json")
+// Will return true if the device appears to be DEP capable based on the on-disk contents, or false if not.
+func getCachedDEPStatus() bool {
+	if fileExists(CloudConfigRecordNotFound) {
+		return false
 	}
 
-	err = ioutil.WriteFile(getDepCacheStatusFilePath(), file, 0644)
+	var cloudConfigRecordFound map[string]interface{}
+	plistFile, err := os.Open(CloudConfigRecordFound)
 	if err != nil {
-		return errors.Wrap(err, "Write cache file to disk")
+		// could not open file
+		return false
 	}
 
-	return nil
+	byteValue, err := ioutil.ReadAll(plistFile)
+	if err != nil {
+		// could not read file to bytes
+		return false
+	}
+
+	err = plist.Unmarshal(byteValue, &cloudConfigRecordFound)
+	if err != nil {
+		// could not unmarshal file from bytes to cloudConfigRecordFound interface
+		return false
+	}
+
+	// if the CloudConfigFetchError key is present, this isn't a valid serial
+	_, ok := cloudConfigRecordFound["CloudConfigFetchError"]
+	if ok {
+		return false
+	}
+
+	// Cloud config record present and no error in it, it looks good
+	return true
 }
 
-// Get the path from the PROFILES_SHOW_ENROLLMENT_CACHE_PATH environment variable or return the default
-func getDepCacheStatusFilePath() string {
-	if value, ok := os.LookupEnv("PROFILES_SHOW_ENROLLMENT_CACHE_PATH"); ok {
-		return value
+func fileExists(filename string) bool {
+	info, err := os.Stat(filename)
+	if os.IsNotExist(err) {
+		return false
 	}
-	return DepStatusCacheFilename
+	return !info.IsDir()
 }
