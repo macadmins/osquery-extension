@@ -77,6 +77,7 @@ func MDMInfoColumns() []table.ColumnDefinition {
 }
 
 func MDMInfoGenerate(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
+	// There might not be any profiles installed, but we still care if the device is DEP capable, so discard the error
 	profiles, _ := getMDMProfile()
 
 	depEnrolled, userApproved := "unknown", "unknown"
@@ -86,7 +87,7 @@ func MDMInfoGenerate(ctx context.Context, queryContext table.QueryContext) ([]ma
 		userApproved = strconv.FormatBool(status.UserApproved)
 	}
 
-	depstatus, _ := getDEPStatus(status)
+	depstatus := getDEPStatus(status)
 	depCapable := strconv.FormatBool(depstatus.DEPCapable)
 
 	var enrollProfileItems []profileItem
@@ -168,10 +169,10 @@ func getMDMProfileStatus() (profileStatus, error) {
 }
 
 // Either get the live DEP capability status, or return from the cache if needed.
-func getDEPStatus(status profileStatus) (depStatus, error) {
+func getDEPStatus(status profileStatus) depStatus {
 	// if we are enrolled via dep, we are by definion dep capable
 	if status.DEPEnrolled {
-		return depStatus{DEPCapable: true}, nil
+		return depStatus{DEPCapable: true}
 	}
 	var depstatus depStatus
 	hasAlreadyChecked := hasCheckedCloudConfigInPast24Hours()
@@ -182,9 +183,9 @@ func getDEPStatus(status profileStatus) (depStatus, error) {
 			if strings.Contains(string(out), "Request too soon") {
 				depCapable := getCachedDEPStatus()
 				depstatus.DEPCapable = depCapable
-				return depstatus, nil
+				return depstatus
 			}
-			return depstatus, nil
+			return depstatus
 		}
 
 		lines := bytes.Split(out, []byte("\n"))
@@ -197,7 +198,7 @@ func getDEPStatus(status profileStatus) (depStatus, error) {
 	depCapable := getCachedDEPStatus()
 	depstatus.DEPCapable = depCapable
 
-	return depstatus, nil
+	return depstatus
 }
 
 // Returns true if the device has checked it's cloud config record in the past hour, false if the file is missing or the time is more thab 24 hours ago
