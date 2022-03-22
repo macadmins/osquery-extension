@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"runtime"
 
 	"github.com/osquery/osquery-go/plugin/table"
 	"github.com/pkg/errors"
@@ -13,6 +15,12 @@ import (
 type puppetFacts struct {
 	Name   string
 	Values map[string]interface{}
+}
+
+var puppetPath = map[string]string{
+	"linux":   "/opt/puppetlabs/bin/puppet",
+	"darwin":  "/opt/puppetlabs/bin/puppet",
+	"windows": "C:\\\\Program Files\\Puppet Labs\\Puppet\\bin\\puppet.bat",
 }
 
 func PuppetFactsColumns() []table.ColumnDefinition {
@@ -58,8 +66,14 @@ func PuppetFactsGenerate(ctx context.Context, queryContext table.QueryContext) (
 }
 
 func getPuppetFacts() (*puppetFacts, error) {
-	cmd := exec.Command("puppet", "facts", "--render-as", "json")
+	// check if puppet command exists
+	execPath, err := getPuppetExecPath()
+	if err != nil {
+		return nil, err
+	}
 
+	// execute command
+	cmd := exec.Command(execPath, "facts", "--render-as", "json")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, errors.Wrap(err, "calling puppet facts to get puppet facts")
@@ -71,4 +85,26 @@ func getPuppetFacts() (*puppetFacts, error) {
 	}
 
 	return &facts, nil
+}
+
+func getPuppetExecPath() (string, error) {
+	// if puppet command exists in the path, use the path
+	if execPath, err := exec.LookPath("puppet"); err == nil {
+		return execPath, nil
+	}
+
+	// if puppet command not in the path, try to use the predefined path
+	if execPath, ok := puppetPath[runtime.GOOS]; ok {
+		if _, err := os.Stat(execPath); !os.IsNotExist(err) {
+			return execPath, nil
+		}
+	}
+
+	// if user specified PUPPET_PATH env, try to use it
+	if execPath := os.Getenv("PUPPET_PATH"); execPath != "" {
+		return execPath, nil
+	}
+
+	// puppet command not found
+	return "", errors.New("puppet command not found.")
 }
