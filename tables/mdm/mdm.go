@@ -3,9 +3,12 @@ package mdm
 import (
 	"bytes"
 	"context"
-	"fmt"
+	"io/ioutil"
+	"os"
 	"os/exec"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/groob/plist"
 	"github.com/osquery/osquery-go/plugin/table"
@@ -43,8 +46,17 @@ type profileStatus struct {
 }
 
 type depStatus struct {
-	DEPCapable bool
+	DEPCapable  bool `json:"dep_capable"`
+	RateLimited bool `json:"rate_limited"`
 }
+
+type cloudConfigTimerCheck struct {
+	LastCloudConfigCheckTime time.Time `plist:"lastCloudConfigCheckTime"`
+}
+
+const CloudConfigRecordFound = "/private/var/db/ConfigurationProfiles/Settings/.cloudConfigRecordFound"
+const CloudConfigRecordNotFound = "/private/var/db/ConfigurationProfiles/Settings/.cloudConfigRecordNotFound"
+const CloudConfigTimerCheck = "/private/var/db/ConfigurationProfiles/Settings/.cloudConfigTimerCheck"
 
 func MDMInfoColumns() []table.ColumnDefinition {
 	return []table.ColumnDefinition{
@@ -65,22 +77,18 @@ func MDMInfoColumns() []table.ColumnDefinition {
 }
 
 func MDMInfoGenerate(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
-	profiles, err := getMDMProfile()
-	if err != nil {
-		return nil, err
-	}
+	// There might not be any profiles installed, but we still care if the device is DEP capable, so discard the error
+	profiles, _ := getMDMProfile()
 
-	depEnrolled, depCapable, userApproved := "unknown", "unknown", "unknown"
+	depEnrolled, userApproved := "unknown", "unknown"
 	status, err := getMDMProfileStatus()
 	if err == nil { // only supported on 10.13.4+
 		depEnrolled = strconv.FormatBool(status.DEPEnrolled)
 		userApproved = strconv.FormatBool(status.UserApproved)
 	}
 
-	depstatus, err := getDEPStatus()
-	if err == nil {
-		depCapable = strconv.FormatBool(depstatus.DEPCapable)
-	}
+	depstatus := getDEPStatus(status)
+	depCapable := strconv.FormatBool(depstatus.DEPCapable)
 
 	var enrollProfileItems []profileItem
 	var results []map[string]string
@@ -105,7 +113,6 @@ func MDMInfoGenerate(ctx context.Context, queryContext table.QueryContext) ([]ma
 					"identity_certificate_uuid": enrollProfile.IdentityCertificateUUID,
 					"installed_from_dep":        depEnrolled,
 					"user_approved":             userApproved,
-					"dep_capable":               depCapable,
 				}
 				break
 			}
@@ -121,6 +128,7 @@ func MDMInfoGenerate(ctx context.Context, queryContext table.QueryContext) ([]ma
 	} else {
 		results = []map[string]string{{"enrolled": "false"}}
 	}
+	results[0]["dep_capable"] = depCapable
 	return results, nil
 }
 
@@ -160,20 +168,103 @@ func getMDMProfileStatus() (profileStatus, error) {
 	}, nil
 }
 
-func getDEPStatus() (depStatus, error) {
-	cmd := exec.Command("/usr/bin/profiles", "show", "-type", "enrollment")
-	out, err := cmd.Output()
+// Either get the live DEP capability status, or return from the cache if needed.
+func getDEPStatus(status profileStatus) depStatus {
+	// if we are enrolled via dep, we are by definion dep capable
+	if status.DEPEnrolled {
+		return depStatus{DEPCapable: true}
+	}
+	var depstatus depStatus
+	hasAlreadyChecked := hasCheckedCloudConfigInPast24Hours()
+	if !hasAlreadyChecked {
+		cmd := exec.Command("/usr/bin/profiles", "show", "-type", "enrollment")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			if strings.Contains(string(out), "Request too soon") {
+				depCapable := getCachedDEPStatus()
+				depstatus.DEPCapable = depCapable
+				return depstatus
+			}
+			return depstatus
+		}
+
+		lines := bytes.Split(out, []byte("\n"))
+
+		if len(lines) > 3 {
+			depstatus.DEPCapable = true
+		}
+	}
+
+	depCapable := getCachedDEPStatus()
+	depstatus.DEPCapable = depCapable
+
+	return depstatus
+}
+
+// Returns true if the device has checked it's cloud config record in the past hour, false if the file is missing or the time is more thab 24 hours ago
+func hasCheckedCloudConfigInPast24Hours() bool {
+	if !fileExists(CloudConfigTimerCheck) {
+		return false
+	}
+
+	var cloudConfigTimerCheck cloudConfigTimerCheck
+	plistFile, err := os.Open(CloudConfigTimerCheck)
 	if err != nil {
-		fmt.Println(err)
+		// could not open file
+		return false
 	}
 
-	lines := bytes.Split(out, []byte("\n"))
-
-	depstatus := depStatus{DEPCapable: false}
-
-	if len(lines) > 3 {
-		depstatus.DEPCapable = true
+	byteValue, err := ioutil.ReadAll(plistFile)
+	if err != nil {
+		// could not read file to bytes
+		return false
 	}
 
-	return depstatus, nil
+	err = plist.Unmarshal(byteValue, &cloudConfigTimerCheck)
+	if err != nil {
+		// could not unmarshal file from bytes to cloudConfigTimerCheck type
+		return false
+	}
+
+	dayAgo := time.Now().Add(-24 * time.Hour)
+	return !cloudConfigTimerCheck.LastCloudConfigCheckTime.After(dayAgo)
+
+}
+
+// Will return true if the device appears to be DEP capable based on the on-disk contents, or false if not.
+func getCachedDEPStatus() bool {
+	if fileExists(CloudConfigRecordNotFound) {
+		return false
+	}
+
+	var cloudConfigRecordFound map[string]interface{}
+	plistFile, err := os.Open(CloudConfigRecordFound)
+	if err != nil {
+		// could not open file
+		return false
+	}
+
+	byteValue, err := ioutil.ReadAll(plistFile)
+	if err != nil {
+		// could not read file to bytes
+		return false
+	}
+
+	err = plist.Unmarshal(byteValue, &cloudConfigRecordFound)
+	if err != nil {
+		// could not unmarshal file from bytes to cloudConfigRecordFound interface
+		return false
+	}
+
+	// if the CloudConfigFetchError key is present, this isn't a valid serial, else it looks good
+	_, ok := cloudConfigRecordFound["CloudConfigFetchError"]
+	return !ok
+}
+
+func fileExists(filename string) bool {
+	info, err := os.Stat(filename)
+	if os.IsNotExist(err) {
+		return false
+	}
+	return !info.IsDir()
 }

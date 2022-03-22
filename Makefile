@@ -1,4 +1,5 @@
 export GO111MODULE=auto
+include config.mk
 current_dir = $(shell pwd)
 
 SHELL = /bin/sh
@@ -31,11 +32,12 @@ clean:
 	/bin/rm -f macadmins_extension.zip
 
 build: .pre-build
-	GOOS=darwin GOARCH=amd64 go build -o build/darwin/${APP_NAME}.amd64.ext -pkgdir ${PKGDIR_TMP}
-	GOOS=darwin GOARCH=arm64 go build -o build/darwin/${APP_NAME}.arm64.ext -pkgdir ${PKGDIR_TMP}
+	GOOS=darwin GOARCH=amd64 go build -o build/darwin/${APP_NAME}.amd64.ext
+	GOOS=darwin GOARCH=arm64 go build -o build/darwin/${APP_NAME}.arm64.ext
 	/usr/bin/lipo -create -output build/darwin/${APP_NAME}.ext build/darwin/${APP_NAME}.amd64.ext build/darwin/${APP_NAME}.arm64.ext
-	GOOS=linux go build -o build/linux/${APP_NAME}.ext -pkgdir ${PKGDIR_TMP}
-	GOOS=windows go build -o build/windows/${APP_NAME}.ext.exe -pkgdir ${PKGDIR_TMP}
+	@sudo codesign --timestamp --force --deep -s "${DEV_APP_CERT}" build/darwin/${APP_NAME}.ext
+	GOOS=linux go build -o build/linux/${APP_NAME}.ext
+	GOOS=windows go build -o build/windows/${APP_NAME}.ext.exe
 	/bin/rm build/darwin/${APP_NAME}.amd64.ext
 	/bin/rm build/darwin/${APP_NAME}.arm64.ext
 

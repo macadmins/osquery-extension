@@ -31,7 +31,6 @@ var homeDirLocations = map[string][]string{
 	"windows": {"/Users"}, // windows10 uses /Users
 	"darwin":  {"/Users"},
 }
-var homeDirDefaultLocation = []string{"/home"}
 
 type userFileInfo struct {
 	user string
@@ -122,6 +121,7 @@ func findFileInUserDirs(pattern string, opts ...FindFileOpt) ([]userFileInfo, er
 
 	homedirRoots, ok := homeDirLocations[runtime.GOOS]
 	if !ok {
+		return []userFileInfo{}, errors.New("No homedir location found for this GOOS")
 	}
 
 	foundPaths := []userFileInfo{}

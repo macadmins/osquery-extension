@@ -2,3 +2,4 @@ build/
 vendor/
 macadmins_extension
 *.zip
+config.mk
