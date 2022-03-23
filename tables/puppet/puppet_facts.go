@@ -88,11 +88,6 @@ func getPuppetFacts() (*puppetFacts, error) {
 }
 
 func getPuppetExecPath() (string, error) {
-	// if puppet command exists in the path, use the path
-	if execPath, err := exec.LookPath("puppet"); err == nil {
-		return execPath, nil
-	}
-
 	// if puppet command not in the path, try to use the predefined path
 	if execPath, ok := puppetPath[runtime.GOOS]; ok {
 		if _, err := os.Stat(execPath); !os.IsNotExist(err) {
