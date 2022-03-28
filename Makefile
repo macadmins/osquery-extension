@@ -35,7 +35,7 @@ build: .pre-build
 	GOOS=darwin GOARCH=amd64 go build -o build/darwin/${APP_NAME}.amd64.ext
 	GOOS=darwin GOARCH=arm64 go build -o build/darwin/${APP_NAME}.arm64.ext
 	/usr/bin/lipo -create -output build/darwin/${APP_NAME}.ext build/darwin/${APP_NAME}.amd64.ext build/darwin/${APP_NAME}.arm64.ext
-	# @sudo codesign --timestamp --force --deep -s "${DEV_APP_CERT}" build/darwin/${APP_NAME}.ext
+	@sudo codesign --timestamp --force --deep -s "${DEV_APP_CERT}" build/darwin/${APP_NAME}.ext
 	GOOS=linux GOARCH=amd64  go build -o build/linux/${APP_NAME}.amd64.ext
 	GOOS=linux GOARCH=arm64  go build -o build/linux/${APP_NAME}.arm64.ext
 	GOOS=windows GOARCH=amd64  go build -o build/windows/${APP_NAME}.amd64.ext.exe
