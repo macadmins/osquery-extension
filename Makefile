@@ -39,7 +39,7 @@ build: .pre-build
 	GOOS=linux GOARCH=amd64  go build -o build/linux/${APP_NAME}.amd64.ext
 	GOOS=linux GOARCH=arm64  go build -o build/linux/${APP_NAME}.arm64.ext
 	GOOS=windows GOARCH=amd64  go build -o build/windows/${APP_NAME}.amd64.ext.exe
-	GOOS=windows GOARCH=arm64  go build -o build/windows/${APP_NAME}.arm64.ext
+	GOOS=windows GOARCH=arm64  go build -o build/windows/${APP_NAME}.arm64.ext.exe
 	/bin/rm build/darwin/${APP_NAME}.amd64.ext
 	/bin/rm build/darwin/${APP_NAME}.arm64.ext
 
