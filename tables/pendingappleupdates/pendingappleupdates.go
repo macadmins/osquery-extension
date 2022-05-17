@@ -54,7 +54,7 @@ func PendingAppleUpdatesGenerate(ctx context.Context, queryContext table.QueryCo
 
 func readSoftwareUpdatePlist() (*softwareUpdatePlist, error) {
 	var updatePlist softwareUpdatePlist
-	const plistPath = "/Library/Preferences/com.apple.SoftwareUpdate.plist"
+	const plistPath = "/Users/graham_gilbert/Downloads/com.apple.SoftwareUpdate.plist"
 	if !utils.FileExists(plistPath) {
 		return nil, nil
 	}
@@ -64,7 +64,7 @@ func readSoftwareUpdatePlist() (*softwareUpdatePlist, error) {
 	}
 	defer file.Close()
 
-	if err := plist.NewDecoder(file).Decode(&updatePlist); err != nil {
+	if err := plist.NewBinaryDecoder(file).Decode(&updatePlist); err != nil {
 		return &updatePlist, errors.Wrap(err, "decode com.apple.SoftwareUpdate plist")
 	}
 
