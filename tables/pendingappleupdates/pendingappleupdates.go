@@ -54,7 +54,7 @@ func PendingAppleUpdatesGenerate(ctx context.Context, queryContext table.QueryCo
 
 func readSoftwareUpdatePlist() (*softwareUpdatePlist, error) {
 	var updatePlist softwareUpdatePlist
-	const plistPath = "/Users/graham_gilbert/Downloads/com.apple.SoftwareUpdate.plist"
+	const plistPath = "/Library/Preferences/com.apple.SoftwareUpdate.plist"
 	if !utils.FileExists(plistPath) {
 		return nil, nil
 	}
