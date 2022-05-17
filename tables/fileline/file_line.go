@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/macadmins/osquery-extension/pkg/utils"
 	"github.com/osquery/osquery-go/plugin/table"
 )
 
@@ -88,7 +89,7 @@ func processFile(path string, wildcard bool) ([]FileLine, error) {
 func readLines(path string) ([]FileLine, error) {
 	var output []FileLine
 
-	if !fileExists(path) {
+	if !utils.FileExists(path) {
 		err := errors.New("File does not exist")
 		return nil, err
 	}
@@ -112,12 +113,4 @@ func readLines(path string) ([]FileLine, error) {
 	}
 
 	return output, nil
-}
-
-func fileExists(filename string) bool {
-	info, err := os.Stat(filename)
-	if os.IsNotExist(err) {
-		return false
-	}
-	return !info.IsDir()
 }

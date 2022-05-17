@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/groob/plist"
+	"github.com/macadmins/osquery-extension/pkg/utils"
 	"github.com/osquery/osquery-go/plugin/table"
 	"github.com/pkg/errors"
 )
@@ -203,7 +204,7 @@ func getDEPStatus(status profileStatus) depStatus {
 
 // Returns true if the device has checked it's cloud config record in the past hour, false if the file is missing or the time is more thab 24 hours ago
 func hasCheckedCloudConfigInPast24Hours() bool {
-	if !fileExists(CloudConfigTimerCheck) {
+	if !utils.FileExists(CloudConfigTimerCheck) {
 		return false
 	}
 
@@ -233,7 +234,7 @@ func hasCheckedCloudConfigInPast24Hours() bool {
 
 // Will return true if the device appears to be DEP capable based on the on-disk contents, or false if not.
 func getCachedDEPStatus() bool {
-	if fileExists(CloudConfigRecordNotFound) {
+	if utils.FileExists(CloudConfigRecordNotFound) {
 		return false
 	}
 
@@ -259,12 +260,4 @@ func getCachedDEPStatus() bool {
 	// if the CloudConfigFetchError key is present, this isn't a valid serial, else it looks good
 	_, ok := cloudConfigRecordFound["CloudConfigFetchError"]
 	return !ok
-}
-
-func fileExists(filename string) bool {
-	info, err := os.Stat(filename)
-	if os.IsNotExist(err) {
-		return false
-	}
-	return !info.IsDir()
 }

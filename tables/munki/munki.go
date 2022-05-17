@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/groob/plist"
+	"github.com/macadmins/osquery-extension/pkg/utils"
 	"github.com/osquery/osquery-go/plugin/table"
 	"github.com/pkg/errors"
 )
@@ -111,7 +112,7 @@ func MunkiInstallsGenerate(ctx context.Context, queryContext table.QueryContext)
 func loadMunkiReport() (*munkiReport, error) {
 	var report munkiReport
 	const reportPath = "/Library/Managed Installs/ManagedInstallReport.plist"
-	if !fileExists(reportPath) {
+	if !utils.FileExists(reportPath) {
 		return nil, nil
 	}
 	file, err := os.Open(reportPath)
@@ -125,12 +126,4 @@ func loadMunkiReport() (*munkiReport, error) {
 	}
 
 	return &report, nil
-}
-
-func fileExists(path string) bool {
-	info, err := os.Stat(path)
-	if os.IsNotExist(err) {
-		return false
-	}
-	return !info.IsDir()
 }
