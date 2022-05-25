@@ -42,14 +42,15 @@ func PuppetFactsGenerate(ctx context.Context, queryContext table.QueryContext) (
 	for factName, factValue := range facts.Values {
 		var value string
 
-		// serialize it as json string if it is a map
-		if v, ok := factValue.(map[string]interface{}); ok {
-			if jsonStr, err := json.Marshal(v); err != nil {
+		switch factValue.(type) {
+		case map[string]interface{}, []interface{}:
+			// serialize it as json string if it is a map or a slice
+			if jsonStr, err := json.Marshal(factValue); err != nil {
 				return nil, errors.Wrap(err, "marshal to json string")
 			} else {
 				value = string(jsonStr)
 			}
-		} else {
+		default:
 			// else serialize it as string
 			value = fmt.Sprintf("%v", factValue)
 		}
