@@ -11,7 +11,7 @@ import (
 )
 
 type UnifiedLog struct {
-	TraceID                  int64     `json:"traceID"`
+	TraceID                  uint64     `json:"traceID"`
 	EventType                string    `json:"eventType"`
 	FormatString             string    `json:"formatString"`
 	ActivityIdentifier       int       `json:"activityIdentifier"`
