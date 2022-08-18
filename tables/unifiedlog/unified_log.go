@@ -11,7 +11,7 @@ import (
 )
 
 type UnifiedLog struct {
-	TraceID                  uint64     `json:"traceID"`
+	TraceID                  uint64    `json:"traceID"`
 	EventType                string    `json:"eventType"`
 	FormatString             string    `json:"formatString"`
 	ActivityIdentifier       int       `json:"activityIdentifier"`
@@ -125,7 +125,7 @@ func execute(predicate string, last string) ([]map[string]string, error) {
 
 	for _, item := range unifiedlogs {
 		output = append(output, map[string]string{
-			"trace_id":                   strconv.FormatInt(item.TraceID, 10),
+			"trace_id":                   strconv.FormatUint(item.TraceID, 10),
 			"event_type":                 item.EventType,
 			"format_string":              item.FormatString,
 			"activity_identifier":        strconv.Itoa(item.ActivityIdentifier),
