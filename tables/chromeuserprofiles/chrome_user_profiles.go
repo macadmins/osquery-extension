@@ -3,7 +3,6 @@ package chromeuserprofiles
 import (
 	"context"
 	"encoding/json"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -68,7 +67,7 @@ func GoogleChromeProfilesColumns() []table.ColumnDefinition {
 
 func generateForPath(ctx context.Context, fileInfo userFileInfo) ([]map[string]string, error) {
 	var results []map[string]string
-	data, err := ioutil.ReadFile(fileInfo.path)
+	data, err := os.ReadFile(fileInfo.path)
 	if err != nil {
 		return nil, errors.Wrap(err, "reading chrome local state file")
 	}
@@ -130,7 +129,7 @@ func findFileInUserDirs(pattern string, opts ...FindFileOpt) ([]userFileInfo, er
 	if ff.username == "" {
 		for _, possibleHome := range homedirRoots {
 
-			userDirs, err := ioutil.ReadDir(possibleHome)
+			userDirs, err := os.ReadDir(possibleHome)
 			if err != nil {
 				// This possibleHome doesn't exist. Move on
 				continue
