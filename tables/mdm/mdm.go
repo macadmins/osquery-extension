@@ -3,7 +3,7 @@ package mdm
 import (
 	"bytes"
 	"context"
-	"io/ioutil"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -215,7 +215,7 @@ func hasCheckedCloudConfigInPast24Hours() bool {
 		return false
 	}
 
-	byteValue, err := ioutil.ReadAll(plistFile)
+	byteValue, err := io.ReadAll(plistFile)
 	if err != nil {
 		// could not read file to bytes
 		return false
@@ -245,7 +245,7 @@ func getCachedDEPStatus() bool {
 		return false
 	}
 
-	byteValue, err := ioutil.ReadAll(plistFile)
+	byteValue, err := io.ReadAll(plistFile)
 	if err != nil {
 		// could not read file to bytes
 		return false

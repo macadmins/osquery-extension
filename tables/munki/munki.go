@@ -30,6 +30,7 @@ type managedInstall struct {
 	Installed        bool   `plist:"installed"`
 	InstalledVersion string `plist:"installed_version"`
 	Name             string `plist:"name"`
+	DisplayName      string `plist:"display_name"`
 }
 
 func MunkiInfoColumns() []table.ColumnDefinition {
@@ -83,6 +84,7 @@ func MunkiInstallsColumns() []table.ColumnDefinition {
 		table.TextColumn("installed"),
 		table.TextColumn("name"),
 		table.TextColumn("end_time"),
+		table.TextColumn("display_name"),
 	}
 }
 
@@ -102,6 +104,7 @@ func MunkiInstallsGenerate(ctx context.Context, queryContext table.QueryContext)
 			"installed":         fmt.Sprintf("%v", install.Installed),
 			"name":              install.Name,
 			"end_time":          report.EndTime,
+			"display_name":      install.DisplayName,
 		})
 	}
 
@@ -109,9 +112,11 @@ func MunkiInstallsGenerate(ctx context.Context, queryContext table.QueryContext)
 
 }
 
+// reportPath is defined as a global variable to ease testing.
+var reportPath = "/Library/Managed Installs/ManagedInstallReport.plist"
+
 func loadMunkiReport() (*munkiReport, error) {
 	var report munkiReport
-	const reportPath = "/Library/Managed Installs/ManagedInstallReport.plist"
 	if !utils.FileExists(reportPath) {
 		return nil, nil
 	}

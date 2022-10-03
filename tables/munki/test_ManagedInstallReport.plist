@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>AvailableDiskSpace</key>
+	<integer>371095948</integer>
+	<key>Conditions</key>
+	<dict>
+		<key>arch</key>
+		<string>x86_64</string>
+		<key>date</key>
+		<date>2022-09-22T08:52:43Z</date>
+		<key>hostname</key>
+		<string>Foo-MacBook-Pro.local</string>
+		<key>ibridge_model_name</key>
+		<string>Apple T2 Security Chip</string>
+		<key>ipv4_address</key>
+		<array>
+			<string>192.168.0.230</string>
+		</array>
+		<key>ipv6_address</key>
+		<array/>
+		<key>machine_model</key>
+		<string>MacBookPro16,2</string>
+		<key>machine_type</key>
+		<string>laptop</string>
+		<key>munki_version</key>
+		<string>5.6.4.4406</string>
+		<key>os_build_last_component</key>
+		<integer>115</integer>
+		<key>os_build_number</key>
+		<string>21G115</string>
+		<key>os_vers</key>
+		<string>12.6</string>
+		<key>os_vers_major</key>
+		<integer>12</integer>
+		<key>os_vers_minor</key>
+		<integer>6</integer>
+		<key>os_vers_patch</key>
+		<integer>0</integer>
+		<key>serial_number</key>
+		<string>Foo</string>
+		<key>x86_64_capable</key>
+		<true/>
+	</dict>
+	<key>ConsoleUser</key>
+	<string>Foo</string>
+	<key>EndTime</key>
+	<string>2022-09-22 11:53:01 +0000</string>
+	<key>Errors</key>
+	<array/>
+	<key>InstallResults</key>
+	<array/>
+	<key>InstalledItems</key>
+	<array>
+		<string>Google Chrome</string>
+		<string>Nudge</string>
+	</array>
+	<key>ItemsToInstall</key>
+	<array/>
+	<key>ItemsToRemove</key>
+	<array/>
+	<key>MachineInfo</key>
+	<dict>
+		<key>arch</key>
+		<string>x86_64</string>
+		<key>hostname</key>
+		<string>Foo-MacBook-Pro.local</string>
+		<key>ibridge_model_name</key>
+		<string>Apple T2 Security Chip</string>
+		<key>ipv4_address</key>
+		<array>
+			<string>192.168.0.230</string>
+		</array>
+		<key>ipv6_address</key>
+		<array/>
+		<key>machine_model</key>
+		<string>MacBookPro16,2</string>
+		<key>munki_version</key>
+		<string>5.6.4.4406</string>
+		<key>os_build_number</key>
+		<string>21G115</string>
+		<key>os_vers</key>
+		<string>12.6</string>
+		<key>serial_number</key>
+		<string>Foo</string>
+		<key>x86_64_capable</key>
+		<true/>
+	</dict>
+	<key>ManagedInstallVersion</key>
+	<string>5.6.4.4406</string>
+	<key>ManagedInstalls</key>
+	<array>
+		<dict>
+			<key>description</key>
+			<string>Chrome is a fast, simple, and secure web browser, built for the modern web.</string>
+			<key>display_name</key>
+			<string>Google Chrome Display Name</string>
+			<key>installed</key>
+			<true/>
+			<key>installed_size</key>
+			<integer>473937</integer>
+			<key>installed_version</key>
+			<string>105.0.5195.125</string>
+			<key>name</key>
+			<string>Google Chrome</string>
+		</dict>
+		<dict>
+			<key>description</key>
+			<string></string>
+			<key>display_name</key>
+			<string>Nudge Display Name</string>
+			<key>installed</key>
+			<false/>
+			<key>installed_size</key>
+			<integer>6566</integer>
+			<key>installed_version</key>
+			<string>1.1.7.81411</string>
+			<key>name</key>
+			<string>Nudge</string>
+		</dict>
+	</array>
+	<key>ManifestName</key>
+	<string>e388bb34-ea80-49e2-8d79-da164f8bf9af</string>
+	<key>ProblemInstalls</key>
+	<array/>
+	<key>RemovalResults</key>
+	<array/>
+	<key>RemovedItems</key>
+	<array/>
+	<key>RunType</key>
+	<string>auto</string>
+	<key>StartTime</key>
+	<string>2022-09-22 11:52:43 +0000</string>
+	<key>Warnings</key>
+	<array>
+		<string>Could not process item Foo for optional install. No pkginfo found in catalogs: default</string>
+	</array>
+	<key>managed_installs_list</key>
+	<array>
+		<string>Google Chrome</string>
+		<string>Nudge</string>
+	</array>
+	<key>managed_uninstalls_list</key>
+	<array/>
+	<key>managed_updates_list</key>
+	<array/>
+</dict>
+</plist>
