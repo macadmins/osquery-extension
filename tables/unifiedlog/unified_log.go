@@ -65,12 +65,14 @@ func UnifiedLogColumns() []table.ColumnDefinition {
 		table.TextColumn("time_zone_name"),
 		table.TextColumn("predicate"),
 		table.TextColumn("last"),
+		table.TextColumn("log_level"),
 	}
 }
 
 func UnifiedLogGenerate(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
 	predicate := ""
 	last := ""
+	logLevel := ""
 
 	if constraintList, present := queryContext.Constraints["predicate"]; present {
 		// 'predicate' is in the where clause
@@ -90,6 +92,15 @@ func UnifiedLogGenerate(ctx context.Context, queryContext table.QueryContext) ([
 		}
 	}
 
+	if constraintList, present := queryContext.Constraints["log_level"]; present {
+		// 'last' is in the where clause
+		for _, constraint := range constraintList.Constraints {
+			if constraint.Operator == table.OperatorEquals {
+				logLevel = constraint.Expression
+			}
+		}
+	}
+
 	// If there's no predicate, return empty results. This prevents crashing
 	// osquery or the extension when the table attempts to load everything in
 	// the unified log. This behavior is consistent with osquery tables like
@@ -98,14 +109,14 @@ func UnifiedLogGenerate(ctx context.Context, queryContext table.QueryContext) ([
 		return []map[string]string{}, nil
 	}
 
-	output, err := execute(predicate, last)
+	output, err := execute(predicate, last, logLevel)
 	if err != nil {
 		return nil, err
 	}
 	return output, nil
 }
 
-func execute(predicate string, last string) ([]map[string]string, error) {
+func execute(predicate string, last string, logLevel string) ([]map[string]string, error) {
 	var output []map[string]string
 	var unifiedlogs []UnifiedLog
 	bin := "/usr/bin/log"
@@ -120,6 +131,16 @@ func execute(predicate string, last string) ([]map[string]string, error) {
 		args = append(args, "--last")
 		args = append(args, last)
 	}
+
+	if logLevel == "debug" {
+		args = append(args, "--debug")
+		args = append(args, "--info")
+	}
+
+	if logLevel == "info" {
+		args = append(args, "--info")
+	}
+
 	cmd := exec.Command(bin, args...)
 	stdout, err := cmd.Output()
 	if err != nil {
