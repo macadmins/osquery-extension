@@ -33,6 +33,7 @@ type UnifiedLog struct {
 	ParentActivityIdentifier int       `json:"parentActivityIdentifier"`
 	TimezoneName             string    `json:"timezoneName"`
 }
+
 type Frames struct {
 	ImageOffset int    `json:"imageOffset"`
 	ImageUUID   string `json:"imageUUID"`
@@ -93,7 +94,7 @@ func UnifiedLogGenerate(ctx context.Context, queryContext table.QueryContext) ([
 	}
 
 	if constraintList, present := queryContext.Constraints["log_level"]; present {
-		// 'last' is in the where clause
+		// 'log_level' is in the where clause
 		for _, constraint := range constraintList.Constraints {
 			if constraint.Operator == table.OperatorEquals {
 				logLevel = constraint.Expression
@@ -122,11 +123,6 @@ func execute(predicate string, last string, logLevel string) ([]map[string]strin
 	bin := "/usr/bin/log"
 	args := []string{"show", "--style", "json"}
 
-	if predicate != "" {
-		args = append(args, "--predicate")
-		args = append(args, predicate)
-	}
-
 	if last != "" {
 		args = append(args, "--last")
 		args = append(args, last)
@@ -139,6 +135,11 @@ func execute(predicate string, last string, logLevel string) ([]map[string]strin
 
 	if logLevel == "info" {
 		args = append(args, "--info")
+	}
+
+	if predicate != "" {
+		args = append(args, "--predicate")
+		args = append(args, predicate)
 	}
 
 	cmd := exec.Command(bin, args...)
@@ -171,11 +172,12 @@ func execute(predicate string, last string, logLevel string) ([]map[string]strin
 			"event_message":              item.EventMessage,
 			"process_image_uuid":         item.ProcessImageUUID,
 			"process_id":                 strconv.Itoa(item.ProcessID),
-			"sender_program_countre":     strconv.Itoa(item.SenderProgramCounter),
+			"sender_program_counter":     strconv.Itoa(item.SenderProgramCounter),
 			"parent_activity_identifier": strconv.Itoa(item.ParentActivityIdentifier),
 			"timezone_name":              item.TimezoneName,
 			"predicate":                  predicate,
 			"last":                       last,
+			"log_level":                  logLevel,
 		})
 	}
 
