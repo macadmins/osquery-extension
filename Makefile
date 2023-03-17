@@ -1,5 +1,5 @@
 export GO111MODULE=auto
-include config.mk
+include macadmins.mk
 current_dir = $(shell pwd)
 
 SHELL = /bin/sh

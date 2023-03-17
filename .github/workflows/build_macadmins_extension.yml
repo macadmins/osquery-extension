@@ -1,0 +1,55 @@
+name: Build MacAdmins OSQuery Extension (Manual)
+
+env:
+  VERSION: 0.0.13 # hardcoded for now until we figure out how we want to tackle this
+
+on: [workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: macos-12
+
+    steps:
+    - name: Checkout osquery repo repo
+      uses: actions/checkout@v3.2.0
+      with:
+        fetch-depth: 0
+
+    - name: Install Apple Xcode certificates
+      uses: ssrobins/import-codesign-certs@04ce695a5e6002f1971a8ed78fedd676318f950f # Move back to apple-actions/import-codesign-certs when merged
+      with:
+        keychain-password: ${{ github.run_id }}
+        p12-file-base64: ${{ secrets.APP_CERTIFICATES_P12 }}
+        p12-password: ${{ secrets.APP_CERTIFICATES_P12_PASSWORD }}
+
+    - name: Install Apple Installer certificates
+      uses: ssrobins/import-codesign-certs@04ce695a5e6002f1971a8ed78fedd676318f950f # Move back to apple-actions/import-codesign-certs when merged
+      with:
+        create-keychain: false # do not create a new keychain for this value
+        keychain-password: ${{ github.run_id }}
+        p12-file-base64: ${{ secrets.PKG_CERTIFICATES_P12 }}
+        p12-password: ${{ secrets.PKG_CERTIFICATES_P12_PASSWORD }}
+
+    - name: Run makefile
+      run: make zip
+
+    - name: Generate changelog
+      id: changelog
+      uses: metcalfc/changelog-generator@31b6d6f9e6e17e84ad34bee780f82d8ee79f6842 # v4.0.1
+      with:
+        myToken: ${{ secrets.GITHUB_TOKEN }}
+        reverse: 'true'
+
+    - name: Create Release
+      id: create_release
+      uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v0.1.15
+      with:
+        name: v${{env.VERSION}}
+        tag_name: v${{env.VERSION}}
+        draft: false
+        prerelease: false
+        token: ${{ secrets.GITHUB_TOKEN }}
+        body: |
+            # What's Changed
+            ${{ steps.changelog.outputs.changelog }}
+        files: ${{github.workspace}}/*.zip
