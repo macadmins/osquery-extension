@@ -3,6 +3,7 @@ module github.com/macadmins/osquery-extension
 go 1.18
 
 require (
+	github.com/google/go-cmp v0.5.9
 	github.com/groob/plist v0.0.0-20220217120414-63fa881b19a5
 	github.com/osquery/osquery-go v0.0.0-20220317165851-954ac78f381f
 	github.com/pkg/errors v0.9.1
