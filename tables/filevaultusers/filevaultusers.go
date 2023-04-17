@@ -47,17 +47,44 @@ func FileVaultUsersGenerate(ctx context.Context, queryContext table.QueryContext
 func getFileVaultUsers() ([]FileVaultUser, error) {
 	var users []FileVaultUser
 
+	bytes, err := runFDESetupList()
+
+	if err != nil {
+		return users, errors.Wrap(err, "runFDESetupList")
+	}
+
+	users, err = processFDESetupToUsers(bytes)
+	if err != nil {
+		return users, errors.Wrap(err, "processFDESetupToUsers")
+	}
+
+	return users, nil
+
+}
+
+func runFDESetupList() ([]byte, error) {
+	var out []byte
 	out, err := exec.Command("/usr/bin/fdesetup", "list").Output()
 
 	if err != nil {
-		return users, errors.Wrap(err, "fdesetup list")
+		return out, errors.Wrap(err, "fdesetup list")
 	}
-	scanner := bufio.NewScanner(strings.NewReader(string(out)))
+
+	return out, nil
+}
+
+func processFDESetupToUsers(bytes []byte) ([]FileVaultUser, error) {
+	var users []FileVaultUser
+	scanner := bufio.NewScanner(strings.NewReader(string(bytes)))
 	for scanner.Scan() {
 		if scanner.Text() == "" {
 			continue
 		}
 		split := strings.Split(scanner.Text(), ",")
+		if len(split) != 2 {
+			err := errors.New("Split string does not contain exactly two elements")
+			return users, err
+		}
 		var user FileVaultUser
 		user.Username = split[0]
 		user.UUID = split[1]
@@ -65,5 +92,4 @@ func getFileVaultUsers() ([]FileVaultUser, error) {
 	}
 
 	return users, nil
-
 }
