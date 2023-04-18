@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>_computerlevel</key>
+	<array>
+		<dict>
+			<key>ProfileDescription</key>
+			<string>Enables the macOS firewall</string>
+			<key>ProfileDisplayName</key>
+			<string>Firewall</string>
+			<key>ProfileIdentifier</key>
+			<string>com.company.mdm.com.apple.security.firewall</string>
+			<key>ProfileInstallDate</key>
+			<string>2023-03-31 01:14:38 +0000</string>
+			<key>ProfileItems</key>
+			<array>
+				<dict>
+					<key>PayloadContent</key>
+					<dict>
+						<key>EnableFirewall</key>
+						<true/>
+					</dict>
+					<key>PayloadDisplayName</key>
+					<string>Firewall</string>
+					<key>PayloadIdentifier</key>
+					<string>com.apple.security.firewall</string>
+					<key>PayloadOrganization</key>
+					<string>Company</string>
+					<key>PayloadType</key>
+					<string>com.apple.security.firewall</string>
+					<key>PayloadUUID</key>
+					<string>6EE63BCC-3E7C-48B2-AD15-D078EBAF25D0</string>
+					<key>PayloadVersion</key>
+					<integer>1</integer>
+				</dict>
+			</array>
+			<key>ProfileOrganization</key>
+			<string>Company</string>
+			<key>ProfileType</key>
+			<string>Configuration</string>
+			<key>ProfileUUID</key>
+			<string>597b4018-dbed-5b91-ad38-fd825711cd02</string>
+			<key>ProfileVerificationState</key>
+			<string>verified</string>
+			<key>ProfileVersion</key>
+			<integer>1</integer>
+		</dict>
+		<dict>
+			<key>ProfileDescription</key>
+			<string>Settings for Company Password Policy</string>
+			<key>ProfileDisplayName</key>
+			<string>Password Policy</string>
+			<key>ProfileIdentifier</key>
+			<string>com.company.profiles.PasswordPolicy</string>
+			<key>ProfileInstallDate</key>
+			<string>2023-03-31 01:14:36 +0000</string>
+			<key>ProfileItems</key>
+			<array>
+				<dict>
+					<key>PayloadContent</key>
+					<dict>
+						<key>minLength</key>
+						<integer>100</integer>
+					</dict>
+					<key>PayloadDisplayName</key>
+					<string>Passcode</string>
+					<key>PayloadIdentifier</key>
+					<string>com.company.profiles.PasswordPolicy</string>
+					<key>PayloadType</key>
+					<string>com.apple.mobiledevice.passwordpolicy</string>
+					<key>PayloadUUID</key>
+					<string>8CD569F8-58BF-443C-8CE3-75173D3F19D1</string>
+					<key>PayloadVersion</key>
+					<integer>1</integer>
+				</dict>
+			</array>
+			<key>ProfileOrganization</key>
+			<string>Company</string>
+			<key>ProfileRemovalDisallowed</key>
+			<string>true</string>
+			<key>ProfileType</key>
+			<string>Configuration</string>
+			<key>ProfileUUID</key>
+			<string>45d9e37c-df62-5c6a-9808-18546fcacd22</string>
+			<key>ProfileVerificationState</key>
+			<string>verified</string>
+			<key>ProfileVersion</key>
+			<integer>1</integer>
+		</dict>
+	</array>
+</dict>
+</plist>
