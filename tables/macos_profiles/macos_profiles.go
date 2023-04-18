@@ -39,13 +39,21 @@ func MacOSProfilesColumns() []table.ColumnDefinition {
 
 func MacOSProfilesGenerate(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
 
-	var results []map[string]string
-
-	profiles, err := getInstalledProfiles()
+	theBytes, err := runProfilesCmd()
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "run profiles command")
 	}
 
+	profiles, err := unmarshalProfilesOutput(theBytes)
+	if err != nil {
+		return nil, errors.Wrap(err, "unmarshalProfilesOutput")
+	}
+
+	return generateResults(profiles), nil
+}
+
+func generateResults(profiles profilesOutput) []map[string]string {
+	var results []map[string]string
 	for _, payload := range profiles.ComputerLevel {
 		result := map[string]string{
 			"identifier":         payload.ProfileIdentifier,
@@ -60,20 +68,25 @@ func MacOSProfilesGenerate(ctx context.Context, queryContext table.QueryContext)
 		results = append(results, result)
 	}
 
-	return results, nil
+	return results
+
 }
 
-func getInstalledProfiles() (*profilesOutput, error) {
+func unmarshalProfilesOutput(theBytes []byte) (profilesOutput, error) {
+	var profiles profilesOutput
+	if err := plist.Unmarshal(theBytes, &profiles); err != nil {
+		return profiles, errors.Wrap(err, "unmarshal profiles output")
+	}
+
+	return profiles, nil
+}
+
+func runProfilesCmd() ([]byte, error) {
 	cmd := exec.Command("/usr/bin/profiles", "-C", "-o", "stdout-xml")
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, errors.Wrap(err, "calling /usr/bin/profiles to get profile payloads")
+		return out, errors.Wrap(err, "calling /usr/bin/profiles to get profile payloads")
 	}
 
-	var profiles profilesOutput
-	if err := plist.Unmarshal(out, &profiles); err != nil {
-		return nil, errors.Wrap(err, "unmarshal profiles output")
-	}
-
-	return &profiles, nil
+	return out, nil
 }
