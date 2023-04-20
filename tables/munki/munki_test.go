@@ -5,10 +5,10 @@ import (
 	_ "embed"
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
 
 	"github.com/osquery/osquery-go/plugin/table"
+	"github.com/stretchr/testify/assert"
 )
 
 //go:embed test_ManagedInstallReport.plist
@@ -40,7 +40,7 @@ func TestMunkiInstallsGenerate(t *testing.T) {
 			"display_name":      "Nudge Display Name",
 		},
 	}
-	if !reflect.DeepEqual(rows, expectedRows) {
-		t.Fatalf("rows mismatch: %+v vs. %+v", rows, expectedRows)
-	}
+
+	assert.Equal(t, rows, expectedRows, "Output rows are not equal")
+
 }

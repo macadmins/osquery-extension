@@ -1,10 +1,9 @@
 package filevaultusers
 
 import (
-	"reflect"
 	"testing"
 
-	"github.com/google/go-cmp/cmp"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestProcessFDESetupToUsers(t *testing.T) {
@@ -19,12 +18,9 @@ func TestProcessFDESetupToUsers(t *testing.T) {
 		t.Error(err)
 	}
 
-	if len(output) != 1 {
-		t.Error("Output must only have one element")
-	}
-	if !reflect.DeepEqual(expectedOutput, output) {
-		t.Error(cmp.Diff(expectedOutput, output))
-	}
+	assert.Equal(t, len(output), 1, "Output must only have one element")
+
+	assert.Equal(t, expectedOutput, output, "Expected output does not match real output")
 }
 
 func TestProcessFDESetupToUsersWithIncorrectInput(t *testing.T) {
@@ -34,6 +30,7 @@ func TestProcessFDESetupToUsersWithIncorrectInput(t *testing.T) {
 	if err == nil {
 		t.Error("processFDESetupToUsers did not error when passed a malformed input")
 	}
+
 }
 
 func TestProcessFDESetupToUsersWithMultilineInput(t *testing.T) {
@@ -48,7 +45,6 @@ func TestProcessFDESetupToUsersWithMultilineInput(t *testing.T) {
 		t.Error(err)
 	}
 
-	if !reflect.DeepEqual(expectedOutput, output) {
-		t.Error(cmp.Diff(expectedOutput, output))
-	}
+	assert.Equal(t, expectedOutput, output, "Expected output does not match real output")
+
 }
