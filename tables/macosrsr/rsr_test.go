@@ -7,9 +7,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-//go:embed test_sw_vers_output.txt
-var testSwVersOutput []byte
-
 //go:embed test_SystemVersion.plist
 var testSystemVersion []byte
 
