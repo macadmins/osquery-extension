@@ -30,7 +30,7 @@ func TestMacOSRsrGenerate(t *testing.T) {
 
 					"full_macos_version": "13.3.1 (a)",
 					"macos_version":      "13.3.1",
-					"rsr_compatible":     "true",
+					"rsr_supported":      "true",
 					"rsr_version":        "(a)",
 				},
 			},
@@ -47,7 +47,7 @@ func TestMacOSRsrGenerate(t *testing.T) {
 
 					"full_macos_version": "13.3.1",
 					"macos_version":      "13.3.1",
-					"rsr_compatible":     "true",
+					"rsr_supported":      "true",
 					"rsr_version":        "",
 				},
 			},
@@ -63,7 +63,7 @@ func TestMacOSRsrGenerate(t *testing.T) {
 
 					"full_macos_version": "12.3.1",
 					"macos_version":      "12.3.1",
-					"rsr_compatible":     "false",
+					"rsr_supported":      "false",
 					"rsr_version":        "",
 				},
 			},
