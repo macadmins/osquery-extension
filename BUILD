@@ -38,27 +38,51 @@ go_library(
 )
 
 go_binary(
-    name = "osquery-extension-arm",
+    name = "osquery-extension-mac-arm",
     embed = [":osquery-extension_lib"],
-    visibility = ["//visibility:public"],
     goarch = "arm64",
     goos = "darwin",
+    visibility = ["//visibility:public"],
 )
 
 go_binary(
-    name = "osquery-extension-win",
+    name = "osquery-extension-mac-amd",
     embed = [":osquery-extension_lib"],
-    visibility = ["//visibility:public"],
-    goarch = "amd64",
-    goos = "windows",
-)
-
-go_binary(
-    name = "osquery-extension-amd",
-    embed = [":osquery-extension_lib"],
-    visibility = ["//visibility:public"],
     goarch = "amd64",
     goos = "darwin",
+    visibility = ["//visibility:public"],
+)
+
+go_binary(
+    name = "osquery-extension-win-arm",
+    embed = [":osquery-extension_lib"],
+    goarch = "arm64",
+    goos = "windows",
+    visibility = ["//visibility:public"],
+)
+
+go_binary(
+    name = "osquery-extension-win-amd",
+    embed = [":osquery-extension_lib"],
+    goarch = "amd64",
+    goos = "windows",
+    visibility = ["//visibility:public"],
+)
+
+go_binary(
+    name = "osquery-extension-linux-amd",
+    embed = [":osquery-extension_lib"],
+    goarch = "amd64",
+    goos = "linux",
+    visibility = ["//visibility:public"],
+)
+
+go_binary(
+    name = "osquery-extension-linux-arm",
+    embed = [":osquery-extension_lib"],
+    goarch = "arm64",
+    goos = "linux",
+    visibility = ["//visibility:public"],
 )
 
 # pkg_zip(
