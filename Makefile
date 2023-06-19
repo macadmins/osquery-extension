@@ -30,6 +30,15 @@ clean:
 	@sudo /bin/rm -rf ${PKGDIR_TMP}*
 	@sudo /bin/rm -f macadmins_extension.zip
 
+gazelle:
+	bazel run //:gazelle
+
+update-repos:
+	bazel run //:gazelle-update-repos
+
+test:
+	bazel test --test_output=errors //...
+
 build: .pre-build
 	GOOS=darwin GOARCH=amd64 go build -o build/darwin/${APP_NAME}.amd64.ext
 	GOOS=darwin GOARCH=arm64 go build -o build/darwin/${APP_NAME}.arm64.ext

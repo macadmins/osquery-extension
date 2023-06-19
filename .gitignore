@@ -3,3 +3,4 @@ vendor/
 macadmins_extension
 *.zip
 config.mk
+bazel-*

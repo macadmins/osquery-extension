@@ -1,0 +1,19 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "filevaultusers",
+    srcs = ["filevaultusers.go"],
+    importpath = "github.com/macadmins/osquery-extension/tables/filevaultusers",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_github_osquery_osquery_go//plugin/table",
+        "@com_github_pkg_errors//:errors",
+    ],
+)
+
+go_test(
+    name = "filevaultusers_test",
+    srcs = ["filevaultusers_test.go"],
+    embed = [":filevaultusers"],
+    deps = ["@com_github_stretchr_testify//assert"],
+)
