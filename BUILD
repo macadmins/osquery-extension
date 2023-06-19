@@ -53,13 +53,13 @@ go_binary(
     visibility = ["//visibility:public"],
 )
 
-# go_binary(
-#     name = "osquery-extension-win-arm",
-#     embed = [":osquery-extension_lib"],
-#     goarch = "arm64",
-#     goos = "windows",
-#     visibility = ["//visibility:public"],
-# )
+go_binary(
+    name = "osquery-extension-win-arm",
+    embed = [":osquery-extension_lib"],
+    goarch = "arm64",
+    goos = "windows",
+    visibility = ["//visibility:public"],
+)
 
 go_binary(
     name = "osquery-extension-win-amd",
