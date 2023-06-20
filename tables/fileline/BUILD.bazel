@@ -1,0 +1,12 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "fileline",
+    srcs = ["file_line.go"],
+    importpath = "github.com/macadmins/osquery-extension/tables/fileline",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/utils",
+        "@com_github_osquery_osquery_go//plugin/table",
+    ],
+)

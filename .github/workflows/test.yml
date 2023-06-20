@@ -3,8 +3,7 @@ name: Go build & test
 on: [push]
 
 jobs:
-  build:
-
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -12,10 +11,19 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: 1.18
-
-      - name: Build
-        run: go build -v ./...
+          go-version: ${{ env.GO_VERSION }}
 
       - name: Test
-        run: go test -v ./...
+        run: make test
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Build
+        run: make build

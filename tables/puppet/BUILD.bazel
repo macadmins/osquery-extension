@@ -1,0 +1,19 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "puppet",
+    srcs = [
+        "puppet_facts.go",
+        "puppet_info.go",
+        "puppet_logs.go",
+        "puppet_state.go",
+        "yaml.go",
+    ],
+    importpath = "github.com/macadmins/osquery-extension/tables/puppet",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_github_osquery_osquery_go//plugin/table",
+        "@com_github_pkg_errors//:errors",
+        "@in_gopkg_yaml_v3//:yaml_v3",
+    ],
+)

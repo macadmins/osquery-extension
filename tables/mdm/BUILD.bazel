@@ -1,0 +1,14 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "mdm",
+    srcs = ["mdm.go"],
+    importpath = "github.com/macadmins/osquery-extension/tables/mdm",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/utils",
+        "@com_github_groob_plist//:plist",
+        "@com_github_osquery_osquery_go//plugin/table",
+        "@com_github_pkg_errors//:errors",
+    ],
+)

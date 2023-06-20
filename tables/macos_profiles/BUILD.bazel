@@ -1,0 +1,21 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "macos_profiles",
+    srcs = ["macos_profiles.go"],
+    importpath = "github.com/macadmins/osquery-extension/tables/macos_profiles",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_github_groob_plist//:plist",
+        "@com_github_osquery_osquery_go//plugin/table",
+        "@com_github_pkg_errors//:errors",
+    ],
+)
+
+go_test(
+    name = "macos_profiles_test",
+    srcs = ["macos_profiles_test.go"],
+    embed = [":macos_profiles"],
+    embedsrcs = ["test_profiles_stdout.plist"],
+    deps = ["@com_github_stretchr_testify//assert"],
+)

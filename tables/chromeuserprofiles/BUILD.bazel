@@ -1,0 +1,19 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "chromeuserprofiles",
+    srcs = ["chrome_user_profiles.go"],
+    importpath = "github.com/macadmins/osquery-extension/tables/chromeuserprofiles",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_github_osquery_osquery_go//plugin/table",
+        "@com_github_pkg_errors//:errors",
+    ],
+)
+
+go_test(
+    name = "chromeuserprofiles_test",
+    srcs = ["chrome_user_profiles_test.go"],
+    embed = [":chromeuserprofiles"],
+    deps = ["@com_github_stretchr_testify//assert"],
+)
