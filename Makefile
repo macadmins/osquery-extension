@@ -34,7 +34,7 @@ gazelle:
 	bazel run //:gazelle
 
 update-repos:
-	bazel run //:gazelle-update-repos
+	bazel run //:gazelle-update-repos -- -from_file=go.mod
 
 test:
 	bazel test --test_output=errors //...
@@ -51,7 +51,7 @@ build: .pre-build
 	bazel build //:osquery-extension-linux-amd
 	bazel build //:osquery-extension-linux-arm
 	bazel build //:osquery-extension-win-amd
-	# bazel build //:osquery-extension-win-arm
+	bazel build //:osquery-extension-win-arm
 	tools/bazel_to_builddir.sh
 
 osqueryi: build

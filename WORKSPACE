@@ -40,13 +40,6 @@ go_repository(
 
 load("//:deps.bzl", "go_dependencies")
 
-go_repository(
-    name = "org_golang_x_term",
-    importpath = "golang.org/x/term",
-    sum = "h1:GRRCnKYhdQrD8kfRAdQ6Zcw1P0OcELxGLKJvtjVMZ28=",
-    version = "v0.9.0",
-)
-
 # gazelle:repository_macro deps.bzl%go_dependencies
 go_dependencies()
 
