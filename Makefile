@@ -39,6 +39,11 @@ update-repos:
 test:
 	bazel test --test_output=errors //...
 
+coverage:
+	mkdir -p coverage
+	bazel coverage --combined_report=lcov //...
+	mv $(bazel info output_path)/_coverage/_coverage_report.dat coverage/lcov.info
+
 build: .pre-build
 	# GOOS=darwin GOARCH=amd64 go build -o build/darwin/${APP_NAME}.amd64.ext
 	# GOOS=darwin GOARCH=arm64 go build -o build/darwin/${APP_NAME}.arm64.ext

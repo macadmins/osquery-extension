@@ -12,10 +12,18 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: 1.20
+          go-version: 1.20.5
 
       - name: Build
         run: make build
 
       - name: Test
         run: make test
+      
+      - name: Test Coverage
+        run: make coverage
+        
+      - name: Code Coverage
+        uses: romeovs/lcov-reporter-action@v0.2.16
+        with:
+          lcov-file: ./coverage/lcov.info
