@@ -31,11 +31,13 @@ func TestFindFileInUserDirs(t *testing.T) {
 
 	// Create a user directory inside the temporary directory
 	userDir := filepath.Join(tempDir, "testuser")
-	os.Mkdir(userDir, os.ModePerm)
+	err := os.Mkdir(userDir, os.ModePerm)
+	assert.NoError(t, err)
 
 	// Create a test file inside the user directory
 	testFile := filepath.Join(userDir, "testfile.txt")
-	os.WriteFile(testFile, []byte("test data"), os.ModePerm)
+	err = os.WriteFile(testFile, []byte("test data"), os.ModePerm)
+	assert.NoError(t, err)
 
 	// Set the home directory location for the current platform
 	homeDirLocations[runtime.GOOS] = []string{tempDir}
@@ -78,7 +80,8 @@ func TestGenerateForPath(t *testing.T) {
 		}
 	}`
 
-	os.WriteFile(localStateFile, []byte(localStateData), os.ModePerm)
+	err := os.WriteFile(localStateFile, []byte(localStateData), os.ModePerm)
+	assert.NoError(t, err)
 
 	// Test generateForPath
 	fileInfo := userFileInfo{
