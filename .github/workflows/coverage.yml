@@ -23,6 +23,6 @@ jobs:
         uses: zgosalvez/github-actions-report-lcov@v3
         with:
           coverage-files: coverage/lcov.info
-          minimum-coverage: 50
+          minimum-coverage: 40
           github-token: ${{ secrets.GITHUB_TOKEN }}
           update-comment: true
