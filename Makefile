@@ -4,10 +4,14 @@ current_dir = $(shell pwd)
 
 SHELL = /bin/sh
 
+BAZEL_OUTPUT_PATH := $(shell bazel info output_path)
+
 APP_NAME = macadmins_extension
 PKGDIR_TMP = ${TMPDIR}golang
 
 all: build
+
+.PHONY: clean .pre-build deps init gazelle update-repos test coverage build osqueryi zip
 
 .pre-build: clean
 	mkdir -p build/darwin
@@ -40,9 +44,10 @@ test:
 	bazel test --test_output=errors //...
 
 coverage:
+	rm -rf coverage
 	mkdir -p coverage
 	bazel coverage --combined_report=lcov //...
-	mv $(bazel info output_path)/_coverage/_coverage_report.dat coverage/lcov.info
+	mv $(BAZEL_OUTPUT_PATH)/_coverage/_coverage_report.dat coverage/lcov.info
 
 build: .pre-build
 	# GOOS=darwin GOARCH=amd64 go build -o build/darwin/${APP_NAME}.amd64.ext
