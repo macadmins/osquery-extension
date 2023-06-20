@@ -1,4 +1,4 @@
-load("@io_bazel_rules_go//go:def.bzl", "go_library")
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "chromeuserprofiles",
@@ -9,4 +9,11 @@ go_library(
         "@com_github_osquery_osquery_go//plugin/table",
         "@com_github_pkg_errors//:errors",
     ],
+)
+
+go_test(
+    name = "chromeuserprofiles_test",
+    srcs = ["chrome_user_profiles_test.go"],
+    embed = [":chromeuserprofiles"],
+    deps = ["@com_github_stretchr_testify//assert"],
 )
