@@ -1,6 +1,6 @@
 name: Test Coverage
 
-on: [push]
+on: [pull_request]
 
 jobs:
   build:
