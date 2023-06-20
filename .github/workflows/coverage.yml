@@ -1,0 +1,28 @@
+name: Test Coverage
+
+on: [push]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      
+      - name: Test Coverage
+        run: make coverage
+        
+      - name: Setup LCOV
+        uses: hrishikesh-kadam/setup-lcov@v1
+      - name: Report code coverage
+        uses: zgosalvez/github-actions-report-lcov@v3
+        with:
+          coverage-files: coverage/lcov.info
+          minimum-coverage: 50
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          update-comment: true
