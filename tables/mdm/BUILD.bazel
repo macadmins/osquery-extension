@@ -1,4 +1,4 @@
-load("@io_bazel_rules_go//go:def.bzl", "go_library")
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "mdm",
@@ -10,5 +10,15 @@ go_library(
         "@com_github_groob_plist//:plist",
         "@com_github_osquery_osquery_go//plugin/table",
         "@com_github_pkg_errors//:errors",
+    ],
+)
+
+go_test(
+    name = "mdm_test",
+    srcs = ["mdm_test.go"],
+    embed = [":mdm"],
+    deps = [
+        "@com_github_osquery_osquery_go//plugin/table",
+        "@com_github_stretchr_testify//assert",
     ],
 )
