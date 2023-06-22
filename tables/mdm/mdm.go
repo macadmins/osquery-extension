@@ -100,28 +100,30 @@ func MDMInfoGenerate(
 	var enrollProfileItems []profileItem
 	var results []map[string]string
 	var mdmResults map[string]string
-	for _, payload := range profiles.ComputerLevel {
-		for _, item := range payload.ProfileItems {
-			if item.PayloadContent == nil {
-				continue
-			}
-			if item.PayloadType == "com.apple.mdm" {
-				enrollProfile := item.PayloadContent
-				enrollProfileItems = payload.ProfileItems
-				mdmResults = map[string]string{
-					"enrolled":                  "true",
-					"server_url":                enrollProfile.ServerURL,
-					"checkin_url":               enrollProfile.CheckInURL,
-					"access_rights":             strconv.Itoa(enrollProfile.AccessRights),
-					"install_date":              payload.ProfileInstallDate,
-					"payload_identifier":        payload.ProfileIdentifier,
-					"sign_message":              strconv.FormatBool(enrollProfile.SignMessage),
-					"topic":                     enrollProfile.Topic,
-					"identity_certificate_uuid": enrollProfile.IdentityCertificateUUID,
-					"installed_from_dep":        depEnrolled,
-					"user_approved":             userApproved,
+	if profiles != nil {
+		for _, payload := range profiles.ComputerLevel {
+			for _, item := range payload.ProfileItems {
+				if item.PayloadContent == nil {
+					continue
 				}
-				break
+				if item.PayloadType == "com.apple.mdm" {
+					enrollProfile := item.PayloadContent
+					enrollProfileItems = payload.ProfileItems
+					mdmResults = map[string]string{
+						"enrolled":                  "true",
+						"server_url":                enrollProfile.ServerURL,
+						"checkin_url":               enrollProfile.CheckInURL,
+						"access_rights":             strconv.Itoa(enrollProfile.AccessRights),
+						"install_date":              payload.ProfileInstallDate,
+						"payload_identifier":        payload.ProfileIdentifier,
+						"sign_message":              strconv.FormatBool(enrollProfile.SignMessage),
+						"topic":                     enrollProfile.Topic,
+						"identity_certificate_uuid": enrollProfile.IdentityCertificateUUID,
+						"installed_from_dep":        depEnrolled,
+						"user_approved":             userApproved,
+					}
+					break
+				}
 			}
 		}
 	}
