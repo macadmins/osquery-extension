@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -56,7 +57,9 @@ type cloudConfigTimerCheck struct {
 }
 
 const CloudConfigRecordFound = "/private/var/db/ConfigurationProfiles/Settings/.cloudConfigRecordFound"
+
 const CloudConfigRecordNotFound = "/private/var/db/ConfigurationProfiles/Settings/.cloudConfigRecordNotFound"
+
 const CloudConfigTimerCheck = "/private/var/db/ConfigurationProfiles/Settings/.cloudConfigTimerCheck"
 
 func MDMInfoColumns() []table.ColumnDefinition {
@@ -77,7 +80,10 @@ func MDMInfoColumns() []table.ColumnDefinition {
 	}
 }
 
-func MDMInfoGenerate(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
+func MDMInfoGenerate(
+	ctx context.Context,
+	queryContext table.QueryContext,
+) ([]map[string]string, error) {
 	// There might not be any profiles installed, but we still care if the device is DEP capable, so discard the error
 	profiles, _ := getMDMProfile()
 
@@ -94,28 +100,30 @@ func MDMInfoGenerate(ctx context.Context, queryContext table.QueryContext) ([]ma
 	var enrollProfileItems []profileItem
 	var results []map[string]string
 	var mdmResults map[string]string
-	for _, payload := range profiles.ComputerLevel {
-		for _, item := range payload.ProfileItems {
-			if item.PayloadContent == nil {
-				continue
-			}
-			if item.PayloadType == "com.apple.mdm" {
-				enrollProfile := item.PayloadContent
-				enrollProfileItems = payload.ProfileItems
-				mdmResults = map[string]string{
-					"enrolled":                  "true",
-					"server_url":                enrollProfile.ServerURL,
-					"checkin_url":               enrollProfile.CheckInURL,
-					"access_rights":             strconv.Itoa(enrollProfile.AccessRights),
-					"install_date":              payload.ProfileInstallDate,
-					"payload_identifier":        payload.ProfileIdentifier,
-					"sign_message":              strconv.FormatBool(enrollProfile.SignMessage),
-					"topic":                     enrollProfile.Topic,
-					"identity_certificate_uuid": enrollProfile.IdentityCertificateUUID,
-					"installed_from_dep":        depEnrolled,
-					"user_approved":             userApproved,
+	if profiles != nil {
+		for _, payload := range profiles.ComputerLevel {
+			for _, item := range payload.ProfileItems {
+				if item.PayloadContent == nil {
+					continue
 				}
-				break
+				if item.PayloadType == "com.apple.mdm" {
+					enrollProfile := item.PayloadContent
+					enrollProfileItems = payload.ProfileItems
+					mdmResults = map[string]string{
+						"enrolled":                  "true",
+						"server_url":                enrollProfile.ServerURL,
+						"checkin_url":               enrollProfile.CheckInURL,
+						"access_rights":             strconv.Itoa(enrollProfile.AccessRights),
+						"install_date":              payload.ProfileInstallDate,
+						"payload_identifier":        payload.ProfileIdentifier,
+						"sign_message":              strconv.FormatBool(enrollProfile.SignMessage),
+						"topic":                     enrollProfile.Topic,
+						"identity_certificate_uuid": enrollProfile.IdentityCertificateUUID,
+						"installed_from_dep":        depEnrolled,
+						"user_approved":             userApproved,
+					}
+					break
+				}
 			}
 		}
 	}
@@ -149,19 +157,31 @@ func getMDMProfile() (*profilesOutput, error) {
 }
 
 func getMDMProfileStatus() (profileStatus, error) {
+	if !utils.FileExists("/usr/bin/profiles") {
+		return profileStatus{}, errors.New("mdm: /usr/bin/profiles does not exist")
+	}
 	cmd := exec.Command("/usr/bin/profiles", "status", "-type", "enrollment")
 	out, err := cmd.Output()
 	if err != nil {
-		return profileStatus{}, errors.Wrap(err, "calling /usr/bin/profiles to get MDM profile status")
+		return profileStatus{}, errors.Wrap(
+			err,
+			"calling /usr/bin/profiles to get MDM profile status",
+		)
 	}
 	lines := bytes.Split(out, []byte("\n"))
 	depEnrollmentParts := bytes.SplitN(lines[0], []byte(":"), 2)
 	if len(depEnrollmentParts) < 2 {
-		return profileStatus{}, errors.Errorf("mdm: could not split the DEP Enrollment source %s", string(out))
+		return profileStatus{}, errors.Errorf(
+			"mdm: could not split the DEP Enrollment source %s",
+			string(out),
+		)
 	}
 	enrollmentStatusParts := bytes.SplitN(lines[1], []byte(":"), 2)
 	if len(enrollmentStatusParts) < 2 {
-		return profileStatus{}, errors.Errorf("mdm: could not split the DEP Enrollment status %s", string(out))
+		return profileStatus{}, errors.Errorf(
+			"mdm: could not split the DEP Enrollment status %s",
+			string(out),
+		)
 	}
 	return profileStatus{
 		DEPEnrolled:  bytes.Contains(depEnrollmentParts[1], []byte("Yes")),
@@ -171,6 +191,9 @@ func getMDMProfileStatus() (profileStatus, error) {
 
 // Either get the live DEP capability status, or return from the cache if needed.
 func getDEPStatus(status profileStatus) depStatus {
+	if runtime.GOOS != "darwin" {
+		return depStatus{}
+	}
 	// if we are enrolled via dep, we are by definion dep capable
 	if status.DEPEnrolled {
 		return depStatus{DEPCapable: true}

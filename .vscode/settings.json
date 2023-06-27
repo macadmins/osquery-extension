@@ -1,0 +1,19 @@
+{
+    "emeraldwalk.runonsave": {
+        "commands": [
+            {
+                "match": ".*",
+                "isAsync": true,
+                "cmd": "make gazelle"
+            },
+            {
+                "match": "go.mod",
+                "cmd": "make update-repos"
+            },
+            {
+                "match": "go.sum",
+                "cmd": "make update-repos"
+            }
+        ]
+    }
+}
