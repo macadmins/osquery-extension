@@ -199,7 +199,7 @@ func getDEPStatus(status profileStatus) depStatus {
 		return depStatus{DEPCapable: true}
 	}
 	var depstatus depStatus
-	hasAlreadyChecked := hasCheckedCloudConfigInPast24Hours()
+	hasAlreadyChecked := hasCheckedCloudConfigInPast24Hours(CloudConfigTimerCheck)
 	if !hasAlreadyChecked {
 		cmd := exec.Command("/usr/bin/profiles", "show", "-type", "enrollment")
 		out, err := cmd.CombinedOutput()
@@ -225,14 +225,16 @@ func getDEPStatus(status profileStatus) depStatus {
 	return depstatus
 }
 
-// Returns true if the device has checked it's cloud config record in the past hour, false if the file is missing or the time is more thab 24 hours ago
-func hasCheckedCloudConfigInPast24Hours() bool {
-	if !utils.FileExists(CloudConfigTimerCheck) {
+// hasCheckedCloudConfigInPast24Hours returns true if the device has checked
+// it's cloud config record in the past 24 hours, false if the file is missing
+// or the time is more than 24 hours ago.
+func hasCheckedCloudConfigInPast24Hours(cloudConfigPath string) bool {
+	if !utils.FileExists(cloudConfigPath) {
 		return false
 	}
 
 	var cloudConfigTimerCheck cloudConfigTimerCheck
-	plistFile, err := os.Open(CloudConfigTimerCheck)
+	plistFile, err := os.Open(cloudConfigPath)
 	if err != nil {
 		// could not open file
 		return false
@@ -251,7 +253,7 @@ func hasCheckedCloudConfigInPast24Hours() bool {
 	}
 
 	dayAgo := time.Now().Add(-24 * time.Hour)
-	return !cloudConfigTimerCheck.LastCloudConfigCheckTime.After(dayAgo)
+	return cloudConfigTimerCheck.LastCloudConfigCheckTime.After(dayAgo)
 
 }
 
