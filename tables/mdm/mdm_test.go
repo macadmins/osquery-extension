@@ -2,7 +2,10 @@ package mdm
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"testing"
+	"time"
 
 	"github.com/osquery/osquery-go/plugin/table"
 	"github.com/stretchr/testify/assert"
@@ -79,9 +82,26 @@ func TestGetDEPStatus(t *testing.T) {
 
 // TestHasCheckedCloudConfigInPast24Hours tests the hasCheckedCloudConfigInPast24Hours function
 func TestHasCheckedCloudConfigInPast24Hours(t *testing.T) {
-	result := hasCheckedCloudConfigInPast24Hours()
+	cases := []struct {
+		name                string
+		cloudConfigContents string
+		want                bool
+	}{
+		{"empty contents", "", false},
+		{"invalid xml", "invalid", false},
+		{"date in the past", generateCloudConfigContents(time.Now().Add(-48 * time.Hour)), false},
+		{"date in the last 24 hours", generateCloudConfigContents(time.Now().Add(-1 * time.Hour)), true},
+	}
 
-	assert.NotNil(t, result)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tmpFile, err := os.CreateTemp(t.TempDir(), "")
+			assert.NoError(t, err)
+			_, err = tmpFile.WriteString(c.cloudConfigContents)
+			assert.NoError(t, err)
+			assert.Equal(t, c.want, hasCheckedCloudConfigInPast24Hours(tmpFile.Name()))
+		})
+	}
 }
 
 // TestGetCachedDEPStatus tests the getCachedDEPStatus function
@@ -89,4 +109,18 @@ func TestGetCachedDEPStatus(t *testing.T) {
 	result := getCachedDEPStatus()
 
 	assert.NotNil(t, result)
+}
+
+func generateCloudConfigContents(t time.Time) string {
+	template := `
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+        <key>lastCloudConfigCheckTime</key>
+        <date>%s</date>
+</dict>
+</plist>
+  `
+	return fmt.Sprintf(template, t.Format("2006-01-02T15:04:05Z"))
 }
