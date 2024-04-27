@@ -23,7 +23,7 @@ var testData []byte
 func TestDownloadSofaJSON(t *testing.T) {
 	// start a local HTTP server to serve the test data
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write(testData)
+		w.Write(testData) //nolint:errcheck
 	}))
 
 	client := NewSofaClient(WithURL(server.URL))
