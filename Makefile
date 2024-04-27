@@ -50,12 +50,6 @@ coverage:
 	mv $(BAZEL_OUTPUT_PATH)/_coverage/_coverage_report.dat coverage/lcov.info
 
 build: .pre-build
-	# GOOS=darwin GOARCH=amd64 go build -o build/darwin/${APP_NAME}.amd64.ext
-	# GOOS=darwin GOARCH=arm64 go build -o build/darwin/${APP_NAME}.arm64.ext
-	# GOOS=linux GOARCH=amd64  go build -o build/linux/${APP_NAME}.amd64.ext
-	# GOOS=linux GOARCH=arm64  go build -o build/linux/${APP_NAME}.arm64.ext
-	# GOOS=windows GOARCH=amd64  go build -o build/windows/${APP_NAME}.amd64.ext.exe
-	# GOOS=windows GOARCH=arm64  go build -o build/windows/${APP_NAME}.arm64.ext.exe
 	bazel build //:osquery-extension-mac-amd
 	bazel build //:osquery-extension-mac-arm
 	bazel build //:osquery-extension-linux-amd
@@ -66,7 +60,7 @@ build: .pre-build
 
 osqueryi: build
 	sleep 2
-	osqueryi --extension=build/darwin/macadmins_extension.ext --allow_unsafe
+	osqueryi --extension=build/darwin/macadmins_extension.arm64.ext --allow_unsafe
 
 zip: build
 	/usr/bin/lipo -create -output build/darwin/${APP_NAME}.ext build/darwin/${APP_NAME}.amd64.ext build/darwin/${APP_NAME}.arm64.ext
