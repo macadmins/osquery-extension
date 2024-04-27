@@ -49,13 +49,13 @@ func TestWithEndpoint(t *testing.T) {
 	assert.Equal(t, "http://example.com", client.endpoint)
 }
 
-func TestGetSecurityReleaseInfoForCurrentOSVersion(t *testing.T) {
+func TestGetSecurityReleaseInfoForOSVersion(t *testing.T) {
 	tests := []struct {
-		name        string
-		root        Root
-		osVersion   string
-		wantVersion string
-		wantErr     bool
+		name         string
+		root         Root
+		osVersion    string
+		wantVersions []string
+		wantErr      bool
 	}{
 		{
 			name: "security release info found",
@@ -70,9 +70,9 @@ func TestGetSecurityReleaseInfoForCurrentOSVersion(t *testing.T) {
 					},
 				},
 			},
-			osVersion:   "10.0",
-			wantVersion: "10.0",
-			wantErr:     false,
+			osVersion:    "9.0",
+			wantVersions: []string{"10.0"},
+			wantErr:      false,
 		},
 		{
 			name: "security release info not found",
@@ -94,12 +94,16 @@ func TestGetSecurityReleaseInfoForCurrentOSVersion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := getSecurityReleaseInfoForCurrentOSVersion(tt.root, tt.osVersion)
+			got, err := getSecurityReleaseInfoForOSVersion(tt.root, tt.osVersion)
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
-				assert.Equal(t, tt.wantVersion, got.ProductVersion)
+				gotVersions := make([]string, len(got))
+				for i, release := range got {
+					gotVersions[i] = release.ProductVersion
+				}
+				assert.Equal(t, tt.wantVersions, gotVersions)
 			}
 		})
 	}

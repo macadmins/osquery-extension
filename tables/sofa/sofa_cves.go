@@ -28,12 +28,36 @@ func SofaUnpatchedCVEsColumns() []table.ColumnDefinition {
 func SofaUnpatchedCVEsGenerate(ctx context.Context, queryContext table.QueryContext, socketPath string) ([]map[string]string, error) {
 	url := SofaV1URL
 	if constraintList, present := queryContext.Constraints["url"]; present {
-		// 'path' is in the where clause
+		// 'url' is in the where clause
 		for _, constraint := range constraintList.Constraints {
 			// =
 			if constraint.Operator == table.OperatorEquals {
 				url = constraint.Expression
 			}
+		}
+	}
+	osVersion := ""
+	if constraintList, present := queryContext.Constraints["os_version"]; present {
+		// 'os_version' is in the where clause
+		for _, constraint := range constraintList.Constraints {
+			// =
+			if constraint.Operator == table.OperatorEquals {
+				osVersion = constraint.Expression
+			}
+		}
+	}
+
+	if osVersion == "" {
+		// get the current device os version from osquery
+		osqueryClient, err := osquery.NewClient(socketPath, 10*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		defer osqueryClient.Close()
+
+		osVersion, err = getCurrentOSVersion(osqueryClient)
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -44,17 +68,6 @@ func SofaUnpatchedCVEsGenerate(ctx context.Context, queryContext table.QueryCont
 	}
 
 	var results []map[string]string
-	// get the current device os version from osquery
-	osqueryClient, err := osquery.NewClient(socketPath, 10*time.Second)
-	if err != nil {
-		return nil, err
-	}
-	defer osqueryClient.Close()
-
-	osVersion, err := getCurrentOSVersion(osqueryClient)
-	if err != nil {
-		return nil, err
-	}
 
 	// get all unpatched cves (for any os version that is higher than the current os version)
 	unpatchedCVEs, err := getUnpatchedCVEs(root, osVersion)
