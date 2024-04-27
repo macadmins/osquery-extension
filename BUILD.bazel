@@ -24,6 +24,7 @@ go_library(
         "//tables/chromeuserprofiles",
         "//tables/fileline",
         "//tables/filevaultusers",
+        "//tables/macos_profiles",
         "//tables/macosrsr",
         "//tables/mdm",
         "//tables/munki",
