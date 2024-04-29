@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"runtime"
@@ -17,6 +18,8 @@ import (
 	"github.com/macadmins/osquery-extension/tables/pendingappleupdates"
 	"github.com/macadmins/osquery-extension/tables/puppet"
 	"github.com/macadmins/osquery-extension/tables/unifiedlog"
+
+	"github.com/macadmins/osquery-extension/tables/sofa"
 	osquery "github.com/osquery/osquery-go"
 	"github.com/osquery/osquery-go/plugin/table"
 )
@@ -70,6 +73,12 @@ func main() {
 			table.NewPlugin("pending_apple_updates", pendingappleupdates.PendingAppleUpdatesColumns(), pendingappleupdates.PendingAppleUpdatesGenerate),
 			table.NewPlugin("macadmins_unified_log", unifiedlog.UnifiedLogColumns(), unifiedlog.UnifiedLogGenerate),
 			table.NewPlugin("macos_rsr", macosrsr.MacOSRsrColumns(), macosrsr.MacOSRsrGenerate),
+			table.NewPlugin("sofa_security_release_info", sofa.SofaSecurityReleaseInfoColumns(), func(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
+				return sofa.SofaSecurityReleaseInfoGenerate(ctx, queryContext, *flSocketPath)
+			}),
+			table.NewPlugin("sofa_unpatched_cves", sofa.SofaUnpatchedCVEsColumns(), func(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
+				return sofa.SofaUnpatchedCVEsGenerate(ctx, queryContext, *flSocketPath)
+			}),
 		}
 		plugins = append(plugins, darwinPlugins...)
 	}

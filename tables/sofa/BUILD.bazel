@@ -1,0 +1,27 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "sofa",
+    srcs = [
+        "sofa_cves.go",
+        "sofa_info.go",
+    ],
+    importpath = "github.com/macadmins/osquery-extension/tables/sofa",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_github_hashicorp_go_version//:go-version",
+        "@com_github_osquery_osquery_go//:osquery-go",
+        "@com_github_osquery_osquery_go//plugin/table",
+    ],
+)
+
+go_test(
+    name = "sofa_test",
+    srcs = [
+        "sofa_cves_test.go",
+        "sofa_info_test.go",
+    ],
+    embed = [":sofa"],
+    embedsrcs = ["test_data.json"],
+    deps = ["@com_github_stretchr_testify//assert"],
+)

@@ -31,6 +31,7 @@ go_library(
         "//tables/networkquality",
         "//tables/pendingappleupdates",
         "//tables/puppet",
+        "//tables/sofa",
         "//tables/unifiedlog",
         "@com_github_osquery_osquery_go//:osquery-go",
         "@com_github_osquery_osquery_go//plugin/table",
