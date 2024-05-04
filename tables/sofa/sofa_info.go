@@ -109,7 +109,6 @@ type SofaClient struct {
 	etag       string
 	cacheFile  string
 	etagFile   string
-	usingCache bool
 }
 
 func WithLocalCache(cacheFile, etagFile string) Option {
@@ -176,7 +175,6 @@ func (s *SofaClient) downloadSofaJSON() (Root, error) {
 
 	// If Etags match, load from local file
 	if etag == s.etag {
-		s.usingCache = true
 		file, err := os.Open(s.cacheFile)
 		if err != nil {
 			return root, err
