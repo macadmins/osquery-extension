@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 type MockOsqueryClient struct{}
@@ -63,11 +62,11 @@ func TestDownloadSofaJSON(t *testing.T) {
 
 	root, err := client.downloadSofaJSON()
 	assert.Equal(t, "2024-04-27T00:48:06+00:00Z", root.LastCheck)
-	require.NoError(t, err, "Failed to download JSON")
+	assert.NoError(t, err, "Failed to download JSON")
 
 	etag, err := os.ReadFile(testEtagFile)
 	assert.NoError(t, err, "Failed to read etag file")
-	require.Equal(t, etagValue, string(etag), "Etag value is not correctly stored")
+	assert.Equal(t, etagValue, string(etag), "Etag value is not correctly stored")
 }
 
 func TestNewSofaClient(t *testing.T) {
