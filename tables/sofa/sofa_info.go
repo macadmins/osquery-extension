@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -96,14 +98,25 @@ type previousUMA struct {
 
 type Option func(*SofaClient)
 
-type SofaClient struct {
-	endpoint   string
-	httpClient *http.Client
-}
-
 type OsqueryClient interface {
 	QueryRow(query string) (map[string]string, error)
 	Close()
+}
+
+type SofaClient struct {
+	endpoint   string
+	httpClient *http.Client
+	etag       string
+	cacheFile  string
+	etagFile   string
+	usingCache bool
+}
+
+func WithLocalCache(cacheFile, etagFile string) Option {
+	return func(s *SofaClient) {
+		s.cacheFile = cacheFile
+		s.etagFile = etagFile
+	}
 }
 
 func WithURL(url string) Option {
@@ -118,37 +131,99 @@ func WithHTTPClient(client *http.Client) Option {
 	}
 }
 
-func NewSofaClient(opts ...Option) *SofaClient {
+func NewSofaClient(opts ...Option) (*SofaClient, error) {
+
+	tempDir := os.TempDir()
 	s := &SofaClient{
 		endpoint: SofaV1URL,
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
+		cacheFile: filepath.Join(tempDir, "sofa_cache.json"),
+		etagFile:  filepath.Join(tempDir, "sofa_etag.txt"),
 	}
 
 	for _, opt := range opts {
 		opt(s)
 	}
 
-	return s
+	if _, err := os.Stat(s.etagFile); err == nil {
+		etag, err := os.ReadFile(s.etagFile)
+		if err != nil {
+			return nil, err
+		}
+		s.etag = string(etag)
+	}
+
+	return s, nil
 }
 
-func (s SofaClient) downloadSofaJSON() (Root, error) {
+func (s *SofaClient) downloadSofaJSON() (Root, error) {
 	var root Root
-	resp, err := s.httpClient.Get(s.endpoint)
+
+	req, err := http.NewRequest("HEAD", s.endpoint, nil)
 	if err != nil {
 		return root, err
 	}
 
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return root, err
+	}
+	defer resp.Body.Close()
+
+	etag := resp.Header.Get("Etag")
+
+	// If Etags match, load from local file
+	if etag == s.etag {
+		s.usingCache = true
+		file, err := os.Open(s.cacheFile)
+		if err != nil {
+			return root, err
+		}
+		defer file.Close()
+
+		err = json.NewDecoder(file).Decode(&root)
+		if err != nil {
+			return root, err
+		}
+
+		return root, nil
+	}
+
+	// Otherwise, download the file
+	req, err = http.NewRequest("GET", s.endpoint, nil)
+	if err != nil {
+		return root, err
+	}
+
+	resp, err = s.httpClient.Do(req)
+	if err != nil {
+		return root, err
+	}
 	defer resp.Body.Close()
 
 	err = json.NewDecoder(resp.Body).Decode(&root)
 	if err != nil {
 		return root, err
 	}
+
+	file, err := os.Create(s.cacheFile)
+	if err != nil {
+		return root, err
+	}
+	defer file.Close()
+
+	json.NewEncoder(file).Encode(root)
+
+	s.etag = etag
+	err = os.WriteFile(s.etagFile, []byte(s.etag), 0644)
+	if err != nil {
+		return root, err
+	}
+
 	return root, nil
 }
-
 func SofaSecurityReleaseInfoColumns() []table.ColumnDefinition {
 	return []table.ColumnDefinition{
 		table.TextColumn("update_name"),
@@ -197,7 +272,11 @@ func SofaSecurityReleaseInfoGenerate(ctx context.Context, queryContext table.Que
 		}
 	}
 
-	client := NewSofaClient(WithURL(url))
+	client, err := NewSofaClient(WithURL(url))
+	if err != nil {
+		return nil, err
+	}
+
 	root, err := client.downloadSofaJSON()
 	if err != nil {
 		return nil, err

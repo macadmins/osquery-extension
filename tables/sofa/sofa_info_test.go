@@ -4,9 +4,11 @@ import (
 	_ "embed"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type MockOsqueryClient struct{}
@@ -20,32 +22,70 @@ func (m MockOsqueryClient) Close() {}
 //go:embed test_data.json
 var testData []byte
 
-func TestDownloadSofaJSON(t *testing.T) {
-	// start a local HTTP server to serve the test data
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+const (
+	testCacheFile = "testCache.json"
+	testEtagFile  = "testEtag.txt"
+	etagValue     = "12345"
+)
+
+func setup() *httptest.Server {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Add("Etag", etagValue)
 		w.Write(testData) //nolint:errcheck
-	}))
+	})
 
-	client := NewSofaClient(WithURL(server.URL))
-	root, err := client.downloadSofaJSON()
+	server := httptest.NewServer(handler)
+
+	return server
+}
+
+func teardown(server *httptest.Server) {
+	server.Close()
+	removeTestFiles()
+}
+
+func removeTestFiles() {
+	os.Remove(testCacheFile)
+	os.Remove(testEtagFile)
+}
+
+// TestDownloadSofaJSON tests the downloadSofaJSON function
+func TestDownloadSofaJSON(t *testing.T) {
+	server := setup()
+	defer teardown(server)
+
+	client, err := NewSofaClient(
+		WithURL(server.URL),
+		WithLocalCache(testCacheFile, testEtagFile),
+	)
+
 	assert.NoError(t, err)
-	assert.Equal(t, "2024-04-27T00:48:06+00:00Z", root.LastCheck)
 
+	root, err := client.downloadSofaJSON()
+	assert.Equal(t, "2024-04-27T00:48:06+00:00Z", root.LastCheck)
+	require.NoError(t, err, "Failed to download JSON")
+
+	etag, err := os.ReadFile(testEtagFile)
+	assert.NoError(t, err, "Failed to read etag file")
+	require.Equal(t, etagValue, string(etag), "Etag value is not correctly stored")
 }
 
 func TestNewSofaClient(t *testing.T) {
-	client := NewSofaClient()
+	client, err := NewSofaClient()
+	assert.NoError(t, err)
 	assert.Equal(t, SofaV1URL, client.endpoint)
 	assert.NotNil(t, client.httpClient)
 }
 
 func TestWithHTTPClient(t *testing.T) {
-	client := NewSofaClient(WithHTTPClient(&http.Client{}))
+	client, err := NewSofaClient(WithHTTPClient(&http.Client{}))
+	assert.NoError(t, err)
 	assert.NotNil(t, client.httpClient)
 }
 
 func TestWithEndpoint(t *testing.T) {
-	client := NewSofaClient(WithURL("http://example.com"))
+	client, err := NewSofaClient(WithURL("http://example.com"))
+	assert.NoError(t, err)
 	assert.Equal(t, "http://example.com", client.endpoint)
 }
 

@@ -61,7 +61,11 @@ func SofaUnpatchedCVEsGenerate(ctx context.Context, queryContext table.QueryCont
 		}
 	}
 
-	client := NewSofaClient(WithURL(url))
+	client, err := NewSofaClient(WithURL(url))
+	if err != nil {
+		return nil, err
+	}
+
 	root, err := client.downloadSofaJSON()
 	if err != nil {
 		return nil, err
