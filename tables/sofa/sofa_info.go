@@ -214,7 +214,10 @@ func (s *SofaClient) downloadSofaJSON() (Root, error) {
 	}
 	defer file.Close()
 
-	json.NewEncoder(file).Encode(root)
+	err = json.NewEncoder(file).Encode(root)
+	if err != nil {
+		return root, err
+	}
 
 	s.etag = etag
 	err = os.WriteFile(s.etagFile, []byte(s.etag), 0644)
