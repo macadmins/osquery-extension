@@ -210,8 +210,6 @@ func NewSofaClient(opts ...Option) (*SofaClient, error) {
 	return s, nil
 }
 
-// Dowwnload the timestamp file
-// Compare the hash in the file with the hash of the local file content as a string minus the hash itself
 func (s *SofaClient) cacheValid() (bool, error) {
 	err := s.downloadTimestamp()
 	if err != nil {
