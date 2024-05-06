@@ -9,6 +9,7 @@ go_library(
     importpath = "github.com/macadmins/osquery-extension/tables/sofa",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/utils",
         "@com_github_hashicorp_go_version//:go-version",
         "@com_github_osquery_osquery_go//:osquery-go",
         "@com_github_osquery_osquery_go//plugin/table",
@@ -24,8 +25,8 @@ go_test(
     embed = [":sofa"],
     embedsrcs = [
         "test_data.json",
-        "test_invalid_timestamp.json",
         "test_timestamp.json",
+        "test_invalid_hash_data.json",
     ],
     deps = [
         "//pkg/utils",

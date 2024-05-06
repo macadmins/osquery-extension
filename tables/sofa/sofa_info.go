@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-version"
+	"github.com/macadmins/osquery-extension/pkg/utils"
 	osquery "github.com/osquery/osquery-go"
 	"github.com/osquery/osquery-go/plugin/table"
 )
@@ -219,6 +220,10 @@ func (s *SofaClient) cacheValid() (bool, error) {
 	timestamp, err := s.loadCachedTimestamp()
 	if err != nil {
 		return false, err
+	}
+
+	if !utils.FileExists(s.cacheFile) {
+		return false, nil
 	}
 
 	root, err := s.loadCachedData()

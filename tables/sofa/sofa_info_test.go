@@ -27,13 +27,13 @@ var testData []byte
 //go:embed test_timestamp.json
 var testTimestampData []byte
 
-//go:embed test_invalid_timestamp.json
-var testInvalidTimestampData []byte
+//go:embed test_invalid_hash_data.json
+var testInvalidHashData []byte
 
 const (
-	testCacheFile            = "testCache.json"
-	testTimestampFile        = "testTimestamp.json"
-	testInvalidTimestampFile = "testInvalidTimestamp.json"
+	testCacheFile        = "testCache.json"
+	testInvalidCacheFile = "testInvalidCache.json"
+	testTimestampFile    = "testTimestamp.json"
 )
 
 func setupTestServer() *httptest.Server {
@@ -56,9 +56,9 @@ func setupTestTimestampServer() *httptest.Server {
 	return server
 }
 
-func setupInvalidTimestampServer() *httptest.Server {
+func setupInvalidHashServer() *httptest.Server {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write(testInvalidTimestampData) //nolint:errcheck
+		w.Write(testInvalidHashData) //nolint:errcheck
 	})
 
 	server := httptest.NewServer(handler)
@@ -66,11 +66,11 @@ func setupInvalidTimestampServer() *httptest.Server {
 	return server
 }
 
-func setup() (server *httptest.Server, timestampServer *httptest.Server, invalidTimestampServer *httptest.Server) {
+func setup() (server *httptest.Server, timestampServer *httptest.Server, invalidHashServer *httptest.Server) {
 	server = setupTestServer()
 	timestampServer = setupTestTimestampServer()
-	invalidTimestampServer = setupInvalidTimestampServer()
-	return server, timestampServer, invalidTimestampServer
+	invalidHashServer = setupInvalidHashServer()
+	return server, timestampServer, invalidHashServer
 }
 
 func teardown(server *httptest.Server, timestampServer *httptest.Server, invalidTimestampServer *httptest.Server) {
@@ -83,12 +83,12 @@ func teardown(server *httptest.Server, timestampServer *httptest.Server, invalid
 func removeTestFiles() {
 	os.Remove(testCacheFile)
 	os.Remove(testTimestampFile)
-	os.Remove(testInvalidTimestampFile)
+	os.Remove(testInvalidCacheFile)
 }
 
 func TestDownloadFile(t *testing.T) {
-	server, timestampServer, invalidTimestampServer := setup()
-	defer teardown(server, timestampServer, invalidTimestampServer)
+	server, timestampServer, invalidCacheServer := setup()
+	defer teardown(server, timestampServer, invalidCacheServer)
 
 	client, err := NewSofaClient(
 		WithURL(server.URL),
@@ -147,8 +147,8 @@ func TestUnmarshalJSON(t *testing.T) {
 }
 
 func TestCacheValid(t *testing.T) {
-	server, timestampServer, invalidTimestampServer := setup()
-
+	server, timestampServer, invalidCacheServer := setup()
+	defer teardown(server, timestampServer, invalidCacheServer)
 	// Create a temporary file
 	tempCacheFile, err := os.CreateTemp("", "test")
 	assert.NoError(t, err)
@@ -182,16 +182,20 @@ func TestCacheValid(t *testing.T) {
 	assert.True(t, valid)
 
 	// test invalid cache
-	client.timestampEndpoint = invalidTimestampServer.URL
+	client.endpoint = invalidCacheServer.URL
+	// Download the data and timestamp files
+	err = client.downloadData()
+	assert.NoError(t, err)
+	err = client.downloadTimestamp()
+	assert.NoError(t, err)
 	invalid, err := client.cacheValid()
 	assert.NoError(t, err)
 	assert.False(t, invalid)
-	defer teardown(server, timestampServer, invalidTimestampServer)
 }
 
 func TestDownloadData(t *testing.T) {
-	server, timestampServer, invalidTimestampServer := setup()
-	defer teardown(server, timestampServer, invalidTimestampServer)
+	server, timestampServer, invalidCacheServer := setup()
+	defer teardown(server, timestampServer, invalidCacheServer)
 
 	// Create a SofaClient
 	client := &SofaClient{
@@ -218,8 +222,8 @@ func TestDownloadData(t *testing.T) {
 }
 
 func TestDownloadTimestamp(t *testing.T) {
-	server, timestampServer, invalidTimestampServer := setup()
-	defer teardown(server, timestampServer, invalidTimestampServer)
+	server, timestampServer, invalidCacheServer := setup()
+	defer teardown(server, timestampServer, invalidCacheServer)
 
 	// Create a SofaClient
 	client := &SofaClient{
@@ -300,8 +304,8 @@ func TestLoadCachedTimestamp(t *testing.T) {
 
 // TestDownloadSofaJSON tests the downloadSofaJSON function
 func TestDownloadSofaJSON(t *testing.T) {
-	server, timestampServer, invalidTimestampServer := setup()
-	defer teardown(server, timestampServer, invalidTimestampServer)
+	server, timestampServer, _ := setup()
+	// defer teardown(server, timestampServer, invalidCacheServer)
 
 	client, err := NewSofaClient(
 		WithURL(server.URL),
