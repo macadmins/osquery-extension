@@ -22,6 +22,13 @@ go_test(
         "sofa_info_test.go",
     ],
     embed = [":sofa"],
-    embedsrcs = ["test_data.json"],
-    deps = ["@com_github_stretchr_testify//assert"],
+    embedsrcs = [
+        "test_data.json",
+        "test_invalid_timestamp.json",
+        "test_timestamp.json",
+    ],
+    deps = [
+        "//pkg/utils",
+        "@com_github_stretchr_testify//assert",
+    ],
 )

@@ -1,0 +1,10 @@
+{
+    "macOS": {
+        "LastCheck": "2024-05-06T17:02:57+00:00Z",
+        "UpdateHash": "abc123"
+    },
+    "iOS": {
+        "LastCheck": "2024-05-06T00:03:34+00:00Z",
+        "UpdateHash": "7f313525b49af1c39492de3f9d2b1674a3e8a15ad5bbf83743cfd2b6bfa55d1c"
+    }
+}
