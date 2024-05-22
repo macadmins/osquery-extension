@@ -3,6 +3,7 @@ load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "sofa",
     srcs = [
+        "client.go",
         "sofa_cves.go",
         "sofa_info.go",
     ],
@@ -19,14 +20,15 @@ go_library(
 go_test(
     name = "sofa_test",
     srcs = [
+        "client_test.go",
         "sofa_cves_test.go",
         "sofa_info_test.go",
     ],
     embed = [":sofa"],
     embedsrcs = [
         "test_data.json",
-        "test_timestamp.json",
-        "test_invalid_hash_data.json",
+        "test_etag.txt",
+        "test_invalid_etag.txt",
     ],
     deps = [
         "//pkg/utils",
