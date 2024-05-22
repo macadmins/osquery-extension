@@ -252,16 +252,17 @@ func TestDownloadData(t *testing.T) {
 	server := setup()
 	defer teardown(server)
 
-	tmpDir := os.TempDir()
+	cwd, err := os.Getwd()
+	assert.NoError(t, err)
 
 	// Create a SofaClient
 	client := &SofaClient{
 		endpoint:   server.URL,
 		httpClient: http.DefaultClient,
-		cacheDir:   tmpDir,
+		cacheDir:   cwd,
 	}
 
-	err := client.createCacheDir()
+	err = client.createCacheDir()
 	assert.NoError(t, err)
 
 	client.setCachePaths()
