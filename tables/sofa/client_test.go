@@ -313,9 +313,12 @@ func TestSetCachePaths(t *testing.T) {
 	assert.NotEmpty(t, client.etagFile)
 }
 
-func TestCachePath(t *testing.T) {
-	client, err := NewSofaClient()
+func TestWithCacheDir(t *testing.T) {
+	cwd, err := os.Getwd()
 	assert.NoError(t, err)
+	client, err := NewSofaClient(WithCacheDir(cwd))
+	assert.NoError(t, err)
+	defer os.Remove(client.cacheDir) //nolint:errcheck
 
 	client.setCachePaths()
 
