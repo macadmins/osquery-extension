@@ -56,8 +56,12 @@ func TestDownloadFile(t *testing.T) {
 	server := setup()
 	defer teardown(server)
 
+	cwd, err := os.Getwd()
+	assert.NoError(t, err)
+
 	client, err := NewSofaClient(
 		WithURL(server.URL),
+		WithCacheDir(cwd),
 	)
 
 	assert.NoError(t, err)
