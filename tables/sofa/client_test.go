@@ -20,9 +20,6 @@ var testData []byte
 //go:embed test_etag.txt
 var testEtag []byte
 
-//go:embed test_invalid_etag.txt
-var testInvalidEtag []byte
-
 const (
 	testCacheFile = "testCache.json"
 	testEtagFile  = "testetag.txt"

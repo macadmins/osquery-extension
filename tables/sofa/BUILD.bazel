@@ -28,7 +28,6 @@ go_test(
     embedsrcs = [
         "test_data.json",
         "test_etag.txt",
-        "test_invalid_etag.txt",
     ],
     deps = [
         "//pkg/utils",
