@@ -1,0 +1,24 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "authdb",
+    srcs = ["authdb.go"],
+    importpath = "github.com/macadmins/osquery-extension/tables/authdb",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/utils",
+        "@com_github_groob_plist//:plist",
+        "@com_github_osquery_osquery_go//plugin/table",
+    ],
+)
+
+go_test(
+    name = "authdb_test",
+    srcs = ["authdb_test.go"],
+    embed = [":authdb"],
+    deps = [
+        "//pkg/utils",
+        "@com_github_osquery_osquery_go//plugin/table",
+        "@com_github_stretchr_testify//assert",
+    ],
+)

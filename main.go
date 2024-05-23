@@ -17,9 +17,10 @@ import (
 	"github.com/macadmins/osquery-extension/tables/networkquality"
 	"github.com/macadmins/osquery-extension/tables/pendingappleupdates"
 	"github.com/macadmins/osquery-extension/tables/puppet"
+	"github.com/macadmins/osquery-extension/tables/sofa"
 	"github.com/macadmins/osquery-extension/tables/unifiedlog"
 
-	"github.com/macadmins/osquery-extension/tables/sofa"
+	"github.com/macadmins/osquery-extension/tables/authdb"
 	osquery "github.com/osquery/osquery-go"
 	"github.com/osquery/osquery-go/plugin/table"
 )
@@ -79,6 +80,7 @@ func main() {
 			table.NewPlugin("sofa_unpatched_cves", sofa.SofaUnpatchedCVEsColumns(), func(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
 				return sofa.SofaUnpatchedCVEsGenerate(ctx, queryContext, *flSocketPath)
 			}),
+			table.NewPlugin("authdb", authdb.AuthDBColumns(), authdb.AuthDBGenerate),
 		}
 		plugins = append(plugins, darwinPlugins...)
 	}

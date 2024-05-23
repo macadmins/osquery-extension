@@ -50,17 +50,17 @@ coverage:
 	mv $(BAZEL_OUTPUT_PATH)/_coverage/_coverage_report.dat coverage/lcov.info
 
 build: .pre-build
-	bazel build //:osquery-extension-mac-amd
-	bazel build //:osquery-extension-mac-arm
-	bazel build //:osquery-extension-linux-amd
-	bazel build //:osquery-extension-linux-arm
-	bazel build //:osquery-extension-win-amd
-	bazel build //:osquery-extension-win-arm
+	bazel build --verbose_failures //:osquery-extension-mac-amd
+	bazel build --verbose_failures //:osquery-extension-mac-arm
+	bazel build --verbose_failures //:osquery-extension-linux-amd
+	bazel build --verbose_failures //:osquery-extension-linux-arm
+	bazel build --verbose_failures //:osquery-extension-win-amd
+	bazel build --verbose_failures //:osquery-extension-win-arm
 	tools/bazel_to_builddir.sh
 
 osqueryi: build
 	sleep 2
-	osqueryi --extension=build/darwin/macadmins_extension.arm64.ext --allow_unsafe
+	sudo osqueryi --extension=build/darwin/macadmins_extension.arm64.ext --allow_unsafe
 
 zip: build
 	/usr/bin/lipo -create -output build/darwin/${APP_NAME}.ext build/darwin/${APP_NAME}.amd64.ext build/darwin/${APP_NAME}.arm64.ext

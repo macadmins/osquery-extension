@@ -9,3 +9,10 @@ func FileExists(filename string) bool {
 	}
 	return !info.IsDir()
 }
+
+func BoolToString(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
