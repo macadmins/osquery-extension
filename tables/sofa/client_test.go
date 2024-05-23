@@ -304,7 +304,7 @@ func TestWithHTTPClient(t *testing.T) {
 func TestWithEndpoint(t *testing.T) {
 	cwd, err := os.Getwd()
 	assert.NoError(t, err)
-	client, err := NewSofaClient(WithURL("http://example.com"), WithCacheDir(cwd)
+	client, err := NewSofaClient(WithURL("http://example.com"), WithCacheDir(cwd))
 	assert.NoError(t, err)
 	assert.Equal(t, "http://example.com", client.endpoint)
 }
@@ -312,7 +312,7 @@ func TestWithEndpoint(t *testing.T) {
 func TestSetCachePaths(t *testing.T) {
 	cwd, err := os.Getwd()
 	assert.NoError(t, err)
-	client, err := NewSofaClient(WiWithCacheDir(cwd))
+	client, err := NewSofaClient(WithCacheDir(cwd))
 	assert.NoError(t, err)
 
 	client.setCachePaths()
@@ -336,7 +336,7 @@ func TestWithCacheDir(t *testing.T) {
 func TestEtagPath(t *testing.T) {
 	cwd, err := os.Getwd()
 	assert.NoError(t, err)
-	client, err := NewSofaClient(WWithCacheDir(cwd))
+	client, err := NewSofaClient(WithCacheDir(cwd))
 	assert.NoError(t, err)
 
 	client.setCachePaths()
@@ -347,7 +347,7 @@ func TestEtagPath(t *testing.T) {
 func TestCreateCacheDir(t *testing.T) {
 	cwd, err := os.Getwd()
 	assert.NoError(t, err)
-	client, err := NewSofaClient(WiWithCacheDir(cwd))
+	client, err := NewSofaClient(WithCacheDir(cwd))
 	assert.NoError(t, err)
 
 	err = client.createCacheDir()
