@@ -31,6 +31,7 @@ go_test(
     ],
     deps = [
         "//pkg/utils",
+        "@com_github_osquery_osquery_go//plugin/table",
         "@com_github_stretchr_testify//assert",
     ],
 )

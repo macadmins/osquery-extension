@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"testing"
 
+	"github.com/osquery/osquery-go/plugin/table"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -104,4 +105,63 @@ func TestGetVersionFromResponse(t *testing.T) {
 			assert.Equal(t, tc.expectedResult, result)
 		})
 	}
+}
+
+func TestProcessContextConstraints(t *testing.T) {
+	queryContext := table.QueryContext{
+		Constraints: map[string]table.ConstraintList{
+			"url": {
+				Constraints: []table.Constraint{
+					{
+						Operator:   table.OperatorEquals,
+						Expression: "http://testurl.com",
+					},
+				},
+			},
+			"os_version": {
+				Constraints: []table.Constraint{
+					{
+						Operator:   table.OperatorEquals,
+						Expression: "14.5.1",
+					},
+				},
+			},
+		},
+	}
+
+	url, osVersion := processContextConstraints(queryContext)
+
+	assert.Equal(t, "http://testurl.com", url)
+	assert.Equal(t, "14.5.1", osVersion)
+}
+
+func TestBuildSecurityReleaseInfoOutput(t *testing.T) {
+	securityReleases := []SecurityRelease{
+		{
+			UpdateName:               "Update Name",
+			ProductVersion:           "14.5.1",
+			ReleaseDate:              "2024-07-01",
+			SecurityInfo:             "Available for: macOS Sonoma",
+			UniqueCVEsCount:          3,
+			DaysSincePreviousRelease: 30,
+		},
+	}
+
+	osVersion := "14.5.1"
+
+	expectedOutput := []map[string]string{
+		{
+			"update_name":                 "Update Name",
+			"product_version":             "14.5.1",
+			"release_date":                "2024-07-01",
+			"security_info":               "Available for: macOS Sonoma",
+			"unique_cves_count":           "3",
+			"days_since_previous_release": "30",
+			"os_version":                  "14.5.1",
+		},
+	}
+
+	output := buildSecurityReleaseInfoOutput(securityReleases, osVersion)
+
+	assert.Equal(t, expectedOutput, output)
 }

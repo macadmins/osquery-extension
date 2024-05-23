@@ -131,26 +131,7 @@ func SofaSecurityReleaseInfoColumns() []table.ColumnDefinition {
 }
 
 func SofaSecurityReleaseInfoGenerate(ctx context.Context, queryContext table.QueryContext, socketPath string) ([]map[string]string, error) {
-	url := SofaV1URL
-	if constraintList, present := queryContext.Constraints["url"]; present {
-		// 'url' is in the where clause
-		for _, constraint := range constraintList.Constraints {
-			// =
-			if constraint.Operator == table.OperatorEquals {
-				url = constraint.Expression
-			}
-		}
-	}
-	osVersion := ""
-	if constraintList, present := queryContext.Constraints["os_version"]; present {
-		// 'os_version' is in the where clause
-		for _, constraint := range constraintList.Constraints {
-			// =
-			if constraint.Operator == table.OperatorEquals {
-				osVersion = constraint.Expression
-			}
-		}
-	}
+	url, osVersion := processContextConstraints(queryContext)
 
 	if osVersion == "" {
 		// get the current device os version from osquery
@@ -176,13 +157,17 @@ func SofaSecurityReleaseInfoGenerate(ctx context.Context, queryContext table.Que
 		return nil, err
 	}
 
-	var results []map[string]string
-
 	// get the security release info for the current os version
 	securityReleases, err := getSecurityReleaseInfoForOSVersion(root, osVersion)
 	if err != nil {
 		return nil, err
 	}
+
+	return buildSecurityReleaseInfoOutput(securityReleases, osVersion), nil
+}
+
+func buildSecurityReleaseInfoOutput(securityReleases []SecurityRelease, osVersion string) []map[string]string {
+	var results []map[string]string
 	for _, securityRelease := range securityReleases {
 		results = append(results, map[string]string{
 			"update_name":                 securityRelease.UpdateName,
@@ -194,8 +179,32 @@ func SofaSecurityReleaseInfoGenerate(ctx context.Context, queryContext table.Que
 			"os_version":                  osVersion,
 		})
 	}
+	return results
+}
 
-	return results, nil
+func processContextConstraints(queryContext table.QueryContext) (string, string) {
+	url := SofaV1URL
+	if constraintList, present := queryContext.Constraints["url"]; present {
+		// 'url' is in the where clause
+		for _, constraint := range constraintList.Constraints {
+			// =
+			if constraint.Operator == table.OperatorEquals {
+				url = constraint.Expression
+			}
+		}
+	}
+	osVersion := ""
+	if constraintList, present := queryContext.Constraints["os_version"]; present {
+		// 'os_version' is in the where clause
+		for _, constraint := range constraintList.Constraints {
+			// =
+			if constraint.Operator == table.OperatorEquals {
+				osVersion = constraint.Expression
+			}
+		}
+	}
+
+	return url, osVersion
 }
 
 func getSecurityReleaseInfoForOSVersion(root Root, osVersion string) ([]SecurityRelease, error) {
