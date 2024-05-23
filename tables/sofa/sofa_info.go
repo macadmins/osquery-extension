@@ -2,52 +2,14 @@ package sofa
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"io"
-	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/hashicorp/go-version"
-	"github.com/macadmins/osquery-extension/pkg/utils"
 	osquery "github.com/osquery/osquery-go"
 	"github.com/osquery/osquery-go/plugin/table"
 )
-
-const SofaV1URL = "https://sofa.macadmins.io/v1/macos_data_feed.json"
-const SofaV1TimestampURL = "https://sofa.macadmins.io/v1/timestamp.json"
-
-type SofaTime time.Time
-
-func (t SofaTime) String() string {
-	return time.Time(t).String()
-}
-
-func (t SofaTime) MarshalJSON() ([]byte, error) {
-	return []byte(`"` + time.Time(t).UTC().Format("2006-01-02T15:04:05Z") + `"`), nil
-}
-
-func (t *SofaTime) UnmarshalJSON(b []byte) (err error) {
-	s := strings.Trim(string(b), "\"")
-	// Remove trailing 'Z' to handle fixed timezone offset
-	s = strings.TrimSuffix(s, "Z")
-
-	if s == "" {
-		return nil // Handle empty time string
-	}
-
-	// Manually parse the time string with timezone offset
-	parsedTime, err := time.Parse("2006-01-02T15:04:05-07:00", s)
-	if err != nil {
-		return err
-	}
-	*t = SofaTime(parsedTime.UTC())
-	return nil
-}
 
 type Timestamp struct {
 	MacOS MacOS `json:"macOS"`
@@ -156,173 +118,6 @@ type OsqueryClient interface {
 	Close()
 }
 
-type SofaClient struct {
-	endpoint          string
-	timestampEndpoint string
-	httpClient        *http.Client
-	localHash         string
-	remoteHash        string
-	cacheFile         string
-	timestampFile     string
-}
-
-func WithLocalCache(cacheFile, timestampFile string) Option {
-	return func(s *SofaClient) {
-		s.cacheFile = cacheFile
-		s.timestampFile = timestampFile
-	}
-}
-
-func WithURL(url string) Option {
-	return func(s *SofaClient) {
-		s.endpoint = url
-	}
-}
-
-func WithTimestampURL(url string) Option {
-	return func(s *SofaClient) {
-		s.timestampEndpoint = url
-	}
-}
-
-func WithHTTPClient(client *http.Client) Option {
-	return func(s *SofaClient) {
-		s.httpClient = client
-	}
-}
-
-func NewSofaClient(opts ...Option) (*SofaClient, error) {
-
-	tempDir := os.TempDir()
-	s := &SofaClient{
-		endpoint:          SofaV1URL,
-		timestampEndpoint: SofaV1TimestampURL,
-		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
-		},
-		cacheFile:     filepath.Join(tempDir, "sofa_cache.json"),
-		timestampFile: filepath.Join(tempDir, "sofa_timestamp.json"),
-	}
-
-	for _, opt := range opts {
-		opt(s)
-	}
-
-	return s, nil
-}
-
-func (s *SofaClient) cacheValid() (bool, error) {
-	err := s.downloadTimestamp()
-	if err != nil {
-		return false, err
-	}
-
-	timestamp, err := s.loadCachedTimestamp()
-	if err != nil {
-		return false, err
-	}
-
-	if !utils.FileExists(s.cacheFile) {
-		return false, nil
-	}
-
-	root, err := s.loadCachedData()
-	if err != nil {
-		return false, err
-	}
-
-	s.localHash = root.UpdateHash
-	s.remoteHash = timestamp.MacOS.UpdateHash
-
-	if root.UpdateHash != timestamp.MacOS.UpdateHash {
-		return false, nil
-	}
-
-	return true, nil
-}
-
-func (s *SofaClient) loadCachedData() (Root, error) {
-
-	jsonData, err := os.ReadFile(s.cacheFile)
-	if err != nil {
-		return Root{}, err
-	}
-
-	var root Root
-	if err := json.Unmarshal(jsonData, &root); err != nil {
-		return Root{}, err
-	}
-
-	return root, nil
-
-}
-
-func (s *SofaClient) loadCachedTimestamp() (Timestamp, error) {
-	jsonData, err := os.ReadFile(s.timestampFile)
-	if err != nil {
-		return Timestamp{}, err
-	}
-
-	var timestamp Timestamp
-	err = json.Unmarshal(jsonData, &timestamp)
-	if err != nil {
-		return Timestamp{}, err
-	}
-
-	return timestamp, nil
-}
-
-func (s *SofaClient) downloadData() error {
-	return s.downloadFile(s.endpoint, s.cacheFile)
-}
-
-func (s *SofaClient) downloadTimestamp() error {
-	return s.downloadFile(s.timestampEndpoint, s.timestampFile)
-}
-
-func (s *SofaClient) downloadFile(url, path string) error {
-	req, err := http.NewRequest("GET", url, http.NoBody)
-	if err != nil {
-		return err
-	}
-
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close() // nolint: errcheck
-
-	file, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-
-	defer file.Close() // nolint: errcheck
-	_, err = io.Copy(file, resp.Body)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (s *SofaClient) downloadSofaJSON() (Root, error) {
-	valid, err := s.cacheValid()
-	if err != nil {
-		return Root{}, err
-	}
-
-	if valid {
-		return s.loadCachedData()
-	}
-
-	err = s.downloadData()
-	if err != nil {
-		return Root{}, err
-	}
-
-	return s.loadCachedData()
-}
 func SofaSecurityReleaseInfoColumns() []table.ColumnDefinition {
 	return []table.ColumnDefinition{
 		table.TextColumn("update_name"),
@@ -336,26 +131,7 @@ func SofaSecurityReleaseInfoColumns() []table.ColumnDefinition {
 }
 
 func SofaSecurityReleaseInfoGenerate(ctx context.Context, queryContext table.QueryContext, socketPath string) ([]map[string]string, error) {
-	url := SofaV1URL
-	if constraintList, present := queryContext.Constraints["url"]; present {
-		// 'url' is in the where clause
-		for _, constraint := range constraintList.Constraints {
-			// =
-			if constraint.Operator == table.OperatorEquals {
-				url = constraint.Expression
-			}
-		}
-	}
-	osVersion := ""
-	if constraintList, present := queryContext.Constraints["os_version"]; present {
-		// 'os_version' is in the where clause
-		for _, constraint := range constraintList.Constraints {
-			// =
-			if constraint.Operator == table.OperatorEquals {
-				osVersion = constraint.Expression
-			}
-		}
-	}
+	url, osVersion := processContextConstraints(queryContext)
 
 	if osVersion == "" {
 		// get the current device os version from osquery
@@ -381,13 +157,17 @@ func SofaSecurityReleaseInfoGenerate(ctx context.Context, queryContext table.Que
 		return nil, err
 	}
 
-	var results []map[string]string
-
 	// get the security release info for the current os version
 	securityReleases, err := getSecurityReleaseInfoForOSVersion(root, osVersion)
 	if err != nil {
 		return nil, err
 	}
+
+	return buildSecurityReleaseInfoOutput(securityReleases, osVersion), nil
+}
+
+func buildSecurityReleaseInfoOutput(securityReleases []SecurityRelease, osVersion string) []map[string]string {
+	var results []map[string]string
 	for _, securityRelease := range securityReleases {
 		results = append(results, map[string]string{
 			"update_name":                 securityRelease.UpdateName,
@@ -399,8 +179,32 @@ func SofaSecurityReleaseInfoGenerate(ctx context.Context, queryContext table.Que
 			"os_version":                  osVersion,
 		})
 	}
+	return results
+}
 
-	return results, nil
+func processContextConstraints(queryContext table.QueryContext) (string, string) {
+	url := SofaV1URL
+	if constraintList, present := queryContext.Constraints["url"]; present {
+		// 'url' is in the where clause
+		for _, constraint := range constraintList.Constraints {
+			// =
+			if constraint.Operator == table.OperatorEquals {
+				url = constraint.Expression
+			}
+		}
+	}
+	osVersion := ""
+	if constraintList, present := queryContext.Constraints["os_version"]; present {
+		// 'os_version' is in the where clause
+		for _, constraint := range constraintList.Constraints {
+			// =
+			if constraint.Operator == table.OperatorEquals {
+				osVersion = constraint.Expression
+			}
+		}
+	}
+
+	return url, osVersion
 }
 
 func getSecurityReleaseInfoForOSVersion(root Root, osVersion string) ([]SecurityRelease, error) {
