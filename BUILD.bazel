@@ -34,6 +34,7 @@ go_library(
         "//tables/puppet",
         "//tables/sofa",
         "//tables/unifiedlog",
+        "//tables/wifi_network",
         "@com_github_osquery_osquery_go//:osquery-go",
         "@com_github_osquery_osquery_go//plugin/table",
     ],
