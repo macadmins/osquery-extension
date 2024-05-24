@@ -15,6 +15,8 @@ import (
 
 const SofaV1URL = "https://sofa.macadmins.io/v1/macos_data_feed.json"
 
+const UserAgent = "macadmins-osquery-extension/1.0.2" // Todo: get the version during build
+
 type SofaClient struct {
 	endpoint   string
 	httpClient *http.Client
@@ -93,7 +95,7 @@ func NewSofaClient(opts ...Option) (*SofaClient, error) {
 			Timeout: 10 * time.Second,
 		},
 		cacheDir:  "/private/tmp/sofa",
-		userAgent: "macadmins-osquery-extension",
+		userAgent: UserAgent,
 	}
 
 	for _, opt := range opts {
