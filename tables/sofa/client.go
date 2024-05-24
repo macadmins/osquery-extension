@@ -23,6 +23,7 @@ type SofaClient struct {
 	cacheFile  string
 	cacheDir   string
 	etagFile   string
+	userAgent  string
 }
 
 type SofaTime time.Time
@@ -60,6 +61,12 @@ func WithLocalCache(cacheFile, etagFile string) Option {
 	}
 }
 
+func WithUserAgent(userAgent string) Option {
+	return func(s *SofaClient) {
+		s.userAgent = userAgent
+	}
+}
+
 func WithCacheDir(cacheDir string) Option {
 	return func(s *SofaClient) {
 		s.cacheDir = cacheDir
@@ -85,7 +92,8 @@ func NewSofaClient(opts ...Option) (*SofaClient, error) {
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
-		cacheDir: "/private/tmp/sofa",
+		cacheDir:  "/private/tmp/sofa",
+		userAgent: "macadmins-osquery-extension",
 	}
 
 	for _, opt := range opts {
@@ -198,6 +206,7 @@ func (s *SofaClient) getEtag() (string, error) {
 		return "", err
 	}
 
+	req.Header.Set("User-Agent", s.userAgent)
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return "", err
@@ -221,6 +230,8 @@ func (s *SofaClient) downloadFile(url, path string) error {
 	if err != nil {
 		return err
 	}
+
+	req.Header.Set("User-Agent", s.userAgent)
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
