@@ -19,6 +19,7 @@ import (
 	"github.com/macadmins/osquery-extension/tables/puppet"
 	"github.com/macadmins/osquery-extension/tables/sofa"
 	"github.com/macadmins/osquery-extension/tables/unifiedlog"
+	"github.com/macadmins/osquery-extension/tables/wifi_network"
 
 	"github.com/macadmins/osquery-extension/tables/authdb"
 	osquery "github.com/osquery/osquery-go"
@@ -81,6 +82,13 @@ func main() {
 				return sofa.SofaUnpatchedCVEsGenerate(ctx, queryContext, *flSocketPath)
 			}),
 			table.NewPlugin("authdb", authdb.AuthDBColumns(), authdb.AuthDBGenerate),
+			table.NewPlugin(
+				"wifi_network",
+				wifi_network.WifiNetworkColumns(),
+				func(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
+					return wifi_network.WifiNetworkGenerate(ctx, queryContext, *flSocketPath)
+				},
+			),
 		}
 		plugins = append(plugins, darwinPlugins...)
 	}
