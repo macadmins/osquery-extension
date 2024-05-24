@@ -117,6 +117,14 @@ func TestUnmarshalJSON(t *testing.T) {
 	}
 }
 
+func TestWithUserAgent(t *testing.T) {
+	cwd, err := os.Getwd()
+	assert.NoError(t, err)
+	client, err := NewSofaClient(WithUserAgent("test"), WithCacheDir(cwd))
+	assert.NoError(t, err)
+	assert.Equal(t, "test", client.userAgent)
+}
+
 func TestLoacCachedEtag(t *testing.T) {
 	// Create a temporary file
 	tempEtagFile, err := os.CreateTemp("", "test")
