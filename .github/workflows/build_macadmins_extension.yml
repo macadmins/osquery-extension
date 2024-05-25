@@ -1,7 +1,7 @@
 name: Build MacAdmins OSQuery Extension (Manual)
 
 env:
-  VERSION: 1.0.1 # hardcoded for now until we figure out how we want to tackle this
+  VERSION: 1.1.0 # hardcoded for now until we figure out how we want to tackle this
 
 on: [workflow_dispatch]
 
