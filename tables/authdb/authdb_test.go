@@ -292,3 +292,42 @@ func TestBuildOutput(t *testing.T) {
 
 	assert.Equal(t, expectedOutput, actualOutput, "Expected output to match")
 }
+
+func TestGetRuleWithRules(t *testing.T) {
+	runner := utils.MockCmdRunner{
+		Output: `<?xml version="1.0" encoding="UTF-8"?>
+		<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+		<plist version="1.0">
+		<dict>
+			<key>class</key>
+			<string>rule</string>
+			<key>created</key>
+			<real>730353220.36463201</real>
+			<key>modified</key>
+			<real>738604357.04363894</real>
+			<key>rule</key>
+			<array>
+				<string>allow</string>
+			</array>
+			<key>version</key>
+			<integer>0</integer>
+		</dict>
+		</plist>`,
+		Err: nil,
+	}
+
+	expected := AuthDBRight{
+		Name:     "system.preferences.datetime",
+		Class:    "rule",
+		Created:  730353220.36463201,
+		Modified: 738604357.04363894,
+		Rule:     []string{"allow"},
+		Version:  0,
+	}
+
+	r := utils.Runner{}
+	r.Runner = runner
+	out, err := getRule(r, "system.preferences.datetime")
+	assert.NoError(t, err)
+	assert.Equal(t, expected, out)
+}
