@@ -233,12 +233,10 @@ func TestBuildWifiNetworkResults(t *testing.T) {
 }
 
 func TestGetWdutilOutput(t *testing.T) {
-	t.Log(wdutilOut)
 	mockCmdExecutor := MockCommandExecutor{}
 	result, err := getWdutilOutput(mockCmdExecutor)
 	assert.NoError(t, err)
-	t.Logf("Result: %s", result)
-	assert.NotEmpty(t, result)
+	assert.Equal(t, string(wdutilOut), result)
 }
 
 func TestExtractSecurityValue(t *testing.T) {
