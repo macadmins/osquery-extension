@@ -16,6 +16,7 @@ go_test(
     name = "wifi_network_test",
     srcs = ["wifi_network_test.go"],
     embed = [":wifi_network"],
+    embedsrcs = ["wdutil_out.txt"],
     deps = [
         "@com_github_osquery_osquery_go//plugin/table",
         "@com_github_stretchr_testify//assert",
