@@ -2,7 +2,6 @@ package wifi_network
 
 import (
 	"errors"
-	"fmt"
 	"testing"
 
 	"github.com/osquery/osquery-go/plugin/table"
@@ -25,7 +24,6 @@ func (m MockOsqueryClient) Close() {}
 type MockCommandExecutor struct{}
 
 func (m MockCommandExecutor) ExecCommand(name string, args ...string) ([]byte, error) {
-	fmt.Println(args)
 	if args[1] == "en0" {
 		return []byte("Current Wi-Fi Network: MyNetwork"), nil
 	}
