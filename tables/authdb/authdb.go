@@ -23,6 +23,7 @@ type AuthDBRight struct {
 	Mechanisms         []string `json:"mechanisms,omitempty" plist:"mechanisms,omitempty"`
 	Modified           float64  `json:"modified" plist:"modified"`
 	RequireAppleSigned bool     `json:"require-apple-signed,omitempty" plist:"require-apple-signed,omitempty"`
+	Rule               []string `json:"rule,omitempty" plist:"rule,omitempty"`
 	SessionOwner       bool     `json:"session-owner" plist:"session-owner"`
 	Shared             bool     `json:"shared" plist:"shared"`
 	Timeout            int      `json:"timeout" plist:"timeout"`
@@ -42,6 +43,7 @@ func AuthDBColumns() []table.ColumnDefinition {
 		table.TextColumn("mechanisms"),
 		table.TextColumn("modified"),
 		table.TextColumn("require_apple_signed"),
+		table.TextColumn("rule"),
 		table.TextColumn("session_owner"),
 		table.TextColumn("shared"),
 		table.TextColumn("timeout"),
@@ -117,6 +119,7 @@ func buildOutput(rights []AuthDBRight) []map[string]string {
 			"mechanisms":           strings.Join(right.Mechanisms, ","),
 			"modified":             fmt.Sprintf("%f", right.Modified),
 			"require_apple_signed": utils.BoolToString(right.RequireAppleSigned),
+			"rule":                 strings.Join(right.Rule, ","),
 			"session_owner":        utils.BoolToString(right.SessionOwner),
 			"shared":               utils.BoolToString(right.Shared),
 			"timeout":              strconv.Itoa(right.Timeout),
