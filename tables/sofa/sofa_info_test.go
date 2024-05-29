@@ -158,10 +158,11 @@ func TestBuildSecurityReleaseInfoOutput(t *testing.T) {
 			"unique_cves_count":           "3",
 			"days_since_previous_release": "30",
 			"os_version":                  "14.5.1",
+			"url":                         SofaV1URL,
 		},
 	}
 
-	output := buildSecurityReleaseInfoOutput(securityReleases, osVersion)
+	output := buildSecurityReleaseInfoOutput(securityReleases, osVersion, SofaV1URL)
 
 	assert.Equal(t, expectedOutput, output)
 }
