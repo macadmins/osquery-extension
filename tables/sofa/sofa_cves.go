@@ -22,6 +22,7 @@ func SofaUnpatchedCVEsColumns() []table.ColumnDefinition {
 		table.TextColumn("cve"),
 		table.TextColumn("patched_version"),
 		table.TextColumn("actively_exploited"),
+		table.TextColumn("url"),
 	}
 }
 
@@ -85,6 +86,7 @@ func SofaUnpatchedCVEsGenerate(ctx context.Context, queryContext table.QueryCont
 			"cve":                unpatchedCVE.CVE,
 			"patched_version":    unpatchedCVE.PatchedVersion,
 			"actively_exploited": strconv.FormatBool(unpatchedCVE.ActivelyExploited),
+			"url":                url,
 		})
 	}
 
