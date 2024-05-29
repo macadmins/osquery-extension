@@ -1,6 +1,7 @@
 package wifi_network
 
 import (
+	"bufio"
 	"context"
 	"os"
 	"os/exec"
@@ -117,6 +118,45 @@ func getWifiNetworkName(cmdExecutor CommandExecutor, wifiInterface string) (stri
 	return strings.TrimSpace(splitOut[1]), nil
 }
 
+func getSecurityLevel(cmdExecutor CommandExecutor, interfaceName string) (string, error) {
+	out, err := getWdutilOutput(cmdExecutor)
+	if err != nil {
+		return "", err
+	}
+
+	return extractSecurityValue(out, interfaceName), nil
+}
+
+func getWdutilOutput(cmdExecutor CommandExecutor) (string, error) {
+	out, err := cmdExecutor.ExecCommand("/usr/bin/wdutil", "info", "-q")
+	if err != nil {
+		return "", errors.Wrap(err, "failed to run wdutil")
+	}
+	return string(out), nil
+}
+
+func extractSecurityValue(input string, desiredInterfaceName string) string {
+	scanner := bufio.NewScanner(strings.NewReader(input))
+	interfaceName := ""
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.Contains(line, "Interface Name") {
+			parts := strings.Split(line, ":")
+			if len(parts) > 1 {
+				interfaceName = strings.TrimSpace(parts[1])
+			}
+		}
+		if strings.Contains(line, "Security") && interfaceName == desiredInterfaceName {
+			parts := strings.Split(line, ":")
+			if len(parts) > 1 {
+				return strings.TrimSpace(parts[1])
+			}
+		}
+	}
+
+	return ""
+}
+
 // buildWifiNetwork
 func buildWifiNetworkFromResponse(cmdExecutor CommandExecutor, wifiStatus map[string]string) (*WifiNetwork, error) {
 	wifiInterface, err := getValueFromResponse(wifiStatus, "interface")
@@ -154,11 +194,6 @@ func buildWifiNetworkFromResponse(cmdExecutor CommandExecutor, wifiStatus map[st
 		return nil, err
 	}
 
-	securityType, err := getValueFromResponse(wifiStatus, "security_type")
-	if err != nil {
-		return nil, err
-	}
-
 	mode, err := getValueFromResponse(wifiStatus, "mode")
 	if err != nil {
 		return nil, err
@@ -166,6 +201,12 @@ func buildWifiNetworkFromResponse(cmdExecutor CommandExecutor, wifiStatus map[st
 
 	// get the wifi network name
 	wifiNetworkName, err := getWifiNetworkName(cmdExecutor, wifiInterface)
+	if err != nil {
+		return nil, err
+	}
+
+	// get the security level
+	securityType, err := getSecurityLevel(cmdExecutor, wifiInterface)
 	if err != nil {
 		return nil, err
 	}

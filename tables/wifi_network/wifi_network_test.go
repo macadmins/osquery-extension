@@ -6,7 +6,12 @@ import (
 
 	"github.com/osquery/osquery-go/plugin/table"
 	"github.com/stretchr/testify/assert"
+
+	_ "embed"
 )
+
+//go:embed wdutil_out.txt
+var wdutilOut []byte
 
 type MockOsqueryClient struct{}
 
@@ -21,6 +26,10 @@ type MockCommandExecutor struct{}
 func (m MockCommandExecutor) ExecCommand(name string, args ...string) ([]byte, error) {
 	if args[1] == "en0" {
 		return []byte("Current Wi-Fi Network: MyNetwork"), nil
+	}
+	// /usr/bin/wdutil info -q
+	if args[0] == "info" {
+		return wdutilOut, nil
 	}
 	return nil, errors.New("commad failed")
 }
@@ -130,7 +139,7 @@ func TestBuildWifiNetworkFromResponse(t *testing.T) {
 				"channel_width": "20",
 				"channel_band":  "2.4 GHz",
 				"transmit_rate": "300 Mbps",
-				"security_type": "WPA2 Personal",
+				"security_type": "",
 				"mode":          "Station",
 			},
 			&WifiNetwork{
@@ -142,7 +151,7 @@ func TestBuildWifiNetworkFromResponse(t *testing.T) {
 				ChannelWidth: "20",
 				ChannelBand:  "2.4 GHz",
 				TransmitRate: "300 Mbps",
-				SecurityType: "WPA2 Personal",
+				SecurityType: "WPA3 Personal",
 				Mode:         "Station",
 			},
 			false,
@@ -221,4 +230,26 @@ func TestBuildWifiNetworkResults(t *testing.T) {
 			assert.Equal(t, tc.expectedResult, result)
 		})
 	}
+}
+
+func TestGetWdutilOutput(t *testing.T) {
+	mockCmdExecutor := MockCommandExecutor{}
+	result, err := getWdutilOutput(mockCmdExecutor)
+	assert.NoError(t, err)
+	assert.Equal(t, string(wdutilOut), result)
+}
+
+func TestExtractSecurityValue(t *testing.T) {
+	expectedOutput := "WPA3 Personal"
+
+	output := extractSecurityValue(string(wdutilOut), "en0")
+
+	assert.Equal(t, expectedOutput, output)
+}
+
+func TestGetSecurityLevel(t *testing.T) {
+	mockCmdExecutor := MockCommandExecutor{}
+	result, err := getSecurityLevel(mockCmdExecutor, "en0")
+	assert.NoError(t, err)
+	assert.Equal(t, "WPA3 Personal", result)
 }

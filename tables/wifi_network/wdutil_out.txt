@@ -1,0 +1,88 @@
+————————————————————————————————————————————————————————————————————
+NETWORK
+————————————————————————————————————————————————————————————————————
+    Primary IPv4         : en0 ((null) / gpd.pan)
+                         : 192.168.1.1
+    Primary IPv6         : en0 (Wi-Fi / 8FE3682E-51CE-450A-9A7D-B2A02AA407F2)
+                         : 2001:0db8:85a3:0000:0000:8a2e:0370:7334
+                         : 2001:0db8:85a3:0000:0000:8a2e:0370:7334
+                         : 2001:0db8:85a3:0000:0000:8a2e:0370:7334
+                         : 2001:0db8:85a3:0000:0000:8a2e:0370:7334
+                         : 2001:0db8:85a3:0000:0000:8a2e:0370:7334
+    DNS Addresses        : 8.8.8.8
+    Apple                : Reachable
+————————————————————————————————————————————————————————————————————
+WIFI
+————————————————————————————————————————————————————————————————————
+    MAC Address          : <redacted> (hw=<redacted>)
+    Interface Name       : en0
+    Power                : On [On]
+    Op Mode              : STA
+    SSID                 : <redacted>
+    BSSID                : <redacted>
+    RSSI                 : -34 dBm
+    Noise                : -92 dBm
+    Tx Rate              : 2401.0 Mbps
+    Security             : WPA3 Personal
+    PHY Mode             : 11ax
+    MCS Index            : 11
+    Guard Interval       : 800
+    NSS                  : 2
+    Channel              : 6g101 (160 MHz, Active)
+    Country Code         : US
+    Scan Cache Count     : 31
+    NetworkServiceID     : 9A0B692D-C462-4771-982E-65EC1C2B28F8
+    IPv4 Config Method   : DHCP
+    IPv4 Address         : 192.168.1.34
+    IPv4 Router          : 192.168.1.1
+    IPv6 Config Method   : Automatic
+    IPv6 Address         : 2001:0db8:85a3:0000:0000:8a2e:0370:7334
+                         : 2001:0db8:85a3:0000:0000:8a2e:0370:7334
+                         : 2001:0db8:85a3:0000:0000:8a2e:0370:7334
+                         : 2001:0db8:85a3:0000:0000:8a2e:0370:7334
+                         : 2001:0db8:85a3:0000:0000:8a2e:0370:7334
+    IPv6 Router          : fd12:3456:789a:1::1
+    DNS                  : 192.168.1.1
+    BTC Mode             : Off
+    Desense              :
+    Chain Ack            : []
+    BTC Profile 2.4GHz   : Disabled
+    BTC Profile 5GHz     : Disabled
+————————————————————————————————————————————————————————————————————
+BLUETOOTH
+————————————————————————————————————————————————————————————————————
+    Power                : On
+    Address              : 00:16:3E:28:52:1A
+    Discoverable         : No
+    Connectable          : No
+    Scanning             : No
+    Devices              : 10 (paired=10 cloud=0 connected=0)
+
+    Office
+    Address          : 40-ab-cd-12-e3-4f
+    Paired           : Yes
+    CloudPaired      : No
+    Connected        : No
+
+————————————————————————————————————————————————————————————————————
+AWDL
+————————————————————————————————————————————————————————————————————
+    AirDrop Disc Mode      : Everyone
+    AWDL Enabled           : No
+    Interface Name         : awdl0
+    Power                  : On
+    IPv6 Address           : fd12:3456:789a:1::1
+    Schedule State         : n/a
+    Channel Sequence       : n/a
+    Op Mode                : n/a
+    Real Time Mode         : No
+    Sync State             : n/a
+    Sync Params            : n/a
+    Master Channel         : n/a
+    Election Params        : n/a
+————————————————————————————————————————————————————————————————————
+POWER
+————————————————————————————————————————————————————————————————————
+    Power Source         : AC
+    Battery Warning Level: None
+    System Caps          : FullWake:cpu disk net aud vid
