@@ -118,11 +118,16 @@ func TestUnmarshalJSON(t *testing.T) {
 }
 
 func TestWithUserAgent(t *testing.T) {
-	cwd, err := os.Getwd()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Foo/2.0", r.Header.Get("User-Agent"))
+	}))
+	path := t.TempDir()
+	client, err := NewSofaClient(WithUserAgent("Foo/2.0"), WithCacheDir(path))
 	assert.NoError(t, err)
-	client, err := NewSofaClient(WithUserAgent("test"), WithCacheDir(cwd))
+	assert.Equal(t, "Foo/2.0", client.userAgent)
+
+	err = client.downloadFile(server.URL, path+"/test.txt")
 	assert.NoError(t, err)
-	assert.Equal(t, "test", client.userAgent)
 }
 
 func TestLoacCachedEtag(t *testing.T) {
