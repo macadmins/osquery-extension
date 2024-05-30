@@ -131,7 +131,7 @@ func SofaSecurityReleaseInfoColumns() []table.ColumnDefinition {
 	}
 }
 
-func SofaSecurityReleaseInfoGenerate(ctx context.Context, queryContext table.QueryContext, socketPath string) ([]map[string]string, error) {
+func SofaSecurityReleaseInfoGenerate(ctx context.Context, queryContext table.QueryContext, socketPath string, clientOpts ...Option) ([]map[string]string, error) {
 	url, osVersion := processContextConstraints(queryContext)
 
 	if osVersion == "" {
@@ -148,7 +148,12 @@ func SofaSecurityReleaseInfoGenerate(ctx context.Context, queryContext table.Que
 		}
 	}
 
-	client, err := NewSofaClient(WithURL(url))
+	defaultOpts := []Option{
+		WithURL(url),
+	}
+	clientOpts = append(clientOpts, defaultOpts...)
+
+	client, err := NewSofaClient(clientOpts...)
 	if err != nil {
 		return nil, err
 	}

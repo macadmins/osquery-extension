@@ -26,7 +26,7 @@ func SofaUnpatchedCVEsColumns() []table.ColumnDefinition {
 	}
 }
 
-func SofaUnpatchedCVEsGenerate(ctx context.Context, queryContext table.QueryContext, socketPath string) ([]map[string]string, error) {
+func SofaUnpatchedCVEsGenerate(ctx context.Context, queryContext table.QueryContext, socketPath string, opts ...Option) ([]map[string]string, error) {
 	url := SofaV1URL
 	if constraintList, present := queryContext.Constraints["url"]; present {
 		// 'url' is in the where clause
@@ -62,7 +62,12 @@ func SofaUnpatchedCVEsGenerate(ctx context.Context, queryContext table.QueryCont
 		}
 	}
 
-	client, err := NewSofaClient(WithURL(url))
+	defaultOpts := []Option{
+		WithURL(url),
+	}
+	opts = append(opts, defaultOpts...)
+
+	client, err := NewSofaClient(opts...)
 	if err != nil {
 		return nil, err
 	}
