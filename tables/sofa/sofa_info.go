@@ -127,6 +127,7 @@ func SofaSecurityReleaseInfoColumns() []table.ColumnDefinition {
 		table.IntegerColumn("unique_cves_count"),
 		table.IntegerColumn("days_since_previous_release"),
 		table.TextColumn("os_version"),
+		table.TextColumn("url"),
 	}
 }
 
@@ -168,10 +169,10 @@ func SofaSecurityReleaseInfoGenerate(ctx context.Context, queryContext table.Que
 		return nil, err
 	}
 
-	return buildSecurityReleaseInfoOutput(securityReleases, osVersion), nil
+	return buildSecurityReleaseInfoOutput(securityReleases, osVersion, url), nil
 }
 
-func buildSecurityReleaseInfoOutput(securityReleases []SecurityRelease, osVersion string) []map[string]string {
+func buildSecurityReleaseInfoOutput(securityReleases []SecurityRelease, osVersion, url string) []map[string]string {
 	var results []map[string]string
 	for _, securityRelease := range securityReleases {
 		results = append(results, map[string]string{
@@ -182,6 +183,7 @@ func buildSecurityReleaseInfoOutput(securityReleases []SecurityRelease, osVersio
 			"unique_cves_count":           strconv.Itoa(securityRelease.UniqueCVEsCount),
 			"days_since_previous_release": strconv.Itoa(securityRelease.DaysSincePreviousRelease),
 			"os_version":                  osVersion,
+			"url":                         url,
 		})
 	}
 	return results
