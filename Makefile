@@ -9,6 +9,8 @@ BAZEL_OUTPUT_PATH := $(shell bazel info output_path)
 APP_NAME = macadmins_extension
 PKGDIR_TMP = ${TMPDIR}golang
 
+VERSION ?= dev
+
 all: build
 
 .PHONY: clean .pre-build deps init gazelle update-repos test coverage build osqueryi zip
@@ -23,7 +25,6 @@ deps:
 	go mod download
 	go mod verify
 	go mod vendor
-
 
 init:
 	go mod init github.com/macadmins/osquery-extension
@@ -50,12 +51,13 @@ coverage:
 	mv $(BAZEL_OUTPUT_PATH)/_coverage/_coverage_report.dat coverage/lcov.info
 
 build: .pre-build
-	bazel build --verbose_failures //:osquery-extension-mac-amd
-	bazel build --verbose_failures //:osquery-extension-mac-arm
-	bazel build --verbose_failures //:osquery-extension-linux-amd
-	bazel build --verbose_failures //:osquery-extension-linux-arm
-	bazel build --verbose_failures //:osquery-extension-win-amd
-	bazel build --verbose_failures //:osquery-extension-win-arm
+	echo "Building version $(VERSION)"
+	bazel build --verbose_failures //:osquery-extension-mac-amd --define VERSION=$(VERSION)
+	bazel build --verbose_failures //:osquery-extension-mac-arm --define VERSION=$(VERSION)
+	bazel build --verbose_failures //:osquery-extension-linux-amd --define VERSION=$(VERSION)
+	bazel build --verbose_failures //:osquery-extension-linux-arm --define VERSION=$(VERSION)
+	bazel build --verbose_failures //:osquery-extension-win-amd --define VERSION=$(VERSION)
+	bazel build --verbose_failures //:osquery-extension-win-arm --define VERSION=$(VERSION)
 	tools/bazel_to_builddir.sh
 
 osqueryi: build

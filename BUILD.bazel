@@ -46,6 +46,10 @@ go_binary(
     goarch = "arm64",
     goos = "darwin",
     visibility = ["//visibility:public"],
+    gc_linkopts = [
+        "-X",
+        "github.com/macadmins/osquery-extension/pkg/utils.Version=$(VERSION)",
+    ],
 )
 
 go_binary(
@@ -54,6 +58,10 @@ go_binary(
     goarch = "amd64",
     goos = "darwin",
     visibility = ["//visibility:public"],
+    gc_linkopts = [
+        "-X",
+        "github.com/macadmins/osquery-extension/pkg/utils.Version=$(VERSION)",
+    ],
 )
 
 go_binary(
@@ -62,6 +70,10 @@ go_binary(
     goarch = "arm64",
     goos = "windows",
     visibility = ["//visibility:public"],
+    gc_linkopts = [
+        "-X",
+        "github.com/macadmins/osquery-extension/pkg/utils.Version=$(VERSION)",
+    ],
 )
 
 go_binary(
@@ -70,6 +82,10 @@ go_binary(
     goarch = "amd64",
     goos = "windows",
     visibility = ["//visibility:public"],
+    gc_linkopts = [
+        "-X",
+        "github.com/macadmins/osquery-extension/pkg/utils.Version=$(VERSION)",
+    ],
 )
 
 go_binary(
@@ -78,6 +94,10 @@ go_binary(
     goarch = "amd64",
     goos = "linux",
     visibility = ["//visibility:public"],
+    gc_linkopts = [
+        "-X",
+        "github.com/macadmins/osquery-extension/pkg/utils.Version=$(VERSION)",
+    ],
 )
 
 go_binary(
@@ -86,6 +106,10 @@ go_binary(
     goarch = "arm64",
     goos = "linux",
     visibility = ["//visibility:public"],
+    gc_linkopts = [
+        "-X",
+        "github.com/macadmins/osquery-extension/pkg/utils.Version=$(VERSION)",
+    ],
 )
 
 # pkg_zip(
