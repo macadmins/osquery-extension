@@ -47,7 +47,7 @@ test:
 coverage:
 	rm -rf coverage
 	mkdir -p coverage
-	bazel coverage --combined_report=lcov //...
+	bazel coverage --combined_report=lcov --define VERSION=$(VERSION) //...
 	mv $(BAZEL_OUTPUT_PATH)/_coverage/_coverage_report.dat coverage/lcov.info
 
 build: .pre-build
