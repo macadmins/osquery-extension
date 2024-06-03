@@ -15,7 +15,7 @@ import (
 
 const SofaV1URL = "https://sofa.macadmins.io/v1/macos_data_feed.json"
 
-const UserAgent = "macadmins-osquery-extension/1.0.2" // Todo: get the version during build
+var UserAgent = "macadmins-osquery-extension/" + utils.Version
 
 type SofaClient struct {
 	endpoint   string
