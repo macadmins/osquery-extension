@@ -1,9 +1,14 @@
-name: Build MacAdmins OSQuery Extension (Manual)
+name: Release MacAdmins OSQuery Extension
 
-env:
-  VERSION: 1.1.2 # hardcoded for now until we figure out how we want to tackle this
-
-on: [workflow_dispatch]
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to use for the build (format: X.X.X)'
+        required: true
 
 jobs:
   build:
@@ -15,7 +20,7 @@ jobs:
       with:
         go-version: ${{ env.GO_VERSION }}
 
-    - name: Checkout osquery repo repo
+    - name: Checkout osquery repo
       uses: actions/checkout@24cb9080177205b6e8c946b17badbe402adc938f # v3.4.0
       with:
         fetch-depth: 0
@@ -35,8 +40,35 @@ jobs:
         p12-file-base64: ${{ secrets.PKG_CERTIFICATES_P12_MAOS }}
         p12-password: ${{ secrets.PKG_CERTIFICATES_P12_PASSWORD_MAOS }}
 
+    - name: Get version from tag
+      id: get_version
+      if: startsWith(github.ref, 'refs/tags/')
+      run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
+
+    - name: Set version for manual run
+      if: github.event_name == 'workflow_dispatch'
+      run: echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_ENV
+
+    - name: Validate version format
+      if: github.event_name == 'workflow_dispatch'
+      run: |
+        if [[ ! "${{ github.event.inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "Invalid version format. Please use the format X.X.X."
+          exit 1
+        fi
+
+    - name: Create and push tag
+      if: github.event_name == 'workflow_dispatch'
+      run: |
+        git config --global user.name 'github-actions[bot]'
+        git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+        git tag v${{ github.event.inputs.version }}
+        git push origin v${{ github.event.inputs.version }}
+
     - name: Run makefile
       run: make zip
+      env:
+        VERSION: ${{ env.VERSION }}
 
     - name: Generate changelog
       id: changelog
