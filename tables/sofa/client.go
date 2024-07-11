@@ -296,3 +296,7 @@ func (s *SofaClient) downloadSofaJSON() (Root, error) {
 
 	return s.loadCachedData()
 }
+
+func BuildUserAgent(version string) string {
+	return "macadmins-osquery-extension/" + version
+}

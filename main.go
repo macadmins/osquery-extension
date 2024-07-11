@@ -44,7 +44,7 @@ func main() {
 		panic("Version not set")
 	}
 
-	useragent := buildUserAgent(Version)
+	useragent := sofa.BuildUserAgent(Version)
 	sofaOpts := []sofa.Option{
 		sofa.WithUserAgent(useragent),
 	}
@@ -112,8 +112,4 @@ func main() {
 	if err := server.Run(); err != nil {
 		log.Fatalln(err)
 	}
-}
-
-func buildUserAgent(version string) string {
-	return "macadmins-osquery-extension/" + version
 }

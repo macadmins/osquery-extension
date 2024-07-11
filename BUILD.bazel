@@ -1,4 +1,4 @@
-load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library")
 load("@bazel_gazelle//:def.bzl", "gazelle")
 # load(":rules.bzl", "foo_binary")
 
@@ -102,11 +102,4 @@ go_binary(
     goarch = "arm64",
     goos = "linux",
     visibility = ["//visibility:public"],
-)
-
-go_test(
-    name = "osquery-extension_test",
-    srcs = ["main_test.go"],
-    embed = [":osquery-extension_lib"],
-    deps = ["@com_github_stretchr_testify//assert"],
 )

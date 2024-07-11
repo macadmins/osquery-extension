@@ -369,3 +369,11 @@ func TestCreateCacheDir(t *testing.T) {
 
 	assert.DirExists(t, client.cacheDir)
 }
+
+func TestBuildUserAgent(t *testing.T) {
+	version := "1.0.0"
+	expectedUserAgent := "macadmins-osquery-extension/1.0.0"
+	userAgent := BuildUserAgent(version)
+
+	assert.Equal(t, expectedUserAgent, userAgent)
+}
