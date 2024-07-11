@@ -20,6 +20,14 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
+      - name: Read version from VERSION file
+        run: |
+          VERSION=$(cat VERSION)
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+      
+      - name: print version
+        run: echo ${{ env.VERSION }}
+
       - name: Set up Go
         uses: actions/setup-go@v4
         with:

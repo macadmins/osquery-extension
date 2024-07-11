@@ -15,9 +15,25 @@ gazelle(
     command = "update-repos",
 )
 
+genrule(
+    name = "version_config",
+    srcs = [
+        "VERSION",
+        "write_version_config.sh",
+    ],  # Ensure dependencies are listed
+    outs = ["version_config.go"],
+    cmd = "$(location write_version_config.sh) $@",
+    stamp = 1,
+    tools = ["write_version_config.sh"],
+)
+
 go_library(
     name = "osquery-extension_lib",
-    srcs = ["main.go"],
+    # keep
+    srcs = [
+        "main.go",
+        ":version_config",
+    ],
     importpath = "github.com/macadmins/osquery-extension",
     visibility = ["//visibility:private"],
     deps = [
@@ -87,15 +103,3 @@ go_binary(
     goos = "linux",
     visibility = ["//visibility:public"],
 )
-
-# pkg_zip(
-#     name = "foo_zip",
-#     srcs = [
-#         "README.txt",
-#         ":manpages",
-#         ":share_doc",
-#         "//resources/l10n:all",
-#         "//src/client:arch",
-#         "//src/server:arch",
-#     ],
-# )

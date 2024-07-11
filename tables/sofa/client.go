@@ -1,9 +1,11 @@
 package sofa
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path"
@@ -14,8 +16,6 @@ import (
 )
 
 const SofaV1URL = "https://sofa.macadmins.io/v1/macos_data_feed.json"
-
-const UserAgent = "macadmins-osquery-extension/1.0.2" // Todo: get the version during build
 
 type SofaClient struct {
 	endpoint   string
@@ -94,12 +94,15 @@ func NewSofaClient(opts ...Option) (*SofaClient, error) {
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
-		cacheDir:  "/private/tmp/sofa",
-		userAgent: UserAgent,
+		cacheDir: "/private/tmp/sofa",
 	}
 
 	for _, opt := range opts {
 		opt(s)
+	}
+
+	if s.userAgent == "" {
+		return nil, errors.New("user agent is required")
 	}
 
 	err := s.createCacheDir()
@@ -234,7 +237,7 @@ func (s *SofaClient) downloadFile(url, path string) error {
 	}
 
 	req.Header.Set("User-Agent", s.userAgent)
-
+	req.Header.Set("Accept-Encoding", "gzip")
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return err
@@ -246,8 +249,20 @@ func (s *SofaClient) downloadFile(url, path string) error {
 		return err
 	}
 
+	var reader io.ReadCloser
+	switch resp.Header.Get("Content-Encoding") {
+	case "gzip":
+		reader, err = gzip.NewReader(resp.Body)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer reader.Close()
+	default:
+		reader = resp.Body
+	}
+
 	defer file.Close() // nolint: errcheck
-	_, err = io.Copy(file, resp.Body)
+	_, err = io.Copy(file, reader)
 	if err != nil {
 		return err
 	}
