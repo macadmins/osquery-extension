@@ -62,6 +62,7 @@ func TestDownloadFile(t *testing.T) {
 	client, err := NewSofaClient(
 		WithURL(server.URL),
 		WithCacheDir(cwd),
+		WithUserAgent("test"),
 	)
 
 	assert.NoError(t, err)
