@@ -62,6 +62,7 @@ func TestDownloadFile(t *testing.T) {
 	client, err := NewSofaClient(
 		WithURL(server.URL),
 		WithCacheDir(cwd),
+		WithUserAgent("test"),
 	)
 
 	assert.NoError(t, err)
@@ -300,7 +301,7 @@ func TestDownloadData(t *testing.T) {
 func TestNewSofaClient(t *testing.T) {
 	cwd, err := os.Getwd()
 	assert.NoError(t, err)
-	client, err := NewSofaClient(WithCacheDir(cwd))
+	client, err := NewSofaClient(WithCacheDir(cwd), WithUserAgent("test"))
 	assert.NoError(t, err)
 	assert.Equal(t, SofaV1URL, client.endpoint)
 	assert.NotNil(t, client.httpClient)
@@ -309,7 +310,7 @@ func TestNewSofaClient(t *testing.T) {
 func TestWithHTTPClient(t *testing.T) {
 	cwd, err := os.Getwd()
 	assert.NoError(t, err)
-	client, err := NewSofaClient(WithHTTPClient(&http.Client{}), WithCacheDir(cwd))
+	client, err := NewSofaClient(WithHTTPClient(&http.Client{}), WithCacheDir(cwd), WithUserAgent("test"))
 	assert.NoError(t, err)
 	assert.NotNil(t, client.httpClient)
 }
@@ -317,7 +318,7 @@ func TestWithHTTPClient(t *testing.T) {
 func TestWithEndpoint(t *testing.T) {
 	cwd, err := os.Getwd()
 	assert.NoError(t, err)
-	client, err := NewSofaClient(WithURL("http://example.com"), WithCacheDir(cwd))
+	client, err := NewSofaClient(WithURL("http://example.com"), WithCacheDir(cwd), WithUserAgent("test"))
 	assert.NoError(t, err)
 	assert.Equal(t, "http://example.com", client.endpoint)
 }
@@ -325,7 +326,7 @@ func TestWithEndpoint(t *testing.T) {
 func TestSetCachePaths(t *testing.T) {
 	cwd, err := os.Getwd()
 	assert.NoError(t, err)
-	client, err := NewSofaClient(WithCacheDir(cwd))
+	client, err := NewSofaClient(WithCacheDir(cwd), WithUserAgent("test"))
 	assert.NoError(t, err)
 
 	client.setCachePaths()
@@ -337,7 +338,7 @@ func TestSetCachePaths(t *testing.T) {
 func TestWithCacheDir(t *testing.T) {
 	cwd, err := os.Getwd()
 	assert.NoError(t, err)
-	client, err := NewSofaClient(WithCacheDir(cwd))
+	client, err := NewSofaClient(WithCacheDir(cwd), WithUserAgent("test"))
 	assert.NoError(t, err)
 	defer os.Remove(client.cacheDir) //nolint:errcheck
 
@@ -349,7 +350,7 @@ func TestWithCacheDir(t *testing.T) {
 func TestEtagPath(t *testing.T) {
 	cwd, err := os.Getwd()
 	assert.NoError(t, err)
-	client, err := NewSofaClient(WithCacheDir(cwd))
+	client, err := NewSofaClient(WithCacheDir(cwd), WithUserAgent("test"))
 	assert.NoError(t, err)
 
 	client.setCachePaths()
@@ -360,11 +361,19 @@ func TestEtagPath(t *testing.T) {
 func TestCreateCacheDir(t *testing.T) {
 	cwd, err := os.Getwd()
 	assert.NoError(t, err)
-	client, err := NewSofaClient(WithCacheDir(cwd))
+	client, err := NewSofaClient(WithCacheDir(cwd), WithUserAgent("test"))
 	assert.NoError(t, err)
 
 	err = client.createCacheDir()
 	assert.NoError(t, err)
 
 	assert.DirExists(t, client.cacheDir)
+}
+
+func TestBuildUserAgent(t *testing.T) {
+	version := "1.0.0"
+	expectedUserAgent := "macadmins-osquery-extension/1.0.0"
+	userAgent := BuildUserAgent(version)
+
+	assert.Equal(t, expectedUserAgent, userAgent)
 }

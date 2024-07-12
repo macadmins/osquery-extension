@@ -5,3 +5,4 @@ macadmins_extension
 config.mk
 bazel-*
 coverage/*
+version_config.go
