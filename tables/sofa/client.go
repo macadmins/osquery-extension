@@ -15,7 +15,7 @@ import (
 	"github.com/macadmins/osquery-extension/pkg/utils"
 )
 
-const SofaV1URL = "https://sofa.macadmins.io/v1/macos_data_feed.json"
+const SofaV1URL = "https://sofafeed.macadmins.io/v1/macos_data_feed.json"
 
 type SofaClient struct {
 	endpoint   string
