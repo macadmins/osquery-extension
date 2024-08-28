@@ -8,6 +8,7 @@ require (
 	github.com/osquery/osquery-go v0.0.0-20231130195733-61ac79279aaa
 	github.com/pkg/errors v0.9.1
 	github.com/stretchr/testify v1.9.0
+	golang.org/x/sync v0.8.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 

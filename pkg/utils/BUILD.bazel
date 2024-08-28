@@ -5,18 +5,24 @@ go_library(
     srcs = [
         "exec.go",
         "exec_mocks.go",
+        "osquery.go",
         "utils.go",
     ],
     importpath = "github.com/macadmins/osquery-extension/pkg/utils",
     visibility = ["//visibility:public"],
+    deps = ["@com_github_osquery_osquery_go//:osquery-go"],
 )
 
 go_test(
     name = "utils_test",
     srcs = [
         "exec_test.go",
+        "osquery_test.go",
         "utils_test.go",
     ],
     embed = [":utils"],
-    deps = ["@com_github_stretchr_testify//assert"],
+    deps = [
+        "@com_github_stretchr_testify//assert",
+        "@com_github_stretchr_testify//require",
+    ],
 )

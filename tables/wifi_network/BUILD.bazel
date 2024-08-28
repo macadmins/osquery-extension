@@ -6,6 +6,7 @@ go_library(
     importpath = "github.com/macadmins/osquery-extension/tables/wifi_network",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/utils",
         "@com_github_osquery_osquery_go//:osquery-go",
         "@com_github_osquery_osquery_go//plugin/table",
         "@com_github_pkg_errors//:errors",
@@ -18,6 +19,7 @@ go_test(
     embed = [":wifi_network"],
     embedsrcs = ["wdutil_out.txt"],
     deps = [
+        "//pkg/utils",
         "@com_github_osquery_osquery_go//plugin/table",
         "@com_github_stretchr_testify//assert",
     ],
