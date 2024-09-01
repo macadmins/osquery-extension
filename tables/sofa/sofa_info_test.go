@@ -4,17 +4,10 @@ import (
 	_ "embed"
 	"testing"
 
+	"github.com/macadmins/osquery-extension/pkg/utils"
 	"github.com/osquery/osquery-go/plugin/table"
 	"github.com/stretchr/testify/assert"
 )
-
-type MockOsqueryClient struct{}
-
-func (m MockOsqueryClient) QueryRow(query string) (map[string]string, error) {
-	return map[string]string{"version": "1.0.0"}, nil
-}
-
-func (m MockOsqueryClient) Close() {}
 
 func TestGetSecurityReleaseInfoForOSVersion(t *testing.T) {
 	tests := []struct {
@@ -77,7 +70,11 @@ func TestGetSecurityReleaseInfoForOSVersion(t *testing.T) {
 }
 
 func TestGetCurrentOSVersion(t *testing.T) {
-	mockClient := MockOsqueryClient{}
+	mockClient := &utils.MockOsqueryClient{
+		Data: map[string][]map[string]string{
+			"SELECT * FROM os_version;": {{"version": "1.0.0"}},
+		},
+	}
 	version, err := getCurrentOSVersion(mockClient)
 	assert.NoError(t, err)
 	assert.Equal(t, "1.0.0", version)
