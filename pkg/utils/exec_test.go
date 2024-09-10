@@ -5,9 +5,13 @@ import (
 )
 
 func TestRunCmd(t *testing.T) {
-	runner := MockCmdRunner{
-		Output: "test output",
-		Err:    nil,
+	runner := MultiMockCmdRunner{
+		Commands: map[string]MockCmdRunner{
+			"echo test": {
+				Output: "test output",
+				Err:    nil,
+			},
+		},
 	}
 	output, err := runner.RunCmd("echo", "test")
 	if err != nil {
@@ -15,15 +19,19 @@ func TestRunCmd(t *testing.T) {
 		return
 	}
 	got := string(output)
-	if got != runner.Output {
-		t.Errorf("RunCmd() = %q, want %q", got, runner.Output)
+	if got != runner.Commands["echo test"].Output {
+		t.Errorf("RunCmd() = %q, want %q", got, runner.Commands["echo test"].Output)
 	}
 }
 
 func TestRunCmdWithStdin(t *testing.T) {
-	runner := MockCmdRunner{
-		Output: "test output",
-		Err:    nil,
+	runner := MultiMockCmdRunner{
+		Commands: map[string]MockCmdRunner{
+			"echo": {
+				Output: "test output",
+				Err:    nil,
+			},
+		},
 	}
 	output, err := runner.RunCmdWithStdin("echo", "test")
 	if err != nil {
@@ -31,7 +39,7 @@ func TestRunCmdWithStdin(t *testing.T) {
 		return
 	}
 	got := string(output)
-	if got != runner.Output {
-		t.Errorf("RunCmdWithStdin() = %q, want %q", got, runner.Output)
+	if got != runner.Commands["echo"].Output {
+		t.Errorf("RunCmdWithStdin() = %q, want %q", got, runner.Commands["echo"].Output)
 	}
 }

@@ -37,6 +37,7 @@ go_library(
     importpath = "github.com/macadmins/osquery-extension",
     visibility = ["//visibility:private"],
     deps = [
+        "//tables/alt_system_info",
         "//tables/authdb",
         "//tables/chromeuserprofiles",
         "//tables/fileline",

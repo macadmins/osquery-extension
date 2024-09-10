@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/macadmins/osquery-extension/pkg/utils"
 	"github.com/osquery/osquery-go/plugin/table"
 	"github.com/stretchr/testify/assert"
 
@@ -12,14 +13,6 @@ import (
 
 //go:embed wdutil_out.txt
 var wdutilOut []byte
-
-type MockOsqueryClient struct{}
-
-func (m MockOsqueryClient) QueryRow(query string) (map[string]string, error) {
-	return map[string]string{"interface": "en0"}, nil
-}
-
-func (m MockOsqueryClient) Close() {}
 
 type MockCommandExecutor struct{}
 
@@ -62,7 +55,11 @@ func TestWifiNetworkColumns(t *testing.T) {
 
 // TestGetWifiStatus
 func TestGetWifiStatus(t *testing.T) {
-	mockOsqueryClient := MockOsqueryClient{}
+	mockOsqueryClient := &utils.MockOsqueryClient{
+		Data: map[string][]map[string]string{
+			"SELECT * FROM wifi_status;": {{"interface": "en0"}},
+		},
+	}
 	result, err := getWifiStatus(mockOsqueryClient)
 	expected := map[string]string{"interface": "en0"}
 	assert.NoError(t, err)
