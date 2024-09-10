@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/macadmins/osquery-extension/pkg/utils"
 	"github.com/osquery/osquery-go"
 	"github.com/osquery/osquery-go/plugin/table"
 	"github.com/pkg/errors"
@@ -23,11 +24,6 @@ func (r CmdExecutor) ExecCommand(name string, args ...string) ([]byte, error) {
 	cmd := exec.Command(name, args...)
 	cmd.Stderr = os.Stderr
 	return cmd.Output()
-}
-
-type OsqueryClient interface {
-	QueryRow(query string) (map[string]string, error)
-	Close()
 }
 
 func WifiNetworkColumns() []table.ColumnDefinition {
@@ -85,7 +81,7 @@ func WifiNetworkGenerate(
 }
 
 // getWifiInterface checks the wifi_status table to determine the wifi interface
-func getWifiStatus(client OsqueryClient) (map[string]string, error) {
+func getWifiStatus(client utils.OsqueryClient) (map[string]string, error) {
 	wifiStatusQuery := "SELECT * FROM wifi_status;"
 
 	resp, err := client.QueryRow(wifiStatusQuery)

@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/macadmins/osquery-extension/tables/alt_system_info"
 	"github.com/macadmins/osquery-extension/tables/chromeuserprofiles"
 	"github.com/macadmins/osquery-extension/tables/fileline"
 	"github.com/macadmins/osquery-extension/tables/filevaultusers"
@@ -98,6 +99,11 @@ func main() {
 				wifi_network.WifiNetworkColumns(),
 				func(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
 					return wifi_network.WifiNetworkGenerate(ctx, queryContext, *flSocketPath)
+				},
+			),
+			table.NewPlugin("alt_system_info", alt_system_info.AltSystemInfoColumns(),
+				func(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
+					return alt_system_info.AltSystemInfoGenerate(ctx, queryContext, *flSocketPath)
 				},
 			),
 		}

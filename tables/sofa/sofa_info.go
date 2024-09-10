@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-version"
+	"github.com/macadmins/osquery-extension/pkg/utils"
 	osquery "github.com/osquery/osquery-go"
 	"github.com/osquery/osquery-go/plugin/table"
 )
@@ -112,11 +113,6 @@ type OSVersion struct {
 }
 
 type Option func(*SofaClient)
-
-type OsqueryClient interface {
-	QueryRow(query string) (map[string]string, error)
-	Close()
-}
 
 func SofaSecurityReleaseInfoColumns() []table.ColumnDefinition {
 	return []table.ColumnDefinition{
@@ -238,7 +234,7 @@ func getSecurityReleaseInfoForOSVersion(root Root, osVersion string) ([]Security
 	return out, nil
 }
 
-func getCurrentOSVersion(client OsqueryClient) (string, error) {
+func getCurrentOSVersion(client utils.OsqueryClient) (string, error) {
 	osVersionQuery := "SELECT * FROM os_version;"
 
 	resp, err := client.QueryRow(osVersionQuery)
