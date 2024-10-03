@@ -19,7 +19,6 @@ func yamlPath() string {
 }
 
 func getPuppetYaml() (*PuppetInfo, error) {
-
 	var yamlData PuppetInfo
 
 	yamlFile, err := os.Open(yamlPath())
@@ -27,12 +26,14 @@ func getPuppetYaml() (*PuppetInfo, error) {
 		log.Print(err)
 		return &yamlData, err
 	}
+	defer yamlFile.Close()
 
 	buf := new(bytes.Buffer)
 	_, err = buf.ReadFrom(yamlFile)
 	if err != nil {
 		return &yamlData, err
 	}
+
 	yamlString := buf.String()
 	yamlString = strings.Replace(yamlString, "\r", "\n", -1)
 
@@ -40,6 +41,6 @@ func getPuppetYaml() (*PuppetInfo, error) {
 	if err != nil {
 		return &yamlData, err
 	}
-	yamlFile.Close()
+
 	return &yamlData, nil
 }
