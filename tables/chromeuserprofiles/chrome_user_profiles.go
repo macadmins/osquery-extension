@@ -29,6 +29,7 @@ func WithUsername(username string) FindFileOpt {
 var homeDirLocations = map[string][]string{
 	"windows": {"/Users"}, // windows10 uses /Users
 	"darwin":  {"/Users"},
+	"linux":   {"/home"},
 }
 
 type userFileInfo struct {
