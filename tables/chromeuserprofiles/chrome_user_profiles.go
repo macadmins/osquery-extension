@@ -63,6 +63,7 @@ func GoogleChromeProfilesColumns() []table.ColumnDefinition {
 		table.TextColumn("email"),
 		table.TextColumn("name"),
 		table.IntegerColumn("ephemeral"),
+		table.TextColumn("path"),
 	}
 }
 
@@ -77,16 +78,29 @@ func generateForPath(ctx context.Context, fileInfo userFileInfo) ([]map[string]s
 		return nil, errors.Wrap(err, "unmarshalling chome local state")
 	}
 
-	for _, profileInfo := range localState.Profile.InfoCache {
+	for profileDir, profileInfo := range localState.Profile.InfoCache {
 		results = append(results, map[string]string{
 			"username":  fileInfo.user,
 			"email":     profileInfo.Email,
 			"name":      profileInfo.Name,
 			"ephemeral": strconv.Itoa(btoi(profileInfo.Ephemeral)),
+			"path":      profilePathIfExists(fileInfo.path, profileDir),
 		})
 	}
 
 	return results, nil
+}
+
+func profilePathIfExists(localStatePath, profileDir string) string {
+	localStateDir := filepath.Dir(localStatePath)
+	profilePath := filepath.Join(localStateDir, profileDir)
+	if _, err := os.Stat(profilePath); err != nil {
+		// If there's an error of any kind, assume the profile path doesn't
+		// exist
+		return ""
+	}
+
+	return profilePath
 }
 
 func GoogleChromeProfilesGenerate(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {

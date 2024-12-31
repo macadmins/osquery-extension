@@ -17,9 +17,9 @@ func TestBtoi(t *testing.T) {
 
 func TestGoogleChromeProfilesColumns(t *testing.T) {
 	columns := GoogleChromeProfilesColumns()
-	assert.Len(t, columns, 4)
+	assert.Len(t, columns, 5)
 
-	expectedColumnNames := []string{"username", "email", "name", "ephemeral"}
+	expectedColumnNames := []string{"username", "email", "name", "ephemeral", "path"}
 	for i, column := range columns {
 		assert.Equal(t, expectedColumnNames[i], column.Name)
 	}
@@ -61,6 +61,12 @@ func TestGenerateForPath(t *testing.T) {
 	// Create a temporary directory for testing
 	tempDir := t.TempDir()
 
+	// Create a dummy directory for one of the profiles - the name is the
+	// info_cache map key, not the 'name' value
+	profile1Path := filepath.Join(tempDir, "profile1")
+	err := os.Mkdir(profile1Path, os.ModePerm)
+	assert.NoError(t, err)
+
 	// Create a test Chrome local state file
 	localStateFile := filepath.Join(tempDir, "Local State")
 	localStateData := `{
@@ -80,7 +86,7 @@ func TestGenerateForPath(t *testing.T) {
 		}
 	}`
 
-	err := os.WriteFile(localStateFile, []byte(localStateData), os.ModePerm)
+	err = os.WriteFile(localStateFile, []byte(localStateData), os.ModePerm)
 	assert.NoError(t, err)
 
 	// Test generateForPath
@@ -99,12 +105,14 @@ func TestGenerateForPath(t *testing.T) {
 			"email":     "profile1@example.com",
 			"name":      "Profile 1",
 			"ephemeral": "0",
+			"path":      profile1Path,
 		},
 		{
 			"username":  "testuser",
 			"email":     "profile2@example.com",
 			"name":      "Profile 2",
 			"ephemeral": "1",
+			"path":      "",
 		},
 	}
 
