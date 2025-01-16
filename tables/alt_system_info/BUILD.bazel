@@ -7,9 +7,9 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/utils",
-        "//vendor/github.com/micromdm/plist",
-        "//vendor/github.com/osquery/osquery-go/plugin/table",
-        "//vendor/golang.org/x/sync/errgroup",
+        "@com_github_micromdm_plist//:go_default_library",
+        "@com_github_osquery_osquery_go//plugin/table:go_default_library",
+        "@org_golang_x_sync//errgroup",
     ],
 )
 
@@ -19,7 +19,7 @@ go_test(
     deps = [
         ":alt_system_info",
         "//pkg/utils",
-        "//vendor/github.com/stretchr/testify/assert",
-        "//vendor/github.com/stretchr/testify/require",
+        "@com_github_stretchr_testify//assert:go_default_library",
+        "@com_github_stretchr_testify//require:go_default_library",
     ],
 )

@@ -10,7 +10,7 @@ go_library(
     ],
     importpath = "github.com/macadmins/osquery-extension/pkg/utils",
     visibility = ["//visibility:public"],
-    deps = ["//vendor/github.com/osquery/osquery-go"],
+    deps = ["@com_github_osquery_osquery_go//:go_default_library"],
 )
 
 go_test(
@@ -22,7 +22,7 @@ go_test(
     ],
     embed = [":utils"],
     deps = [
-        "//vendor/github.com/stretchr/testify/assert",
-        "//vendor/github.com/stretchr/testify/require",
+        "@com_github_stretchr_testify//assert:go_default_library",
+        "@com_github_stretchr_testify//require:go_default_library",
     ],
 )
