@@ -1,6 +1,7 @@
-load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library")
 load("@bazel_gazelle//:def.bzl", "gazelle")
 # load(":rules.bzl", "foo_binary")
+
+load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library")
 
 # gazelle:prefix github.com/macadmins/osquery-extension
 gazelle(name = "gazelle")
@@ -52,8 +53,8 @@ go_library(
         "//tables/sofa",
         "//tables/unifiedlog",
         "//tables/wifi_network",
-        "@com_github_osquery_osquery_go//:osquery-go",
-        "@com_github_osquery_osquery_go//plugin/table",
+        "//vendor/github.com/osquery/osquery-go",
+        "//vendor/github.com/osquery/osquery-go/plugin/table",
     ],
 )
 

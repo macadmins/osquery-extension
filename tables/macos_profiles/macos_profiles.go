@@ -4,7 +4,7 @@ import (
 	"context"
 	"os/exec"
 
-	"github.com/groob/plist"
+	"github.com/micromdm/plist"
 	"github.com/osquery/osquery-go/plugin/table"
 	"github.com/pkg/errors"
 )

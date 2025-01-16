@@ -8,8 +8,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/groob/plist"
 	"github.com/macadmins/osquery-extension/pkg/utils"
+	"github.com/micromdm/plist"
 	"github.com/osquery/osquery-go/plugin/table"
 	"github.com/pkg/errors"
 )

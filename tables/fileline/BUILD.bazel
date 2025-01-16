@@ -7,6 +7,6 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/utils",
-        "@com_github_osquery_osquery_go//plugin/table",
+        "//vendor/github.com/osquery/osquery-go/plugin/table",
     ],
 )

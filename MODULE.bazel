@@ -4,3 +4,10 @@
 #
 # For more details, please check https://github.com/bazelbuild/bazel/issues/18958
 ###############################################################################
+
+module(
+    name = "osquery-extension",
+    repo_name = "com_github_macadmins_osquery-extension",
+)
+bazel_dep(name = "rules_go", version = "0.52.0", repo_name = "io_bazel_rules_go")
+bazel_dep(name = "gazelle", version = "0.41.0", repo_name = "bazel_gazelle")

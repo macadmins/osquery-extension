@@ -6,9 +6,9 @@ go_library(
     importpath = "github.com/macadmins/osquery-extension/tables/macosrsr",
     visibility = ["//visibility:public"],
     deps = [
-        "@com_github_groob_plist//:plist",
-        "@com_github_osquery_osquery_go//plugin/table",
-        "@com_github_pkg_errors//:errors",
+        "//vendor/github.com/micromdm/plist",
+        "//vendor/github.com/osquery/osquery-go/plugin/table",
+        "//vendor/github.com/pkg/errors",
     ],
 )
 
@@ -17,5 +17,5 @@ go_test(
     srcs = ["rsr_test.go"],
     embed = [":macosrsr"],
     embedsrcs = ["test_SystemVersion.plist"],
-    deps = ["@com_github_stretchr_testify//assert"],
+    deps = ["//vendor/github.com/stretchr/testify/assert"],
 )

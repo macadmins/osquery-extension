@@ -7,8 +7,8 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/utils",
-        "@com_github_groob_plist//:plist",
-        "@com_github_osquery_osquery_go//plugin/table",
+        "//vendor/github.com/micromdm/plist",
+        "//vendor/github.com/osquery/osquery-go/plugin/table",
     ],
 )
 
@@ -18,7 +18,7 @@ go_test(
     embed = [":authdb"],
     deps = [
         "//pkg/utils",
-        "@com_github_osquery_osquery_go//plugin/table",
-        "@com_github_stretchr_testify//assert",
+        "//vendor/github.com/osquery/osquery-go/plugin/table",
+        "//vendor/github.com/stretchr/testify/assert",
     ],
 )

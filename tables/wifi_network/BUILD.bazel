@@ -7,9 +7,9 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/utils",
-        "@com_github_osquery_osquery_go//:osquery-go",
-        "@com_github_osquery_osquery_go//plugin/table",
-        "@com_github_pkg_errors//:errors",
+        "//vendor/github.com/osquery/osquery-go",
+        "//vendor/github.com/osquery/osquery-go/plugin/table",
+        "//vendor/github.com/pkg/errors",
     ],
 )
 
@@ -20,7 +20,7 @@ go_test(
     embedsrcs = ["wdutil_out.txt"],
     deps = [
         "//pkg/utils",
-        "@com_github_osquery_osquery_go//plugin/table",
-        "@com_github_stretchr_testify//assert",
+        "//vendor/github.com/osquery/osquery-go/plugin/table",
+        "//vendor/github.com/stretchr/testify/assert",
     ],
 )
