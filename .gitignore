@@ -6,3 +6,4 @@ config.mk
 bazel-*
 coverage/*
 version_config.go
+cover.out
