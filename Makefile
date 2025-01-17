@@ -11,7 +11,16 @@ PKGDIR_TMP = ${TMPDIR}golang
 
 all: build
 
-.PHONY: clean .pre-build deps init gazelle update-repos test coverage build osqueryi zip
+.PHONY: clean .pre-build deps init gazelle update-repos test coverage build osqueryi zip install-go-test-coverage
+
+GOBIN ?= $$(go env GOPATH)/bin
+
+install-go-test-coverage:
+	go install github.com/vladopajic/go-test-coverage/v2@latest
+
+coverage: install-go-test-coverage
+	go test ./... -coverprofile=./cover.out -covermode=atomic -coverpkg=./...
+	${GOBIN}/go-test-coverage --config=./.testcoverage.yml
 
 .pre-build: clean
 	mkdir -p build/darwin
@@ -42,12 +51,6 @@ update-repos:
 
 test:
 	bazel test --test_output=errors //...
-
-coverage:
-	rm -rf coverage
-	mkdir -p coverage
-	bazel coverage --combined_report=lcov //...
-	mv $(BAZEL_OUTPUT_PATH)/_coverage/_coverage_report.dat coverage/lcov.info
 
 build: .pre-build
 	bazel build --verbose_failures //:osquery-extension-mac-amd

@@ -1,0 +1,82 @@
+# (mandatory)
+# Path to coverage profile file (output of `go test -coverprofile` command).
+#
+# For cases where there are many coverage profiles, such as when running
+# unit tests and integration tests separately, you can combine all those
+# profiles into one. In this case, the profile should have a comma-separated list
+# of profile files, e.g., 'cover_unit.out,cover_integration.out'.
+profile: cover.out
+
+# (optional; but recommended to set)
+# When specified reported file paths will not contain local prefix in the output.
+local-prefix: "github.com/macadmins/osquery-extension"
+
+# Holds coverage thresholds percentages, values should be in range [0-100].
+threshold:
+  # (optional; default 0)
+  # Minimum coverage percentage required for individual files.
+  file: 40
+
+  # (optional; default 0)
+  # Minimum coverage percentage required for each package.
+  package: 40
+
+  # (optional; default 0)
+  # Minimum overall project coverage percentage required.
+  total: 40
+
+# Holds regexp rules which will override thresholds for matched files or packages
+# using their paths.
+#
+# First rule from this list that matches file or package is going to apply
+# new threshold to it. If project has multiple rules that match same path,
+# override rules should be listed in order from specific to more general rules.
+override:
+  - path: tables/filevaultusers/filevaultusers.go
+    threshold: 36
+  - path: tables/macos_profiles/macos_profiles.go
+    threshold: 36
+  - path: tables/sofa/sofa_cves.go
+    threshold: 26
+  - path: ^tables/macos_profiles$
+    threshold: 36
+  - path: ^tables/filevaultusers$
+    threshold: 36
+  - path: ^tables/mdm$
+    threshold: 38
+  - path: tables/mdm/mdm.go
+    threshold: 38
+# Holds regexp rules which will exclude matched files or packages
+# from coverage statistics.
+exclude:
+  # Exclude files or packages matching their paths
+  paths:
+    - main.go
+    - pkg/utils/exec.go
+    - tables/fileline/file_line.go
+    - tables/unifiedlog/unified_log.go
+    - ^tables/networkquality$
+    - ^tables/unifiedlog$
+    - ^tables/puppet$
+    - ^tables/unifiedlog$
+    - ^tables/pendingappleupdates$
+    - ^tables/fileline$
+    - tables/unifiedlog/unified_log.go
+    - tables/networkquality/networkquality.go
+    - tables/pendingappleupdates/pendingappleupdates.go
+    - tables/puppet/puppet_facts.go
+    - tables/puppet/puppet_info.go
+    - tables/puppet/puppet_logs.go
+    - tables/puppet/puppet_state.go
+    - tables/puppet/yaml.go
+    # - \.pb\.go$ # excludes all protobuf generated files
+    # - ^pkg/bar # exclude package `pkg/bar`
+
+# File name of go-test-coverage breakdown file, which can be used to
+# analyze coverage difference.
+breakdown-file-name: ""
+
+diff:
+  # File name of go-test-coverage breakdown file which will be used to
+  # report coverage difference.
+  base-breakdown-file-name: ""
