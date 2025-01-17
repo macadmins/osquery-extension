@@ -42,6 +42,8 @@ override:
     threshold: 36
   - path: ^tables/filevaultusers$
     threshold: 36
+  - path: ^tables/mdm$
+    threshold: 38
 
 # Holds regexp rules which will exclude matched files or packages
 # from coverage statistics.
