@@ -61,7 +61,7 @@ func TestGenerateForPath(t *testing.T) {
 	// Create a temporary directory for testing
 	tempDir := t.TempDir()
 
-	// Create a dummy directory for one of the profiles - the name is the
+	// Create a placeholder directory for one of the profiles - the name is the
 	// info_cache map key, not the 'name' value
 	profile1Path := filepath.Join(tempDir, "profile1")
 	err := os.Mkdir(profile1Path, os.ModePerm)
@@ -117,4 +117,29 @@ func TestGenerateForPath(t *testing.T) {
 	}
 
 	assert.ElementsMatch(t, expectedProfiles, results)
+}
+
+func TestProfilePathStat(t *testing.T) {
+	t.Run("profile directory exists", func(t *testing.T) {
+		tempDir := t.TempDir()
+
+		localStatePath := filepath.Join(tempDir, "Local State")
+
+		profilePath := filepath.Join(tempDir, "profile1")
+		err := os.Mkdir(profilePath, os.ModePerm)
+		assert.NoError(t, err)
+
+		actual, err := profilePathStat(localStatePath, "profile1")
+		assert.NoError(t, err)
+		assert.Equal(t, profilePath, actual)
+	})
+
+	t.Run("profile directory does not exist", func(t *testing.T) {
+		tempDir := t.TempDir()
+
+		localStatePath := filepath.Join(tempDir, "Local State")
+
+		_, err := profilePathStat(localStatePath, "profile-does-not-exist")
+		assert.ErrorIs(t, err, os.ErrNotExist)
+	})
 }
