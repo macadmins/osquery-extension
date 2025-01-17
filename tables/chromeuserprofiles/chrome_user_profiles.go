@@ -79,28 +79,36 @@ func generateForPath(ctx context.Context, fileInfo userFileInfo) ([]map[string]s
 	}
 
 	for profileDir, profileInfo := range localState.Profile.InfoCache {
+		profilePath, err := profilePathStat(fileInfo.path, profileDir)
+		if errors.Is(err, os.ErrNotExist) {
+			// the path is constructed from Chrome's internal data, so if it
+			// doesn't exist for whatever reason, just leave it blank
+			profilePath = ""
+		} else if err != nil {
+			return nil, errors.Wrap(err, "checking profile path exists")
+		}
+
 		results = append(results, map[string]string{
 			"username":  fileInfo.user,
 			"email":     profileInfo.Email,
 			"name":      profileInfo.Name,
 			"ephemeral": strconv.Itoa(btoi(profileInfo.Ephemeral)),
-			"path":      profilePathIfExists(fileInfo.path, profileDir),
+			"path":      profilePath,
 		})
 	}
 
 	return results, nil
 }
 
-func profilePathIfExists(localStatePath, profileDir string) string {
+func profilePathStat(localStatePath, profileDir string) (string, error) {
 	localStateDir := filepath.Dir(localStatePath)
 	profilePath := filepath.Join(localStateDir, profileDir)
+
 	if _, err := os.Stat(profilePath); err != nil {
-		// If there's an error of any kind, assume the profile path doesn't
-		// exist
-		return ""
+		return "", err
 	}
 
-	return profilePath
+	return profilePath, nil
 }
 
 func GoogleChromeProfilesGenerate(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
