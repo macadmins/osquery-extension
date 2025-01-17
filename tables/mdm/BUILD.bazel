@@ -18,6 +18,7 @@ go_test(
     srcs = ["mdm_test.go"],
     embed = [":mdm"],
     deps = [
+        "//pkg/utils",
         "@com_github_osquery_osquery_go//plugin/table",
         "@com_github_stretchr_testify//assert",
     ],

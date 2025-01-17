@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"math/big"
-	"os/exec"
 	"strconv"
 
+	"github.com/macadmins/osquery-extension/pkg/utils"
 	"github.com/osquery/osquery-go/plugin/table"
 )
 
@@ -110,16 +110,19 @@ func UnifiedLogGenerate(ctx context.Context, queryContext table.QueryContext) ([
 		return []map[string]string{}, nil
 	}
 
-	output, err := execute(predicate, last, logLevel)
+	r := utils.NewRunner()
+
+	output, err := execute(predicate, last, logLevel, r)
 	if err != nil {
 		return nil, err
 	}
 	return output, nil
 }
 
-func execute(predicate string, last string, logLevel string) ([]map[string]string, error) {
+func execute(predicate string, last string, logLevel string, r utils.Runner) ([]map[string]string, error) {
 	var output []map[string]string
 	var unifiedlogs []UnifiedLog
+
 	bin := "/usr/bin/log"
 	args := []string{"show", "--style", "json"}
 
@@ -142,8 +145,7 @@ func execute(predicate string, last string, logLevel string) ([]map[string]strin
 		args = append(args, predicate)
 	}
 
-	cmd := exec.Command(bin, args...)
-	stdout, err := cmd.Output()
+	stdout, err := r.Runner.RunCmd(bin, args...)
 	if err != nil {
 		return output, err
 	}

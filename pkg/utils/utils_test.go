@@ -9,6 +9,10 @@ import (
 
 func TestFileExists(t *testing.T) {
 	// Create a temporary file for testing
+	fs := MockFileSystem{
+		FileExists: true,
+		Err:        nil,
+	}
 	tempFile, err := os.CreateTemp("", "test")
 	assert.NoError(t, err, "Failed to create temp file")
 
@@ -16,13 +20,13 @@ func TestFileExists(t *testing.T) {
 	tempFile.Close()
 
 	// Test that FileExists returns true for an existing file
-	assert.True(t, FileExists(tempFile.Name()), "Expected file to exist")
+	assert.True(t, FileExists(fs, tempFile.Name()), "Expected file to exist")
 
 	// Delete the temporary file
 	os.Remove(tempFile.Name())
 
 	// Test that FileExists returns false for a non-existing file
-	assert.False(t, FileExists(tempFile.Name()), "Expected file to not exist")
+	assert.False(t, FileExists(fs, tempFile.Name()), "Expected file to not exist")
 }
 
 func TestBoolToString(t *testing.T) {
