@@ -84,17 +84,18 @@ func MDMInfoGenerate(
 	ctx context.Context,
 	queryContext table.QueryContext,
 ) ([]map[string]string, error) {
+	fs := utils.OSFileSystem{}
 	// There might not be any profiles installed, but we still care if the device is DEP capable, so discard the error
 	profiles, _ := getMDMProfile()
 
 	depEnrolled, userApproved := "unknown", "unknown"
-	status, err := getMDMProfileStatus()
+	status, err := getMDMProfileStatus(fs)
 	if err == nil { // only supported on 10.13.4+
 		depEnrolled = strconv.FormatBool(status.DEPEnrolled)
 		userApproved = strconv.FormatBool(status.UserApproved)
 	}
 
-	depstatus := getDEPStatus(status)
+	depstatus := getDEPStatus(status, fs)
 	depCapable := strconv.FormatBool(depstatus.DEPCapable)
 
 	var enrollProfileItems []profileItem
@@ -156,8 +157,8 @@ func getMDMProfile() (*profilesOutput, error) {
 	return &profiles, nil
 }
 
-func getMDMProfileStatus() (profileStatus, error) {
-	if !utils.FileExists("/usr/bin/profiles") {
+func getMDMProfileStatus(fs utils.FileSystem) (profileStatus, error) {
+	if !utils.FileExists(fs, "/usr/bin/profiles") {
 		return profileStatus{}, errors.New("mdm: /usr/bin/profiles does not exist")
 	}
 	cmd := exec.Command("/usr/bin/profiles", "status", "-type", "enrollment")
@@ -190,7 +191,7 @@ func getMDMProfileStatus() (profileStatus, error) {
 }
 
 // Either get the live DEP capability status, or return from the cache if needed.
-func getDEPStatus(status profileStatus) depStatus {
+func getDEPStatus(status profileStatus, fs utils.FileSystem) depStatus {
 	if runtime.GOOS != "darwin" {
 		return depStatus{}
 	}
@@ -199,13 +200,13 @@ func getDEPStatus(status profileStatus) depStatus {
 		return depStatus{DEPCapable: true}
 	}
 	var depstatus depStatus
-	hasAlreadyChecked := hasCheckedCloudConfigInPast24Hours(CloudConfigTimerCheck)
+	hasAlreadyChecked := hasCheckedCloudConfigInPast24Hours(CloudConfigTimerCheck, fs)
 	if !hasAlreadyChecked {
 		cmd := exec.Command("/usr/bin/profiles", "show", "-type", "enrollment")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			if strings.Contains(string(out), "Request too soon") {
-				depCapable := getCachedDEPStatus()
+				depCapable := getCachedDEPStatus(fs)
 				depstatus.DEPCapable = depCapable
 				return depstatus
 			}
@@ -219,7 +220,7 @@ func getDEPStatus(status profileStatus) depStatus {
 		}
 	}
 
-	depCapable := getCachedDEPStatus()
+	depCapable := getCachedDEPStatus(fs)
 	depstatus.DEPCapable = depCapable
 
 	return depstatus
@@ -228,8 +229,8 @@ func getDEPStatus(status profileStatus) depStatus {
 // hasCheckedCloudConfigInPast24Hours returns true if the device has checked
 // it's cloud config record in the past 24 hours, false if the file is missing
 // or the time is more than 24 hours ago.
-func hasCheckedCloudConfigInPast24Hours(cloudConfigPath string) bool {
-	if !utils.FileExists(cloudConfigPath) {
+func hasCheckedCloudConfigInPast24Hours(cloudConfigPath string, fs utils.FileSystem) bool {
+	if !utils.FileExists(fs, cloudConfigPath) {
 		return false
 	}
 
@@ -258,8 +259,8 @@ func hasCheckedCloudConfigInPast24Hours(cloudConfigPath string) bool {
 }
 
 // Will return true if the device appears to be DEP capable based on the on-disk contents, or false if not.
-func getCachedDEPStatus() bool {
-	if utils.FileExists(CloudConfigRecordNotFound) {
+func getCachedDEPStatus(fs utils.FileSystem) bool {
+	if utils.FileExists(fs, CloudConfigRecordNotFound) {
 		return false
 	}
 

@@ -52,17 +52,8 @@ exclude:
   # Exclude files or packages matching their paths
   paths:
     - main.go
-    - pkg/utils/exec.go
-    - tables/fileline/file_line.go
-    - tables/unifiedlog/unified_log.go
-    - ^tables/networkquality$
-    - ^tables/unifiedlog$
     - ^tables/puppet$
-    - ^tables/unifiedlog$
     - ^tables/pendingappleupdates$
-    - ^tables/fileline$
-    - tables/unifiedlog/unified_log.go
-    - tables/networkquality/networkquality.go
     - tables/pendingappleupdates/pendingappleupdates.go
     - tables/puppet/puppet_facts.go
     - tables/puppet/puppet_info.go

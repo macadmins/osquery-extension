@@ -46,7 +46,8 @@ func FileLineGenerate(ctx context.Context, queryContext table.QueryContext) ([]m
 		}
 	}
 	var results []map[string]string
-	output, err := processFile(path, wildcard)
+	fs := utils.OSFileSystem{}
+	output, err := processFile(path, wildcard, fs)
 	if err != nil {
 		return results, err
 	}
@@ -61,7 +62,7 @@ func FileLineGenerate(ctx context.Context, queryContext table.QueryContext) ([]m
 	return results, nil
 }
 
-func processFile(path string, wildcard bool) ([]FileLine, error) {
+func processFile(path string, wildcard bool, fs utils.FileSystem) ([]FileLine, error) {
 
 	var output []FileLine
 
@@ -73,12 +74,12 @@ func processFile(path string, wildcard bool) ([]FileLine, error) {
 			return nil, err
 		}
 		for _, file := range files {
-			lines, _ := readLines(file)
+			lines, _ := readLines(file, fs)
 			output = append(output, lines...)
 
 		}
 	} else {
-		lines, _ := readLines(path)
+		lines, _ := readLines(path, fs)
 		output = append(output, lines...)
 	}
 
@@ -86,11 +87,11 @@ func processFile(path string, wildcard bool) ([]FileLine, error) {
 
 }
 
-func readLines(path string) ([]FileLine, error) {
+func readLines(path string, fs utils.FileSystem) ([]FileLine, error) {
 	var output []FileLine
 
-	if !utils.FileExists(path) {
-		err := errors.New("File does not exist")
+	if !utils.FileExists(fs, path) {
+		err := errors.New("file does not exist")
 		return nil, err
 	}
 	file, err := os.Open(path)

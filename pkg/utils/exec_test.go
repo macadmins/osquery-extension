@@ -2,6 +2,8 @@ package utils
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestRunCmd(t *testing.T) {
@@ -14,32 +16,41 @@ func TestRunCmd(t *testing.T) {
 		},
 	}
 	output, err := runner.RunCmd("echo", "test")
-	if err != nil {
-		t.Fatalf("RunCmd() error = %v, wantErr nil", err)
-		return
-	}
-	got := string(output)
-	if got != runner.Commands["echo test"].Output {
-		t.Errorf("RunCmd() = %q, want %q", got, runner.Commands["echo test"].Output)
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, "test output", string(output))
 }
 
 func TestRunCmdWithStdin(t *testing.T) {
 	runner := MultiMockCmdRunner{
 		Commands: map[string]MockCmdRunner{
-			"echo": {
+			"cat": {
 				Output: "test output",
 				Err:    nil,
 			},
 		},
 	}
-	output, err := runner.RunCmdWithStdin("echo", "test")
-	if err != nil {
-		t.Fatalf("RunCmdWithStdin() error = %v, wantErr nil", err)
-		return
-	}
-	got := string(output)
-	if got != runner.Commands["echo"].Output {
-		t.Errorf("RunCmdWithStdin() = %q, want %q", got, runner.Commands["echo"].Output)
-	}
+	output, err := runner.RunCmdWithStdin("cat", "test")
+	assert.NoError(t, err)
+	assert.Equal(t, "test output", string(output))
+}
+
+func TestNewRunner(t *testing.T) {
+	runner := NewRunner()
+
+	assert.NotNil(t, runner.Runner, "Expected Runner to be initialized, but got nil")
+	assert.IsType(t, &ExecCmdRunner{}, runner.Runner, "Expected Runner to be of type *ExecCmdRunner")
+}
+
+func TestExecCmdRunner_RunCmd(t *testing.T) {
+	runner := &ExecCmdRunner{}
+	output, err := runner.RunCmd("echo", "test")
+	assert.NoError(t, err)
+	assert.Equal(t, "test\n", string(output))
+}
+
+func TestExecCmdRunner_RunCmdWithStdin(t *testing.T) {
+	runner := &ExecCmdRunner{}
+	output, err := runner.RunCmdWithStdin("cat", "test")
+	assert.NoError(t, err)
+	assert.Equal(t, "test", string(output))
 }

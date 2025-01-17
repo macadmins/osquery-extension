@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"strconv"
 
+	"github.com/macadmins/osquery-extension/pkg/utils"
 	"github.com/osquery/osquery-go/plugin/table"
 	"github.com/pkg/errors"
 )
@@ -37,7 +37,9 @@ func NetworkQualityColumns() []table.ColumnDefinition {
 // results is flat it will return a single row.
 func NetworkQualityGenerate(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
 	var results []map[string]string
-	output, err := runNetworkQuality()
+	r := utils.NewRunner()
+	fs := utils.OSFileSystem{}
+	output, err := runNetworkQuality(r, fs)
 	if err != nil {
 		fmt.Println(err)
 		return results, err
@@ -53,20 +55,18 @@ func NetworkQualityGenerate(ctx context.Context, queryContext table.QueryContext
 	return results, nil
 }
 
-func runNetworkQuality() (NetworkQualityOutput, error) {
+func runNetworkQuality(r utils.Runner, fs utils.FileSystem) (NetworkQualityOutput, error) {
 	var output NetworkQualityOutput
 
 	// Just return if the binary isn't present
-	_, err := os.Stat("/usr/bin/networkQuality")
+	_, err := fs.Stat("/usr/bin/networkQuality")
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return output, nil
 		}
 		return output, err
 	}
-
-	out, err := exec.Command("/usr/bin/networkQuality", "-c").Output()
-
+	out, err := r.Runner.RunCmd("/usr/bin/networkQuality", "-c")
 	if err != nil {
 		return output, errors.Wrap(err, "networkQuality -c")
 	}
@@ -78,13 +78,13 @@ func runNetworkQuality() (NetworkQualityOutput, error) {
 
 }
 
-func Exists(name string) (bool, error) {
-	_, err := os.Stat(name)
-	if err == nil {
-		return true, nil
-	}
-	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	}
-	return false, err
-}
+// func Exists(name string) (bool, error) {
+// 	_, err := os.Stat(name)
+// 	if err == nil {
+// 		return true, nil
+// 	}
+// 	if errors.Is(err, os.ErrNotExist) {
+// 		return false, nil
+// 	}
+// 	return false, err
+// }

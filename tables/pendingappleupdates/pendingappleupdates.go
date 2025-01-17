@@ -31,7 +31,8 @@ func PendingAppleUpdatesColumns() []table.ColumnDefinition {
 }
 
 func PendingAppleUpdatesGenerate(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
-	updatePlist, err := readSoftwareUpdatePlist()
+	fs := utils.OSFileSystem{}
+	updatePlist, err := readSoftwareUpdatePlist(fs)
 	if err != nil {
 		return nil, err
 	}
@@ -52,10 +53,10 @@ func PendingAppleUpdatesGenerate(ctx context.Context, queryContext table.QueryCo
 	return results, nil
 }
 
-func readSoftwareUpdatePlist() (*softwareUpdatePlist, error) {
+func readSoftwareUpdatePlist(fs utils.FileSystem) (*softwareUpdatePlist, error) {
 	var updatePlist softwareUpdatePlist
 	const plistPath = "/Library/Preferences/com.apple.SoftwareUpdate.plist"
-	if !utils.FileExists(plistPath) {
+	if !utils.FileExists(fs, plistPath) {
 		return nil, nil
 	}
 	file, err := os.Open(plistPath)

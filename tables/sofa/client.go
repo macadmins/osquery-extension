@@ -26,6 +26,7 @@ type SofaClient struct {
 	cacheDir   string
 	etagFile   string
 	userAgent  string
+	fs         utils.FileSystem
 }
 
 type SofaTime time.Time
@@ -87,6 +88,12 @@ func WithHTTPClient(client *http.Client) Option {
 	}
 }
 
+func WithFileSystem(fs utils.FileSystem) Option {
+	return func(s *SofaClient) {
+		s.fs = fs
+	}
+}
+
 func NewSofaClient(opts ...Option) (*SofaClient, error) {
 
 	s := &SofaClient{
@@ -103,6 +110,10 @@ func NewSofaClient(opts ...Option) (*SofaClient, error) {
 
 	if s.userAgent == "" {
 		return nil, errors.New("user agent is required")
+	}
+
+	if s.fs == nil {
+		s.fs = utils.OSFileSystem{}
 	}
 
 	err := s.createCacheDir()
@@ -143,7 +154,7 @@ func (s *SofaClient) createCacheDir() error {
 }
 
 func (s *SofaClient) cacheValid() (bool, error) {
-	if !utils.FileExists(s.cacheFile) {
+	if !utils.FileExists(s.fs, s.cacheFile) {
 		return false, nil
 	}
 
@@ -193,7 +204,7 @@ func (s *SofaClient) downloadData() error {
 }
 
 func (s *SofaClient) loadCachedEtag() (string, error) {
-	if !utils.FileExists(s.etagFile) {
+	if !utils.FileExists(s.fs, s.etagFile) {
 		return "", nil
 	}
 
