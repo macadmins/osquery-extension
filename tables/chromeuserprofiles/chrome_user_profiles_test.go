@@ -112,7 +112,8 @@ func TestGenerateForPath(t *testing.T) {
 			"email":     "profile2@example.com",
 			"name":      "Profile 2",
 			"ephemeral": "1",
-			"path":      "",
+			// this profile directory doesn't exist, so the path should be blank
+			"path": "",
 		},
 	}
 
