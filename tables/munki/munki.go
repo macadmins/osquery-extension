@@ -48,7 +48,8 @@ func MunkiInfoColumns() []table.ColumnDefinition {
 }
 
 func MunkiInfoGenerate(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
-	report, err := loadMunkiReport()
+	fs := utils.OSFileSystem{}
+	report, err := loadMunkiReport(fs)
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +90,8 @@ func MunkiInstallsColumns() []table.ColumnDefinition {
 }
 
 func MunkiInstallsGenerate(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
-	report, err := loadMunkiReport()
+	fs := utils.OSFileSystem{}
+	report, err := loadMunkiReport(fs)
 	if err != nil {
 		return nil, err
 	}
@@ -115,9 +117,9 @@ func MunkiInstallsGenerate(ctx context.Context, queryContext table.QueryContext)
 // reportPath is defined as a global variable to ease testing.
 var reportPath = "/Library/Managed Installs/ManagedInstallReport.plist"
 
-func loadMunkiReport() (*munkiReport, error) {
+func loadMunkiReport(fs utils.FileSystem) (*munkiReport, error) {
 	var report munkiReport
-	if !utils.FileExists(reportPath) {
+	if !utils.FileExists(fs, reportPath) {
 		return nil, nil
 	}
 	file, err := os.Open(reportPath)

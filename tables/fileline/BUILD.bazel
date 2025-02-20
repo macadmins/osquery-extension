@@ -1,4 +1,4 @@
-load("@io_bazel_rules_go//go:def.bzl", "go_library")
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "fileline",
@@ -8,5 +8,15 @@ go_library(
     deps = [
         "//pkg/utils",
         "@com_github_osquery_osquery_go//plugin/table",
+    ],
+)
+
+go_test(
+    name = "fileline_test",
+    srcs = ["file_line_test.go"],
+    embed = [":fileline"],
+    deps = [
+        "//pkg/utils",
+        "@com_github_stretchr_testify//assert",
     ],
 )

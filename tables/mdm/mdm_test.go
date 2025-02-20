@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/macadmins/osquery-extension/pkg/utils"
 	"github.com/osquery/osquery-go/plugin/table"
 	"github.com/stretchr/testify/assert"
 )
@@ -58,7 +59,8 @@ func TestGetMDMProfile(t *testing.T) {
 
 // TestGetMDMProfileStatus tests the getMDMProfileStatus function
 func TestGetMDMProfileStatus(t *testing.T) {
-	status, err := getMDMProfileStatus()
+	fs := utils.MockFileSystem{FileExists: true, Err: nil}
+	status, err := getMDMProfileStatus(fs)
 
 	// Since the status is only supported on 10.13.4+, the test should handle both cases
 	if err == nil {
@@ -75,7 +77,9 @@ func TestGetDEPStatus(t *testing.T) {
 		UserApproved: true,
 	}
 
-	depStatus := getDEPStatus(status)
+	fs := utils.MockFileSystem{FileExists: true, Err: nil}
+
+	depStatus := getDEPStatus(status, fs)
 
 	assert.NotNil(t, depStatus)
 }
@@ -96,17 +100,23 @@ func TestHasCheckedCloudConfigInPast24Hours(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			tmpFile, err := os.CreateTemp(t.TempDir(), "")
+			fs := utils.MockFileSystem{
+				FileExists: true,
+				Err:        nil,
+			}
 			assert.NoError(t, err)
 			_, err = tmpFile.WriteString(c.cloudConfigContents)
 			assert.NoError(t, err)
-			assert.Equal(t, c.want, hasCheckedCloudConfigInPast24Hours(tmpFile.Name()))
+			defer os.Remove(tmpFile.Name())
+			assert.Equal(t, c.want, hasCheckedCloudConfigInPast24Hours(tmpFile.Name(), fs))
 		})
 	}
 }
 
 // TestGetCachedDEPStatus tests the getCachedDEPStatus function
 func TestGetCachedDEPStatus(t *testing.T) {
-	result := getCachedDEPStatus()
+	fs := utils.MockFileSystem{FileExists: true, Err: nil}
+	result := getCachedDEPStatus(fs)
 
 	assert.NotNil(t, result)
 }

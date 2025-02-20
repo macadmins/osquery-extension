@@ -1,9 +1,22 @@
-load("@io_bazel_rules_go//go:def.bzl", "go_library")
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "unifiedlog",
     srcs = ["unified_log.go"],
     importpath = "github.com/macadmins/osquery-extension/tables/unifiedlog",
     visibility = ["//visibility:public"],
-    deps = ["@com_github_osquery_osquery_go//plugin/table"],
+    deps = [
+        "//pkg/utils",
+        "@com_github_osquery_osquery_go//plugin/table",
+    ],
+)
+
+go_test(
+    name = "unifiedlog_test",
+    srcs = ["unified_log_test.go"],
+    embed = [":unifiedlog"],
+    deps = [
+        "//pkg/utils",
+        "@com_github_stretchr_testify//assert",
+    ],
 )

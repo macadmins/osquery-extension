@@ -7,6 +7,7 @@ go_library(
         "exec_mocks.go",
         "osquery.go",
         "utils.go",
+        "utils_mocks.go",
     ],
     importpath = "github.com/macadmins/osquery-extension/pkg/utils",
     visibility = ["//visibility:public"],
