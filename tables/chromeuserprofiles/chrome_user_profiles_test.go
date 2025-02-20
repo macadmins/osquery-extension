@@ -17,9 +17,9 @@ func TestBtoi(t *testing.T) {
 
 func TestGoogleChromeProfilesColumns(t *testing.T) {
 	columns := GoogleChromeProfilesColumns()
-	assert.Len(t, columns, 4)
+	assert.Len(t, columns, 5)
 
-	expectedColumnNames := []string{"username", "email", "name", "ephemeral"}
+	expectedColumnNames := []string{"username", "email", "name", "ephemeral", "path"}
 	for i, column := range columns {
 		assert.Equal(t, expectedColumnNames[i], column.Name)
 	}
@@ -61,6 +61,12 @@ func TestGenerateForPath(t *testing.T) {
 	// Create a temporary directory for testing
 	tempDir := t.TempDir()
 
+	// Create a placeholder directory for one of the profiles - the name is the
+	// info_cache map key, not the 'name' value
+	profile1Path := filepath.Join(tempDir, "profile1")
+	err := os.Mkdir(profile1Path, os.ModePerm)
+	assert.NoError(t, err)
+
 	// Create a test Chrome local state file
 	localStateFile := filepath.Join(tempDir, "Local State")
 	localStateData := `{
@@ -80,7 +86,7 @@ func TestGenerateForPath(t *testing.T) {
 		}
 	}`
 
-	err := os.WriteFile(localStateFile, []byte(localStateData), os.ModePerm)
+	err = os.WriteFile(localStateFile, []byte(localStateData), os.ModePerm)
 	assert.NoError(t, err)
 
 	// Test generateForPath
@@ -99,14 +105,42 @@ func TestGenerateForPath(t *testing.T) {
 			"email":     "profile1@example.com",
 			"name":      "Profile 1",
 			"ephemeral": "0",
+			"path":      profile1Path,
 		},
 		{
 			"username":  "testuser",
 			"email":     "profile2@example.com",
 			"name":      "Profile 2",
 			"ephemeral": "1",
+			// this profile directory doesn't exist, so the path should be blank
+			"path": "",
 		},
 	}
 
 	assert.ElementsMatch(t, expectedProfiles, results)
+}
+
+func TestProfilePathStat(t *testing.T) {
+	t.Run("profile directory exists", func(t *testing.T) {
+		tempDir := t.TempDir()
+
+		localStatePath := filepath.Join(tempDir, "Local State")
+
+		profilePath := filepath.Join(tempDir, "profile1")
+		err := os.Mkdir(profilePath, os.ModePerm)
+		assert.NoError(t, err)
+
+		actual, err := profilePathStat(localStatePath, "profile1")
+		assert.NoError(t, err)
+		assert.Equal(t, profilePath, actual)
+	})
+
+	t.Run("profile directory does not exist", func(t *testing.T) {
+		tempDir := t.TempDir()
+
+		localStatePath := filepath.Join(tempDir, "Local State")
+
+		_, err := profilePathStat(localStatePath, "profile-does-not-exist")
+		assert.ErrorIs(t, err, os.ErrNotExist)
+	})
 }
