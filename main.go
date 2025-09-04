@@ -9,6 +9,7 @@ import (
 
 	"github.com/macadmins/osquery-extension/tables/alt_system_info"
 	"github.com/macadmins/osquery-extension/tables/chromeuserprofiles"
+	"github.com/macadmins/osquery-extension/tables/crowdstrike_falcon"
 	"github.com/macadmins/osquery-extension/tables/fileline"
 	"github.com/macadmins/osquery-extension/tables/filevaultusers"
 	macosprofiles "github.com/macadmins/osquery-extension/tables/macos_profiles"
@@ -78,6 +79,7 @@ func main() {
 
 	if runtime.GOOS == "darwin" {
 		darwinPlugins := []osquery.OsqueryPlugin{
+			table.NewPlugin("crowdstrike_falcon", crowdstrike_falcon.CrowdstrikeFalconColumns(), crowdstrike_falcon.CrowdstrikeFalconGenerate),
 			table.NewPlugin("filevault_users", filevaultusers.FileVaultUsersColumns(), filevaultusers.FileVaultUsersGenerate),
 			table.NewPlugin("macos_profiles", macosprofiles.MacOSProfilesColumns(), macosprofiles.MacOSProfilesGenerate),
 			table.NewPlugin("mdm", mdm.MDMInfoColumns(), mdm.MDMInfoGenerate),
