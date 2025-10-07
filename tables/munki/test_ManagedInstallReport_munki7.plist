@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>AvailableDiskSpace</key>
+	<integer>371095948</integer>
+	<key>ConsoleUser</key>
+	<string>TestUser</string>
+	<key>EndTime</key>
+	<date>2025-07-28T20:09:58Z</date>
+	<key>Errors</key>
+	<array/>
+	<key>ManagedInstallVersion</key>
+	<string>7.0.0</string>
+	<key>ManagedInstalls</key>
+	<array>
+		<dict>
+			<key>description</key>
+			<string>Chrome is a fast, simple, and secure web browser, built for the modern web.</string>
+			<key>display_name</key>
+			<string>Google Chrome</string>
+			<key>installed</key>
+			<true/>
+			<key>installed_size</key>
+			<integer>473937</integer>
+			<key>installed_version</key>
+			<string>128.0.6613.113</string>
+			<key>name</key>
+			<string>Google Chrome</string>
+		</dict>
+	</array>
+	<key>ManifestName</key>
+	<string>test-manifest</string>
+	<key>ProblemInstalls</key>
+	<array/>
+	<key>StartTime</key>
+	<date>2025-07-28T20:08:30Z</date>
+	<key>Warnings</key>
+	<array/>
+</dict>
+</plist>

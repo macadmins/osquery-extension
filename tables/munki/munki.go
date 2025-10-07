@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/groob/plist"
 	"github.com/macadmins/osquery-extension/pkg/utils"
@@ -14,10 +15,51 @@ import (
 	"github.com/pkg/errors"
 )
 
+// MunkiDate can unmarshal both string dates (Munki 6) and date objects (Munki 7)
+type MunkiDate time.Time
+
+// UnmarshalPlist handles plist unmarshaling for both string and date types
+func (md *MunkiDate) UnmarshalPlist(unmarshal func(interface{}) error) error {
+	// First try to unmarshal as time.Time (Munki 7 date format)
+	var t time.Time
+	if err := unmarshal(&t); err == nil {
+		*md = MunkiDate(t)
+		return nil
+	}
+
+	// If that fails, try to unmarshal as string (Munki 6 format)
+	var s string
+	if err := unmarshal(&s); err != nil {
+		return err
+	}
+
+	// Parse the string into time
+	t, err := time.Parse("2006-01-02 15:04:05 -0700", s)
+	if err != nil {
+		// Try RFC3339 format (ISO 8601) as fallback
+		t, err = time.Parse(time.RFC3339, s)
+		if err != nil {
+			return fmt.Errorf("unable to parse date: %s", s)
+		}
+	}
+
+	*md = MunkiDate(t)
+	return nil
+}
+
+// String returns the date in Munki 6 format for consistency
+func (md MunkiDate) String() string {
+	t := time.Time(md)
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format("2006-01-02 15:04:05 +0000")
+}
+
 type munkiReport struct {
 	ConsoleUser           string
-	StartTime             string
-	EndTime               string
+	StartTime             MunkiDate
+	EndTime               MunkiDate
 	Errors                []string
 	Warnings              []string
 	ProblemInstalls       []string
@@ -64,8 +106,8 @@ func MunkiInfoGenerate(ctx context.Context, queryContext table.QueryContext) ([]
 
 	results := []map[string]string{
 		{
-			"start_time":       report.StartTime,
-			"end_time":         report.EndTime,
+			"start_time":       report.StartTime.String(),
+			"end_time":         report.EndTime.String(),
 			"console_user":     report.ConsoleUser,
 			"version":          report.ManagedInstallVersion,
 			"success":          fmt.Sprintf("%v", len(report.Errors) == 0),
@@ -105,7 +147,7 @@ func MunkiInstallsGenerate(ctx context.Context, queryContext table.QueryContext)
 			"installed_version": install.InstalledVersion,
 			"installed":         fmt.Sprintf("%v", install.Installed),
 			"name":              install.Name,
-			"end_time":          report.EndTime,
+			"end_time":          report.EndTime.String(),
 			"display_name":      install.DisplayName,
 		})
 	}
