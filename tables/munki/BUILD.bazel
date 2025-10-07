@@ -17,7 +17,10 @@ go_test(
     name = "munki_test",
     srcs = ["munki_test.go"],
     embed = [":munki"],
-    embedsrcs = ["test_ManagedInstallReport.plist"],
+    embedsrcs = [
+        "test_ManagedInstallReport.plist",
+        "test_ManagedInstallReport_munki7.plist",
+    ],
     deps = [
         "@com_github_osquery_osquery_go//plugin/table",
         "@com_github_stretchr_testify//assert",
