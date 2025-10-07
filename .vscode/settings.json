@@ -15,5 +15,6 @@
                 "cmd": "make update-repos"
             }
         ]
-    }
+    },
+    "makefile.configureOnOpen": false
 }
