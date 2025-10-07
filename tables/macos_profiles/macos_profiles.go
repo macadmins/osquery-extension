@@ -2,6 +2,9 @@ package macos_profiles
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"os/exec"
 
 	"github.com/groob/plist"
@@ -22,6 +25,8 @@ type profilePayload struct {
 	ProfileUUID              string
 	ProfileOrganization      string
 	ProfileType              string
+	PayloadChecksum          string
+	ProfileItems             []any
 }
 
 func MacOSProfilesColumns() []table.ColumnDefinition {
@@ -34,6 +39,7 @@ func MacOSProfilesColumns() []table.ColumnDefinition {
 		table.TextColumn("uuid"),
 		table.TextColumn("organization"),
 		table.TextColumn("type"),
+		table.TextColumn("payload_checksum"),
 	}
 }
 
@@ -48,11 +54,14 @@ func MacOSProfilesGenerate(ctx context.Context, queryContext table.QueryContext)
 	if err != nil {
 		return nil, errors.Wrap(err, "unmarshalProfilesOutput")
 	}
-
-	return generateResults(profiles), nil
+	result, err := generateResults(profiles)
+	if err != nil {
+		return nil, errors.Wrap(err, "generateResults")
+	}
+	return result, nil
 }
 
-func generateResults(profiles profilesOutput) []map[string]string {
+func generateResults(profiles profilesOutput) ([]map[string]string, error) {
 	var results []map[string]string
 	for _, payload := range profiles.ComputerLevel {
 		result := map[string]string{
@@ -65,10 +74,26 @@ func generateResults(profiles profilesOutput) []map[string]string {
 			"organization":       payload.ProfileOrganization,
 			"type":               payload.ProfileType,
 		}
+		checksum, err := profileItemsChecksum(payload)
+		if err != nil {
+			return nil, errors.Wrap(err, "profileItemsChecksum")
+		}
+		result["payload_checksum"] = checksum
 		results = append(results, result)
 	}
 
-	return results
+	return results, nil
+
+}
+
+func profileItemsChecksum(payload profilePayload) (string, error) {
+	data, err := json.Marshal(payload.ProfileItems)
+	if err != nil {
+		return "", err
+	}
+
+	hash := sha256.Sum256(data)
+	return fmt.Sprintf("%x", hash), nil
 
 }
 
