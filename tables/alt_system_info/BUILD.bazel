@@ -7,9 +7,9 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/utils",
-        "@com_github_groob_plist//:plist",
+        "@com_github_micromdm_plist//:plist",
         "@com_github_osquery_osquery_go//plugin/table",
-        "@org_golang_x_sync//errgroup:go_default_library",
+        "@org_golang_x_sync//errgroup",
     ],
 )
 

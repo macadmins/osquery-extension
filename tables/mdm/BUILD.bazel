@@ -7,7 +7,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/utils",
-        "@com_github_groob_plist//:plist",
+        "@com_github_micromdm_plist//:plist",
         "@com_github_osquery_osquery_go//plugin/table",
         "@com_github_pkg_errors//:errors",
     ],
