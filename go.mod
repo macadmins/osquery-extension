@@ -1,6 +1,6 @@
 module github.com/macadmins/osquery-extension
 
-go 1.21
+go 1.24
 
 require (
 	github.com/hashicorp/go-version v1.6.0
