@@ -3,8 +3,8 @@ module github.com/macadmins/osquery-extension
 go 1.21
 
 require (
-	github.com/groob/plist v0.0.0-20220217120414-63fa881b19a5
 	github.com/hashicorp/go-version v1.6.0
+	github.com/micromdm/plist v0.2.1
 	github.com/osquery/osquery-go v0.0.0-20231130195733-61ac79279aaa
 	github.com/pkg/errors v0.9.1
 	github.com/stretchr/testify v1.9.0

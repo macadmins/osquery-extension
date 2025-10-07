@@ -38,12 +38,6 @@ def go_dependencies():
         version = "v0.5.9",
     )
     go_repository(
-        name = "com_github_groob_plist",
-        importpath = "github.com/groob/plist",
-        sum = "h1:saaSiB25B1wgaxrshQhurfPKUGJ4It3OxNJUy0rdOjU=",
-        version = "v0.0.0-20220217120414-63fa881b19a5",
-    )
-    go_repository(
         name = "com_github_hashicorp_go_version",
         importpath = "github.com/hashicorp/go-version",
         sum = "h1:feTTfFNnjP967rlCxM/I9g701jU+RN74YKx2mOkIeek=",
@@ -66,6 +60,12 @@ def go_dependencies():
         importpath = "github.com/kr/text",
         sum = "h1:5Nx0Ya0ZqY2ygV366QzturHI13Jq95ApcVaJBhpS+AY=",
         version = "v0.2.0",
+    )
+    go_repository(
+        name = "com_github_micromdm_plist",
+        importpath = "github.com/micromdm/plist",
+        sum = "h1:4SoSMOVAyzv1ThT8IKLgXLJEKezLkcVDN6wivqTTFdo=",
+        version = "v0.2.1",
     )
     go_repository(
         name = "com_github_microsoft_go_winio",
@@ -156,6 +156,12 @@ def go_dependencies():
         importpath = "golang.org/x/mod",
         sum = "h1:rmsUpXtvNzj340zd98LZ4KntptpfRHwpFOHG188oHXc=",
         version = "v0.12.0",
+    )
+    go_repository(
+        name = "org_golang_x_sync",
+        importpath = "golang.org/x/sync",
+        sum = "h1:3NFvSEYkUoMifnESzZl15y791HH1qU2xm6eCJU5ZPXQ=",
+        version = "v0.8.0",
     )
     go_repository(
         name = "org_golang_x_sys",
