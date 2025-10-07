@@ -1,6 +1,6 @@
 name: Go build & test
 
-on: [push]
+on: [push, pull_request]
 
 jobs:
   test:
@@ -24,7 +24,7 @@ jobs:
         run: |
           VERSION=$(cat VERSION)
           echo "VERSION=$VERSION" >> $GITHUB_ENV
-      
+
       - name: print version
         run: echo ${{ env.VERSION }}
 
