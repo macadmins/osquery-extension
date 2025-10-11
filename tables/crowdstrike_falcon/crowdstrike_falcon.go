@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/groob/plist"
 	"github.com/macadmins/osquery-extension/pkg/utils"
+	"github.com/micromdm/plist"
 	"github.com/osquery/osquery-go"
 	"github.com/osquery/osquery-go/plugin/table"
 	"github.com/pkg/errors"
@@ -67,8 +67,8 @@ func CrowdstrikeFalconGenerate(ctx context.Context, queryContext table.QueryCont
 	}
 
 	results = append(results, map[string]string{
-		"agent_id":                   output.AgentID,
-		"cid":                        output.CID,
+		"agent_id":                   strings.ToUpper(output.AgentID),
+		"cid":                        strings.ToUpper(output.CID),
 		"falcon_version":             output.FalconVersion,
 		"reduced_functionality_mode": strconv.FormatBool(output.ReducedFunctionalityMode),
 		"sensor_loaded":              strconv.FormatBool(output.SensorLoaded),
