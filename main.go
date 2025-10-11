@@ -77,9 +77,20 @@ func main() {
 	// If there were windows only tables, they would go here
 	// }
 
+	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
+		linuxPlugins := []osquery.OsqueryPlugin{
+			table.NewPlugin(
+				"crowdstrike_falcon",
+				crowdstrike_falcon.CrowdstrikeFalconColumns(),
+				func(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
+					return crowdstrike_falcon.CrowdstrikeFalconGenerate(ctx, queryContext, *flSocketPath)
+				}),
+		}
+		plugins = append(plugins, linuxPlugins...)
+	}
+
 	if runtime.GOOS == "darwin" {
 		darwinPlugins := []osquery.OsqueryPlugin{
-			table.NewPlugin("crowdstrike_falcon", crowdstrike_falcon.CrowdstrikeFalconColumns(), crowdstrike_falcon.CrowdstrikeFalconGenerate),
 			table.NewPlugin("filevault_users", filevaultusers.FileVaultUsersColumns(), filevaultusers.FileVaultUsersGenerate),
 			table.NewPlugin("macos_profiles", macosprofiles.MacOSProfilesColumns(), macosprofiles.MacOSProfilesGenerate),
 			table.NewPlugin("mdm", mdm.MDMInfoColumns(), mdm.MDMInfoGenerate),

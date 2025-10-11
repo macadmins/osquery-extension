@@ -8,9 +8,11 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/groob/plist"
 	"github.com/macadmins/osquery-extension/pkg/utils"
+	"github.com/osquery/osquery-go"
 	"github.com/osquery/osquery-go/plugin/table"
 	"github.com/pkg/errors"
 )
@@ -38,14 +40,30 @@ func CrowdstrikeFalconColumns() []table.ColumnDefinition {
 	}
 }
 
-func CrowdstrikeFalconGenerate(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
+func CrowdstrikeFalconGenerate(ctx context.Context, queryContext table.QueryContext, socketPath string) ([]map[string]string, error) {
 	var results []map[string]string
 	r := utils.NewRunner()
 	fs := utils.OSFileSystem{}
-	output, err := runCrowdstrikeFalcon(r, fs)
+
+	var output = CrowdStrikeOutput{}
+	var err error
+
+	switch runtime.GOOS {
+	case "darwin":
+		output, err = runCrowdstrikeFalconDarwin(r, fs)
+
+	case "linux":
+		osqueryClient, err := osquery.NewClient(socketPath, 10*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		defer osqueryClient.Close()
+		output, err = runCrowdstrikeFalconLinux(r, fs, osqueryClient)
+	}
+
 	if err != nil {
 		fmt.Println(err)
-		return results, err
+		return nil, err
 	}
 
 	results = append(results, map[string]string{
@@ -59,7 +77,7 @@ func CrowdstrikeFalconGenerate(ctx context.Context, queryContext table.QueryCont
 	return results, nil
 }
 
-func runCrowdstrikeFalcon(r utils.Runner, fs utils.FileSystem) (CrowdStrikeOutput, error) {
+func runCrowdstrikeFalconLinux(r utils.Runner, fs utils.FileSystem, client utils.OsqueryClient) (CrowdStrikeOutput, error) {
 	var output CrowdStrikeOutput
 
 	_, err := fs.Stat(falconCtlPath[runtime.GOOS])
@@ -69,44 +87,57 @@ func runCrowdstrikeFalcon(r utils.Runner, fs utils.FileSystem) (CrowdStrikeOutpu
 		}
 		return output, err
 	}
-	switch runtime.GOOS {
-	case "darwin":
-		out, err := r.Runner.RunCmd(falconCtlPath[runtime.GOOS], "info")
-		if err != nil {
-			return output, errors.Wrap(err, falconCtlPath[runtime.GOOS]+" info")
-		}
-		if err := plist.Unmarshal(out, &output); err != nil {
-			return output, errors.Wrap(err, "unmarshalling falconctl output")
-		}
-	case "linux":
-		out, err := r.Runner.RunCmd(falconCtlPath[runtime.GOOS], "-g", "--aid")
-		if err != nil {
-			return output, errors.Wrap(err, falconCtlPath[runtime.GOOS]+" -g --aid")
-		}
-		agentIdRegex := regexp.MustCompile(`[a-f0-9]{16}`)
-		output.AgentID = agentIdRegex.FindStringSubmatch(strings.ToLower(string(out)))[1]
 
-		out, err = r.Runner.RunCmd(falconCtlPath[runtime.GOOS], "-g", "--cid")
-		if err != nil {
-			return output, errors.Wrap(err, falconCtlPath[runtime.GOOS]+" -g --cid")
-		}
-		cidRegex := regexp.MustCompile(`[a-f0-9]{16}`)
-		output.CID = cidRegex.FindStringSubmatch(strings.ToLower(string(out)))[1]
+	falconProcessQuery := "SELECT 1 FROM processes WHERE name like 'falcon-sensor%';"
+	loadedState, err := client.QueryRows(falconProcessQuery)
+	if err != nil {
+		return output, err
+	}
 
-		out, err = r.Runner.RunCmd(falconCtlPath[runtime.GOOS], "-g", "--rfm-state")
-		if err != nil {
-			return output, errors.Wrap(err, falconCtlPath[runtime.GOOS]+" -g --rfm-state")
-		}
-		rfmState := strings.Split(strings.ToLower(string(out)), "=")[1]
-		output.ReducedFunctionalityMode = rfmState == "true"
+	if len(loadedState) == 0 {
+		output.SensorLoaded = false
+	} else {
+		output.SensorLoaded = true
+	}
 
-		out, err = r.Runner.RunCmd(falconCtlPath[runtime.GOOS], "-g", "--version")
-		if err != nil {
-			return output, errors.Wrap(err, falconCtlPath[runtime.GOOS]+" -g --version")
-		}
-		version := strings.TrimSpace(strings.Split(strings.ToLower(string(out)), "=")[1])
-		output.FalconVersion = version
+	out, err := r.Runner.RunCmd(falconCtlPath[runtime.GOOS], "-g", "--aid", "--cid", "--rfm-state", "--version")
+	if err != nil {
+		return output, errors.Wrap(err, falconCtlPath[runtime.GOOS]+" -g --aid --cid --rfm-state --version")
+	}
 
+	agentIdRegex := regexp.MustCompile(`aid="([a-f0-9]{32})"`)
+	output.AgentID = agentIdRegex.FindStringSubmatch(strings.ToLower(string(out)))[1]
+
+	cidRegex := regexp.MustCompile(`cid="([a-f0-9]{32})"`)
+	output.CID = cidRegex.FindStringSubmatch(strings.ToLower(string(out)))[1]
+
+	versionRegex := regexp.MustCompile(`version\s?=\s?(\d\.\d{2}\.\d{5}\.\d)`)
+	output.FalconVersion = versionRegex.FindStringSubmatch(strings.ToLower(string(out)))[1]
+
+	// as of 7.29, `rfm-state` is always returned on a newline, and always has a trailing comma.
+	rfmStateRegex := regexp.MustCompile(`rfm-state\s?=\s?(true|false),?`)
+	output.ReducedFunctionalityMode = rfmStateRegex.FindStringSubmatch(strings.ToLower(string(out)))[1] == "true"
+
+	return output, nil
+}
+
+func runCrowdstrikeFalconDarwin(r utils.Runner, fs utils.FileSystem) (CrowdStrikeOutput, error) {
+	var output CrowdStrikeOutput
+
+	_, err := fs.Stat(falconCtlPath[runtime.GOOS])
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return output, nil
+		}
+		return output, err
+	}
+
+	out, err := r.Runner.RunCmd(falconCtlPath[runtime.GOOS], "info")
+	if err != nil {
+		return output, errors.Wrap(err, falconCtlPath[runtime.GOOS]+" info")
+	}
+	if err := plist.Unmarshal(out, &output); err != nil {
+		return output, errors.Wrap(err, "unmarshalling falconctl output")
 	}
 
 	return output, nil
