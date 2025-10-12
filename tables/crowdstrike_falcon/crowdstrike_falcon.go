@@ -51,6 +51,10 @@ func CrowdstrikeFalconGenerate(ctx context.Context, queryContext table.QueryCont
 	switch runtime.GOOS {
 	case "darwin":
 		output, err = runCrowdstrikeFalconDarwin(r, fs)
+		if err != nil {
+			fmt.Println(err)
+			return nil, err
+		}
 
 	case "linux":
 		osqueryClient, err := osquery.NewClient(socketPath, 10*time.Second)
@@ -59,11 +63,10 @@ func CrowdstrikeFalconGenerate(ctx context.Context, queryContext table.QueryCont
 		}
 		defer osqueryClient.Close()
 		output, err = runCrowdstrikeFalconLinux(r, fs, osqueryClient)
-	}
-
-	if err != nil {
-		fmt.Println(err)
-		return nil, err
+		if err != nil {
+			fmt.Println(err)
+			return nil, err
+		}
 	}
 
 	results = append(results, map[string]string{
