@@ -9,6 +9,7 @@ import (
 
 	"github.com/macadmins/osquery-extension/tables/alt_system_info"
 	"github.com/macadmins/osquery-extension/tables/chromeuserprofiles"
+	"github.com/macadmins/osquery-extension/tables/crowdstrike_falcon"
 	"github.com/macadmins/osquery-extension/tables/fileline"
 	"github.com/macadmins/osquery-extension/tables/filevaultusers"
 	macosprofiles "github.com/macadmins/osquery-extension/tables/macos_profiles"
@@ -75,6 +76,18 @@ func main() {
 	// if runtime.GOOS == "windows" {
 	// If there were windows only tables, they would go here
 	// }
+
+	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
+		linuxPlugins := []osquery.OsqueryPlugin{
+			table.NewPlugin(
+				"crowdstrike_falcon",
+				crowdstrike_falcon.CrowdstrikeFalconColumns(),
+				func(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
+					return crowdstrike_falcon.CrowdstrikeFalconGenerate(ctx, queryContext, *flSocketPath)
+				}),
+		}
+		plugins = append(plugins, linuxPlugins...)
+	}
 
 	if runtime.GOOS == "darwin" {
 		darwinPlugins := []osquery.OsqueryPlugin{
