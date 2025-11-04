@@ -190,3 +190,32 @@ rfm-state=true,`,
 		})
 	}
 }
+
+func TestLinuxParsing(t *testing.T) {
+	tests := []struct {
+		name         string
+		cmdOutput    string
+		expected     CrowdStrikeOutput
+		sensorLoaded bool // split out to test that SensorLoaded is passed through on input/output
+	}{
+		{
+			name:      "No agent ID, no rfm-state",
+			cmdOutput: "cid=\"9c50db0d05ff453995e52701d2dbb259\", aid is not set, version = 7.30.18306.0\nrfm-state is not set, \n",
+			expected: CrowdStrikeOutput{
+				CID:           "9c50db0d05ff453995e52701d2dbb259",
+				FalconVersion: "7.30.18306.0",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := HydrateCommandOutput(tt.cmdOutput, CrowdStrikeOutput{SensorLoaded: tt.sensorLoaded})
+			assert.Equal(t, tt.sensorLoaded, result.SensorLoaded)
+			assert.Equal(t, tt.expected.FalconVersion, result.FalconVersion)
+			assert.Equal(t, tt.expected.AgentID, result.AgentID)
+			assert.Equal(t, tt.expected.CID, result.CID)
+			assert.Equal(t, tt.expected.ReducedFunctionalityMode, result.ReducedFunctionalityMode)
+		})
+	}
+}
