@@ -108,20 +108,35 @@ func runCrowdstrikeFalconLinux(r utils.Runner, fs utils.FileSystem, client utils
 		return output, errors.Wrap(err, falconCtlPath[runtime.GOOS]+" -g --aid --cid --rfm-state --version")
 	}
 
+	return HydrateCommandOutput(string(out), output), nil
+}
+
+func HydrateCommandOutput(cmdOut string, output CrowdStrikeOutput) CrowdStrikeOutput {
+	out := strings.ToLower(cmdOut)
+
 	agentIdRegex := regexp.MustCompile(`aid="([a-f0-9]{32})"`)
-	output.AgentID = agentIdRegex.FindStringSubmatch(strings.ToLower(string(out)))[1]
+	maybeAgentID := agentIdRegex.FindStringSubmatch(out)
+	if len(maybeAgentID) > 1 {
+		output.AgentID = maybeAgentID[1]
+	}
 
 	cidRegex := regexp.MustCompile(`cid="([a-f0-9]{32})"`)
-	output.CID = cidRegex.FindStringSubmatch(strings.ToLower(string(out)))[1]
+	maybeCID := cidRegex.FindStringSubmatch(out)
+	if len(maybeCID) > 1 {
+		output.CID = maybeCID[1]
+	}
 
 	versionRegex := regexp.MustCompile(`version\s?=\s?(\d\.\d{2}\.\d{5}\.\d)`)
-	output.FalconVersion = versionRegex.FindStringSubmatch(strings.ToLower(string(out)))[1]
+	output.FalconVersion = versionRegex.FindStringSubmatch(out)[1]
 
-	// as of 7.29, `rfm-state` is always returned on a newline, and always has a trailing comma.
+	// as of 7.29, `rfm-state` is always returned on a newline, and always has a trailing comma, but might be "not set"
 	rfmStateRegex := regexp.MustCompile(`rfm-state\s?=\s?(true|false),?`)
-	output.ReducedFunctionalityMode = rfmStateRegex.FindStringSubmatch(strings.ToLower(string(out)))[1] == "true"
+	maybeRfmState := rfmStateRegex.FindStringSubmatch(out)
+	if len(maybeRfmState) > 1 {
+		output.ReducedFunctionalityMode = maybeRfmState[1] == "true"
+	}
 
-	return output, nil
+	return output
 }
 
 func runCrowdstrikeFalconDarwin(r utils.Runner, fs utils.FileSystem) (CrowdStrikeOutput, error) {
