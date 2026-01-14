@@ -114,8 +114,8 @@
 			<false/>
 			<key>installed_size</key>
 			<integer>6566</integer>
-			<key>installed_version</key>
-			<string>1.1.7.81411</string>
+			<key>version_to_install</key>
+			<string>1.1.8.90000</string>
 			<key>name</key>
 			<string>Nudge</string>
 		</dict>
