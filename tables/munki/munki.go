@@ -71,6 +71,7 @@ type munkiReport struct {
 type managedInstall struct {
 	Installed        bool   `plist:"installed"`
 	InstalledVersion string `plist:"installed_version"`
+	VersionToInstall string `plist:"version_to_install"`
 	Name             string `plist:"name"`
 	DisplayName      string `plist:"display_name"`
 }
@@ -124,6 +125,7 @@ func MunkiInfoGenerate(ctx context.Context, queryContext table.QueryContext) ([]
 func MunkiInstallsColumns() []table.ColumnDefinition {
 	return []table.ColumnDefinition{
 		table.TextColumn("installed_version"),
+		table.TextColumn("version_to_install"),
 		table.TextColumn("installed"),
 		table.TextColumn("name"),
 		table.TextColumn("end_time"),
@@ -144,11 +146,12 @@ func MunkiInstallsGenerate(ctx context.Context, queryContext table.QueryContext)
 
 	for _, install := range report.ManagedInstalls {
 		results = append(results, map[string]string{
-			"installed_version": install.InstalledVersion,
-			"installed":         fmt.Sprintf("%v", install.Installed),
-			"name":              install.Name,
-			"end_time":          report.EndTime.String(),
-			"display_name":      install.DisplayName,
+			"installed_version":  install.InstalledVersion,
+			"version_to_install": install.VersionToInstall,
+			"installed":          fmt.Sprintf("%v", install.Installed),
+			"name":               install.Name,
+			"end_time":           report.EndTime.String(),
+			"display_name":       install.DisplayName,
 		})
 	}
 
