@@ -43,6 +43,7 @@ go_library(
         "//tables/crowdstrike_falcon",
         "//tables/fileline",
         "//tables/filevaultusers",
+        "//tables/localnetworkpermissions",
         "//tables/macos_profiles",
         "//tables/macosrsr",
         "//tables/mdm",
