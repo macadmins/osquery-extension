@@ -52,8 +52,8 @@ def go_dependencies():
     go_repository(
         name = "com_github_micromdm_plist",
         importpath = "github.com/micromdm/plist",
-        sum = "h1:4SoSMOVAyzv1ThT8IKLgXLJEKezLkcVDN6wivqTTFdo=",
-        version = "v0.2.1",
+        sum = "h1:U9A+0ZED3cPxb5ufiTzyn2kyo6UFoR5bMggCR0Q/DOg=",
+        version = "v0.2.3-0.20260123201933-667adaf87d87",
     )
     go_repository(
         name = "com_github_microsoft_go_winio",
