@@ -1,7 +1,6 @@
 package localnetworkpermissions
 
 import (
-	"context"
 	_ "embed"
 	"os"
 	"testing"
@@ -34,56 +33,42 @@ func TestLocalNetworkPermissionsGenerate(t *testing.T) {
 	// Create a temp file with test plist data
 	tmpFile, err := os.CreateTemp(t.TempDir(), "networkextension-*.plist")
 	assert.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
 
 	_, err = tmpFile.Write(testPlistData)
 	assert.NoError(t, err)
 	tmpFile.Close()
 
-	// Override the plist path for this test
-	originalPath := networkExtensionPlistPath
-	networkExtensionPlistPath = tmpFile.Name()
-	defer func() { networkExtensionPlistPath = originalPath }()
-
-	ctx := context.Background()
-	queryContext := table.QueryContext{}
-
-	results, err := LocalNetworkPermissionsGenerate(ctx, queryContext)
+	// Test readLocalNetworkPermissions directly with the path parameter
+	permissions, err := readLocalNetworkPermissions(tmpFile.Name())
 	assert.NoError(t, err)
-	assert.NotNil(t, results)
+	assert.NotNil(t, permissions)
 
 	// Verify we got the expected results from our test plist
-	assert.Len(t, results, 2)
+	assert.Len(t, permissions, 2)
 
 	// Check first result
-	assert.Equal(t, "com.example.testapp", results[0]["bundle_id"])
-	assert.Equal(t, "/Applications/TestApp.app/Contents/MacOS/TestApp", results[0]["executable_path"])
-	assert.Equal(t, "Test App", results[0]["display_name"])
-	assert.Equal(t, "applications", results[0]["type"])
-	assert.Equal(t, "1", results[0]["state"])
+	assert.Equal(t, "com.example.testapp", permissions[0].BundleID)
+	assert.Equal(t, "/Applications/TestApp.app/Contents/MacOS/TestApp", permissions[0].ExecutablePath)
+	assert.Equal(t, "Test App", permissions[0].DisplayName)
+	assert.Equal(t, "applications", permissions[0].Type)
+	assert.Equal(t, 1, permissions[0].State)
 
 	// Check second result
-	assert.Equal(t, "com.example.anotherapp", results[1]["bundle_id"])
-	assert.Equal(t, "/Applications/AnotherApp.app/Contents/MacOS/AnotherApp", results[1]["executable_path"])
-	assert.Equal(t, "Another App", results[1]["display_name"])
-	assert.Equal(t, "applications", results[1]["type"])
-	assert.Equal(t, "0", results[1]["state"])
+	assert.Equal(t, "com.example.anotherapp", permissions[1].BundleID)
+	assert.Equal(t, "/Applications/AnotherApp.app/Contents/MacOS/AnotherApp", permissions[1].ExecutablePath)
+	assert.Equal(t, "Another App", permissions[1].DisplayName)
+	assert.Equal(t, "applications", permissions[1].Type)
+	assert.Equal(t, 0, permissions[1].State)
 }
 
 func TestLocalNetworkPermissionsGenerateFileNotFound(t *testing.T) {
 	t.Parallel()
 
-	// Override the plist path to a non-existent file
-	originalPath := networkExtensionPlistPath
-	networkExtensionPlistPath = "/nonexistent/path/to/plist"
-	defer func() { networkExtensionPlistPath = originalPath }()
-
-	ctx := context.Background()
-	queryContext := table.QueryContext{}
-
-	results, err := LocalNetworkPermissionsGenerate(ctx, queryContext)
-	assert.NoError(t, err) // Should not error, just return empty results
-	assert.Empty(t, results)
+	// Test readLocalNetworkPermissions with a non-existent file path
+	permissions, err := readLocalNetworkPermissions("/nonexistent/path/to/plist")
+	assert.Error(t, err) // Should return an error for file not found
+	assert.True(t, os.IsNotExist(err))
+	assert.Nil(t, permissions)
 }
 
 func TestExtractPermissionsFromObjects(t *testing.T) {

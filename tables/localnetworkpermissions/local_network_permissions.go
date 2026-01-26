@@ -8,11 +8,11 @@ import (
 
 	"github.com/micromdm/plist"
 	"github.com/osquery/osquery-go/plugin/table"
+	"github.com/pkg/errors"
 )
 
-// networkExtensionPlistPath is the core path to the network extension plist file.
-// There might be more related plists we're not aware of, so scope is maybe extended
-// Note: This is a variable predefined path, it can be overridden in tests.
+// networkExtensionPlistPath is the default path to the network extension plist file.
+// There might be more related plists we're not aware of, so scope may be extended.
 var networkExtensionPlistPath = "/Library/Preferences/com.apple.networkextension.plist"
 
 // LocalNetworkPermission represents a single app's local network permission entry
@@ -39,10 +39,13 @@ func LocalNetworkPermissionsColumns() []table.ColumnDefinition {
 
 // LocalNetworkPermissionsGenerate generates table rows for the local_network_permissions table
 func LocalNetworkPermissionsGenerate(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
-	permissions, err := readLocalNetworkPermissions()
+	permissions, err := readLocalNetworkPermissions(networkExtensionPlistPath)
 	if err != nil {
-		// Return empty result on error (graceful degradation)
-		return []map[string]string{}, nil
+		// File not found is expected when no apps have requested local network permissions
+		if os.IsNotExist(err) {
+			return []map[string]string{}, nil
+		}
+		return nil, errors.Wrap(err, "read local network permissions")
 	}
 
 	results := make([]map[string]string, 0, len(permissions))
@@ -60,8 +63,8 @@ func LocalNetworkPermissionsGenerate(ctx context.Context, queryContext table.Que
 	return results, nil
 }
 
-func readLocalNetworkPermissions() ([]LocalNetworkPermission, error) {
-	data, err := os.ReadFile(networkExtensionPlistPath)
+func readLocalNetworkPermissions(plistPath string) ([]LocalNetworkPermission, error) {
+	data, err := os.ReadFile(plistPath)
 	if err != nil {
 		return nil, err
 	}
