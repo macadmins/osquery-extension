@@ -94,7 +94,7 @@ func extractPermissionsFromObjects(objects []interface{}) []LocalNetworkPermissi
 			continue
 		}
 
-		// Check if thsi looks like an application permission entry
+		// Check if this looks like an application permission entry
 		// These have keys like: bundleid, displayname, path, state, type, providerAdded
 		if !isAppPermissionDict(dict, objects) {
 			continue
