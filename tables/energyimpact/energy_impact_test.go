@@ -54,9 +54,14 @@ func TestEnergyImpactGenerate(t *testing.T) {
 	results, err := EnergyImpactGenerate(ctx, queryContext)
 
 	// The function should return without panicking
-	// Results may be empty if not running as root or powermetrics doesn't exist
-	assert.NotNil(t, results)
-	_ = err // Error is acceptable if powermetrics can't run
+	// On Linux: powermetrics doesn't exist, returns nil results with no error
+	// On macOS without root: returns error (requires superuser)
+	// On macOS with root: returns results
+	if err != nil {
+		// Error case (e.g., not running as root on macOS)
+		assert.Nil(t, results)
+	}
+	// If no error, results could be nil (binary not found) or populated (successful run)
 }
 
 func TestRunPowermetrics(t *testing.T) {
