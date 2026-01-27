@@ -1,0 +1,24 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "localnetworkpermissions",
+    srcs = ["local_network_permissions.go"],
+    importpath = "github.com/macadmins/osquery-extension/tables/localnetworkpermissions",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_github_micromdm_plist//:plist",
+        "@com_github_osquery_osquery_go//plugin/table",
+        "@com_github_pkg_errors//:errors",
+    ],
+)
+
+go_test(
+    name = "localnetworkpermissions_test",
+    srcs = ["local_network_permissions_test.go"],
+    embed = [":localnetworkpermissions"],
+    embedsrcs = ["test_networkextension.plist"],
+    deps = [
+        "@com_github_osquery_osquery_go//plugin/table",
+        "@com_github_stretchr_testify//assert",
+    ],
+)

@@ -4,7 +4,7 @@ go 1.24.0
 
 require (
 	github.com/hashicorp/go-version v1.7.0
-	github.com/micromdm/plist v0.2.1
+	github.com/micromdm/plist v0.2.3-0.20260123201933-667adaf87d87
 	github.com/osquery/osquery-go v0.0.0-20250131154556-629f995b6947
 	github.com/pkg/errors v0.9.1
 	github.com/stretchr/testify v1.11.1
