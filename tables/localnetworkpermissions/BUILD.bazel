@@ -8,6 +8,7 @@ go_library(
     deps = [
         "@com_github_micromdm_plist//:plist",
         "@com_github_osquery_osquery_go//plugin/table",
+        "@com_github_pkg_errors//:errors",
     ],
 )
 
