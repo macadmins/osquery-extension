@@ -41,6 +41,7 @@ go_library(
         "//tables/authdb",
         "//tables/chromeuserprofiles",
         "//tables/crowdstrike_falcon",
+        "//tables/energyimpact",
         "//tables/fileline",
         "//tables/filevaultusers",
         "//tables/localnetworkpermissions",
