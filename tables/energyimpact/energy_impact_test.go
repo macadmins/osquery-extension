@@ -1,26 +1,73 @@
 package energyimpact
 
 import (
+	"context"
 	_ "embed"
 	"errors"
 	"testing"
 
 	"github.com/macadmins/osquery-extension/pkg/utils"
+	"github.com/osquery/osquery-go/plugin/table"
 	"github.com/stretchr/testify/assert"
 )
 
 //go:embed test_powermetrics_output.plist
 var testPlist string
 
+func TestEnergyImpactColumns(t *testing.T) {
+	columns := EnergyImpactColumns()
+
+	// Should return 20 columns
+	assert.Len(t, columns, 20)
+
+	// Verify column names exist
+	columnNames := make(map[string]bool)
+	for _, col := range columns {
+		columnNames[col.Name] = true
+	}
+
+	expectedColumns := []string{
+		"pid", "name", "energy_impact", "energy_impact_per_s",
+		"cputime_ns", "cputime_ms_per_s", "cputime_userland_ratio",
+		"intr_wakeups", "intr_wakeups_per_s", "idle_wakeups", "idle_wakeups_per_s",
+		"diskio_bytesread", "diskio_bytesread_per_s",
+		"diskio_byteswritten", "diskio_byteswritten_per_s",
+		"packets_received", "packets_sent", "bytes_received", "bytes_sent",
+		"interval",
+	}
+
+	for _, name := range expectedColumns {
+		assert.True(t, columnNames[name], "Expected column %s not found", name)
+	}
+}
+
+func TestEnergyImpactGenerate(t *testing.T) {
+	// This test verifies that the generate function works with the default context
+	// Since it requires actual powermetrics execution, we only test the function signature
+	ctx := context.Background()
+	queryContext := table.QueryContext{
+		Constraints: make(map[string]table.ConstraintList),
+	}
+
+	// Call the function - it may return empty results if powermetrics isn't available
+	// or require root, but it shouldn't panic
+	results, err := EnergyImpactGenerate(ctx, queryContext)
+
+	// The function should return without panicking
+	// Results may be empty if not running as root or powermetrics doesn't exist
+	assert.NotNil(t, results)
+	_ = err // Error is acceptable if powermetrics can't run
+}
+
 func TestRunPowermetrics(t *testing.T) {
 	tests := []struct {
-		name        string
-		mockCmd     utils.MockCmdRunner
-		fileExist   bool
-		interval    int
-		wantErr     bool
-		wantTasks   int
-		checkFirst  func(t *testing.T, tasks []task)
+		name       string
+		mockCmd    utils.MockCmdRunner
+		fileExist  bool
+		interval   int
+		wantErr    bool
+		wantTasks  int
+		checkFirst func(t *testing.T, tasks []task)
 	}{
 		{
 			name: "Binary not present",
