@@ -19,6 +19,7 @@ go_test(
     deps = [
         "//pkg/utils",
         "@com_github_osquery_osquery_go//plugin/table",
+        "@com_github_pkg_errors//:errors",
         "@com_github_stretchr_testify//assert",
         "@com_github_stretchr_testify//require",
     ],
