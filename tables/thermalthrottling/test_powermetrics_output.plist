@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>is_delta</key>
+	<true/>
+	<key>elapsed_ns</key>
+	<integer>1017304750</integer>
+	<key>hw_model</key>
+	<string>Mac16,6</string>
+	<key>thermal_pressure</key>
+	<string>Nominal</string>
+</dict>
+</plist>

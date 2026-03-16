@@ -21,7 +21,9 @@ import (
 	"github.com/macadmins/osquery-extension/tables/networkquality"
 	"github.com/macadmins/osquery-extension/tables/pendingappleupdates"
 	"github.com/macadmins/osquery-extension/tables/puppet"
+	"github.com/macadmins/osquery-extension/tables/socpower"
 	"github.com/macadmins/osquery-extension/tables/sofa"
+	"github.com/macadmins/osquery-extension/tables/thermalthrottling"
 	"github.com/macadmins/osquery-extension/tables/unifiedlog"
 	"github.com/macadmins/osquery-extension/tables/wifi_network"
 
@@ -123,6 +125,8 @@ func main() {
 					return alt_system_info.AltSystemInfoGenerate(ctx, queryContext, *flSocketPath)
 				},
 			),
+			table.NewPlugin("macos_thermal_pressure", thermalthrottling.ThermalPressureColumns(), thermalthrottling.ThermalPressureGenerate),
+			table.NewPlugin("macos_soc_power", socpower.SocPowerColumns(), socpower.SocPowerGenerate),
 		}
 		plugins = append(plugins, darwinPlugins...)
 	}
