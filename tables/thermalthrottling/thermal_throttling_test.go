@@ -1,11 +1,13 @@
 package thermalthrottling
 
 import (
+	"context"
 	_ "embed"
 	"errors"
 	"testing"
 
 	"github.com/macadmins/osquery-extension/pkg/utils"
+	"github.com/osquery/osquery-go/plugin/table"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -128,5 +130,25 @@ func TestRunPowermetrics(t *testing.T) {
 			isThrottling := result.ThermalPressure != "" && result.ThermalPressure != "Nominal"
 			assert.Equal(t, tt.wantThrottling, isThrottling)
 		})
+	}
+}
+
+func TestRunPowermetricsStatError(t *testing.T) {
+	runner := utils.Runner{Runner: utils.MockCmdRunner{}}
+	fs := utils.MockFileSystem{Err: errors.New("permission denied")}
+	result, err := runPowermetrics(runner, fs, 1000)
+	assert.Error(t, err)
+	assert.Nil(t, result)
+}
+
+func TestThermalPressureGenerate(t *testing.T) {
+	ctx := context.Background()
+	queryContext := table.QueryContext{
+		Constraints: make(map[string]table.ConstraintList),
+	}
+	// Calls the real function; may error on CI without root but must not panic.
+	results, err := ThermalPressureGenerate(ctx, queryContext)
+	if err != nil {
+		assert.Nil(t, results)
 	}
 }
