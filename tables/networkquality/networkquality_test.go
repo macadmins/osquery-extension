@@ -43,6 +43,15 @@ func TestRunNetworkQuality(t *testing.T) {
 			wantErr:   false,
 		},
 		{
+			name: "Successful execution with float responsiveness",
+			mockCmd: utils.MockCmdRunner{
+				Output: `{"dl_throughput": 20500, "ul_throughput": 10500, "responsiveness": 1180.154}`,
+				Err:    nil,
+			},
+			fileExist: true,
+			wantErr:   false,
+		},
+		{
 			name: "JSON unmarshal error",
 			mockCmd: utils.MockCmdRunner{
 				Output: `invalid json`,
@@ -67,6 +76,10 @@ func TestRunNetworkQuality(t *testing.T) {
 					assert.NotEmpty(t, output)
 					if tt.name == "Successful execution" {
 						expectedOutput := NetworkQualityOutput{DlThroughput: 20500, UlThroughput: 10500}
+						assert.Equal(t, expectedOutput, output)
+					}
+					if tt.name == "Successful execution with float responsiveness" {
+						expectedOutput := NetworkQualityOutput{DlThroughput: 20500, UlThroughput: 10500, Responsiveness: 1180.154}
 						assert.Equal(t, expectedOutput, output)
 					}
 				} else {
