@@ -19,7 +19,7 @@ type NetworkQualityOutput struct {
 	LudForeignTCPHandshake443 []int     `json:"lud_foreign_tcp_handshake_443"`
 	LudSelfDlH2               []float64 `json:"lud_self_dl_h2"`
 	LudSelfUlH2               []float64 `json:"lud_self_ul_h2"`
-	Responsiveness            int       `json:"responsiveness"`
+	Responsiveness            float64   `json:"responsiveness"`
 	UlFlows                   int       `json:"ul_flows"`
 	UlThroughput              int       `json:"ul_throughput"`
 }
