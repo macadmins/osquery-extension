@@ -49,6 +49,7 @@ go_library(
         "//tables/macosrsr",
         "//tables/mdm",
         "//tables/munki",
+        "//tables/netskope",
         "//tables/networkquality",
         "//tables/pendingappleupdates",
         "//tables/puppet",
