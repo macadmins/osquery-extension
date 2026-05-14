@@ -36,23 +36,28 @@ func NetworkQualityColumns() []table.ColumnDefinition {
 // Generate will be called whenever the table is queried. Since our data in these
 // results is flat it will return a single row.
 func NetworkQualityGenerate(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
-	var results []map[string]string
 	r := utils.NewRunner()
 	fs := utils.OSFileSystem{}
+	return generateWithRunner(r, fs)
+}
+
+func generateWithRunner(r utils.Runner, fs utils.FileSystem) ([]map[string]string, error) {
 	output, err := runNetworkQuality(r, fs)
 	if err != nil {
 		fmt.Println(err)
-		return results, err
+		return nil, err
 	}
 
-	results = append(results, map[string]string{
+	return buildOutput(output), nil
+}
+
+func buildOutput(output NetworkQualityOutput) []map[string]string {
+	return []map[string]string{{
 		"dl_throughput_kbps": strconv.Itoa(output.DlThroughput),
 		"ul_throughput_kbps": strconv.Itoa(output.UlThroughput),
 		"dl_throughput_mbps": fmt.Sprintf("%.2f", float64(output.DlThroughput)/1000000),
 		"ul_throughput_mbps": fmt.Sprintf("%.2f", float64(output.UlThroughput)/1000000),
-	})
-
-	return results, nil
+	}}
 }
 
 func runNetworkQuality(r utils.Runner, fs utils.FileSystem) (NetworkQualityOutput, error) {
