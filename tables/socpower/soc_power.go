@@ -38,6 +38,12 @@ func SocPowerColumns() []table.ColumnDefinition {
 }
 
 func SocPowerGenerate(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
+	r := utils.NewRunner()
+	fs := utils.OSFileSystem{}
+	return generateWithRunner(queryContext, r, fs)
+}
+
+func parseInterval(queryContext table.QueryContext) int {
 	interval := defaultInterval
 	if constraintList, present := queryContext.Constraints["interval"]; present {
 		for _, constraint := range constraintList.Constraints {
@@ -49,8 +55,11 @@ func SocPowerGenerate(ctx context.Context, queryContext table.QueryContext) ([]m
 		}
 	}
 
-	r := utils.NewRunner()
-	fs := utils.OSFileSystem{}
+	return interval
+}
+
+func generateWithRunner(queryContext table.QueryContext, r utils.Runner, fs utils.FileSystem) ([]map[string]string, error) {
+	interval := parseInterval(queryContext)
 	result, err := runPowermetrics(r, fs, interval)
 	if err != nil {
 		fmt.Println(err)
@@ -60,6 +69,10 @@ func SocPowerGenerate(ctx context.Context, queryContext table.QueryContext) ([]m
 		return nil, nil
 	}
 
+	return buildOutput(result, interval), nil
+}
+
+func buildOutput(result *powermetricsOutput, interval int) []map[string]string {
 	gpuActiveRatio := 1.0 - result.GPU.IdleRatio
 
 	return []map[string]string{{
@@ -69,7 +82,7 @@ func SocPowerGenerate(ctx context.Context, queryContext table.QueryContext) ([]m
 		"combined_power_mw": fmt.Sprintf("%.2f", result.Processor.CombinedPower),
 		"gpu_active_ratio":  fmt.Sprintf("%.4f", gpuActiveRatio),
 		"interval":          strconv.Itoa(interval),
-	}}, nil
+	}}
 }
 
 func runPowermetrics(r utils.Runner, fs utils.FileSystem, interval int) (*powermetricsOutput, error) {
