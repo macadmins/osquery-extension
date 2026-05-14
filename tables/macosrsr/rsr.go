@@ -75,7 +75,9 @@ func generateResults(rsrOutput RSROutput) []map[string]string {
 	return results
 }
 
-func runSwVersCmd() ([]byte, error) {
+var runSwVersCmd = runSwVersCmdCommand
+
+func runSwVersCmdCommand() ([]byte, error) {
 	cmd := exec.Command("/usr/bin/sw_vers", "--ProductVersionExtra")
 	out, err := cmd.Output()
 	if err != nil {
@@ -113,7 +115,9 @@ func getSystemVersion() (SystemVersionPlist, error) {
 	return unmarshalSystemVersionBytesToStruct(bytes)
 }
 
-func readSystemVersionPlistToBytes() ([]byte, error) {
+var readSystemVersionPlistToBytes = readSystemVersionPlistToBytesFile
+
+func readSystemVersionPlistToBytesFile() ([]byte, error) {
 	var byteValue []byte
 
 	plistFile, err := os.Open(systemVersionPath)
