@@ -43,7 +43,7 @@ func PuppetStateColumns() []table.ColumnDefinition {
 
 func PuppetStateGenerate(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
 	var results []map[string]string
-	runData, err := getPuppetYaml()
+	runData, err := getPuppetYamlFunc()
 	if err != nil {
 		return results, err
 	}
