@@ -127,7 +127,10 @@ func HydrateCommandOutput(cmdOut string, output CrowdStrikeOutput) CrowdStrikeOu
 	}
 
 	versionRegex := regexp.MustCompile(`version\s?=\s?(\d\.\d{2}\.\d{5}\.\d)`)
-	output.FalconVersion = versionRegex.FindStringSubmatch(out)[1]
+	maybeVersion := versionRegex.FindStringSubmatch(out)
+	if len(maybeVersion) > 1 {
+		output.FalconVersion = maybeVersion[1]
+	}
 
 	// as of 7.29, `rfm-state` is always returned on a newline, and always has a trailing comma, but might be "not set"
 	rfmStateRegex := regexp.MustCompile(`rfm-state\s?=\s?(true|false),?`)
