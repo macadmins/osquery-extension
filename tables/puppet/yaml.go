@@ -18,10 +18,14 @@ func yamlPath() string {
 	return "/opt/puppetlabs/puppet/cache/state/last_run_report.yaml"
 }
 
+var getPuppetYamlFunc = getPuppetYaml
+
+var puppetYAMLPath = yamlPath
+
 func getPuppetYaml() (*PuppetInfo, error) {
 	var yamlData PuppetInfo
 
-	yamlFile, err := os.Open(yamlPath())
+	yamlFile, err := os.Open(puppetYAMLPath())
 	if err != nil {
 		log.Print(err)
 		return &yamlData, err

@@ -34,7 +34,7 @@ func PuppetFactsColumns() []table.ColumnDefinition {
 func PuppetFactsGenerate(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
 	var results []map[string]string
 
-	facts, err := getPuppetFacts()
+	facts, err := getPuppetFactsFunc()
 	if err != nil {
 		return nil, err
 	}
@@ -66,6 +66,8 @@ func PuppetFactsGenerate(ctx context.Context, queryContext table.QueryContext) (
 	return results, nil
 }
 
+var getPuppetFactsFunc = getPuppetFacts
+
 func getPuppetFacts() (*puppetFacts, error) {
 	// check if puppet command exists
 	execPath, err := getPuppetExecPath()
@@ -74,8 +76,7 @@ func getPuppetFacts() (*puppetFacts, error) {
 	}
 
 	// execute command
-	cmd := exec.Command(execPath, "facts", "--render-as", "json")
-	out, err := cmd.Output()
+	out, err := runPuppetFactsCmd(execPath)
 	if err != nil {
 		return nil, errors.Wrap(err, "calling puppet facts to get puppet facts")
 	}
@@ -86,6 +87,11 @@ func getPuppetFacts() (*puppetFacts, error) {
 	}
 
 	return &facts, nil
+}
+
+var runPuppetFactsCmd = func(execPath string) ([]byte, error) {
+	cmd := exec.Command(execPath, "facts", "--render-as", "json")
+	return cmd.Output()
 }
 
 func getPuppetExecPath() (string, error) {
