@@ -2,7 +2,6 @@ package pendingappleupdates
 
 import (
 	"context"
-	"log"
 	"os"
 
 	"github.com/macadmins/osquery-extension/pkg/utils"
@@ -21,6 +20,8 @@ type recommendedUpdate struct {
 	Identifier     string `plist:"Identifier"`
 	ProductKey     string `plist:"Product Key"`
 }
+
+var softwareUpdatePlistPath = "/Library/Preferences/com.apple.SoftwareUpdate.plist"
 
 func PendingAppleUpdatesColumns() []table.ColumnDefinition {
 	return []table.ColumnDefinition{
@@ -56,21 +57,15 @@ func PendingAppleUpdatesGenerate(ctx context.Context, queryContext table.QueryCo
 
 func readSoftwareUpdatePlist(fs utils.FileSystem) (*softwareUpdatePlist, error) {
 	var updatePlist softwareUpdatePlist
-	const plistPath = "/Library/Preferences/com.apple.SoftwareUpdate.plist"
-	if !utils.FileExists(fs, plistPath) {
+	if _, err := fs.Stat(softwareUpdatePlistPath); err != nil {
 		return nil, nil
 	}
-	file, err := os.Open(plistPath)
+	data, err := os.ReadFile(softwareUpdatePlistPath)
 	if err != nil {
 		return &updatePlist, errors.Wrap(err, "open com.apple.SoftwareUpdate plist")
 	}
-	defer func() {
-		if err := file.Close(); err != nil {
-			log.Printf("close com.apple.SoftwareUpdate plist: %v", err)
-		}
-	}()
 
-	if err := plist.NewBinaryDecoder(file).Decode(&updatePlist); err != nil {
+	if err := plist.Unmarshal(data, &updatePlist); err != nil {
 		return &updatePlist, errors.Wrap(err, "decode com.apple.SoftwareUpdate plist")
 	}
 
