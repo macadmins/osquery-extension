@@ -106,7 +106,9 @@ func unmarshalProfilesOutput(theBytes []byte) (profilesOutput, error) {
 	return profiles, nil
 }
 
-func runProfilesCmd() ([]byte, error) {
+var runProfilesCmd = runProfilesCmdCommand
+
+func runProfilesCmdCommand() ([]byte, error) {
 	cmd := exec.Command("/usr/bin/profiles", "-C", "-o", "stdout-xml")
 	out, err := cmd.Output()
 	if err != nil {

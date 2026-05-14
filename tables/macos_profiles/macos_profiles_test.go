@@ -1,14 +1,41 @@
 package macos_profiles
 
 import (
+	"context"
 	_ "embed"
+	"errors"
 	"testing"
 
+	"github.com/osquery/osquery-go/plugin/table"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 //go:embed test_profiles_stdout.plist
 var testProfileStdOut []byte
+
+func withRunProfilesCmd(t *testing.T, fn func() ([]byte, error)) {
+	t.Helper()
+	original := runProfilesCmd
+	runProfilesCmd = fn
+	t.Cleanup(func() {
+		runProfilesCmd = original
+	})
+}
+
+func TestMacOSProfilesColumns(t *testing.T) {
+	assert.Equal(t, []table.ColumnDefinition{
+		table.TextColumn("identifier"),
+		table.TextColumn("install_date"),
+		table.TextColumn("display_name"),
+		table.TextColumn("description"),
+		table.TextColumn("verification_state"),
+		table.TextColumn("uuid"),
+		table.TextColumn("organization"),
+		table.TextColumn("type"),
+		table.TextColumn("payload_checksum"),
+	}, MacOSProfilesColumns())
+}
 
 func TestMarshallProfileOutput(t *testing.T) {
 	t.Parallel()
@@ -100,4 +127,57 @@ func TestMacOSProfilesGenerate(t *testing.T) {
 	rows, err := generateResults(profiles)
 	assert.NoError(t, err, "Error generating results from profiles")
 	assert.Equal(t, rows, expectedRows, "Output rows are not equal")
+}
+
+func TestMacOSProfilesGenerateRunsCommand(t *testing.T) {
+	withRunProfilesCmd(t, func() ([]byte, error) {
+		return testProfileStdOut, nil
+	})
+
+	rows, err := MacOSProfilesGenerate(context.Background(), table.QueryContext{})
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	assert.Equal(t, "com.company.mdm.com.apple.security.firewall", rows[0]["identifier"])
+	assert.Equal(t, "f83dbedab1421631584052840aa182f0550e44a1bdaaea4608529e424c3e37de", rows[0]["payload_checksum"])
+}
+
+func TestMacOSProfilesGenerateCommandError(t *testing.T) {
+	withRunProfilesCmd(t, func() ([]byte, error) {
+		return nil, errors.New("profiles failed")
+	})
+
+	rows, err := MacOSProfilesGenerate(context.Background(), table.QueryContext{})
+	assert.Error(t, err)
+	assert.Nil(t, rows)
+	assert.ErrorContains(t, err, "run profiles command")
+	assert.ErrorContains(t, err, "profiles failed")
+}
+
+func TestMacOSProfilesGenerateInvalidPlist(t *testing.T) {
+	withRunProfilesCmd(t, func() ([]byte, error) {
+		return []byte("not plist"), nil
+	})
+
+	rows, err := MacOSProfilesGenerate(context.Background(), table.QueryContext{})
+	assert.Error(t, err)
+	assert.Nil(t, rows)
+	assert.ErrorContains(t, err, "unmarshalProfilesOutput")
+}
+
+func TestUnmarshalProfilesOutputInvalidPlist(t *testing.T) {
+	profiles, err := unmarshalProfilesOutput([]byte("not plist"))
+	assert.Error(t, err)
+	assert.Empty(t, profiles)
+}
+
+func TestGenerateResultsChecksumError(t *testing.T) {
+	rows, err := generateResults(profilesOutput{
+		ComputerLevel: []profilePayload{{
+			ProfileIdentifier: "bad-profile",
+			ProfileItems:      []any{make(chan int)},
+		}},
+	})
+	assert.Error(t, err)
+	assert.Nil(t, rows)
+	assert.ErrorContains(t, err, "profileItemsChecksum")
 }
