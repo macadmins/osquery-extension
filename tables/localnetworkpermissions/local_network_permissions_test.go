@@ -36,7 +36,7 @@ func TestLocalNetworkPermissionsGenerate(t *testing.T) {
 
 	_, err = tmpFile.Write(testPlistData)
 	assert.NoError(t, err)
-	tmpFile.Close()
+	assert.NoError(t, tmpFile.Close())
 
 	// Test readLocalNetworkPermissions directly with the path parameter
 	permissions, err := readLocalNetworkPermissions(tmpFile.Name())

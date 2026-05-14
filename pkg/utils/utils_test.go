@@ -16,14 +16,13 @@ func TestFileExists(t *testing.T) {
 	tempFile, err := os.CreateTemp("", "test")
 	assert.NoError(t, err, "Failed to create temp file")
 
-	defer os.Remove(tempFile.Name())
-	tempFile.Close()
+	assert.NoError(t, tempFile.Close())
 
 	// Test that FileExists returns true for an existing file
 	assert.True(t, FileExists(fs, tempFile.Name()), "Expected file to exist")
 
 	// Delete the temporary file
-	os.Remove(tempFile.Name())
+	assert.NoError(t, os.Remove(tempFile.Name()))
 
 	// Test that FileExists returns false for a non-existing file
 	assert.False(t, FileExists(fs, tempFile.Name()), "Expected file to not exist")

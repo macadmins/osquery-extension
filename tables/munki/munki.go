@@ -5,6 +5,7 @@ package munki
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -171,7 +172,11 @@ func loadMunkiReport(fs utils.FileSystem) (*munkiReport, error) {
 	if err != nil {
 		return &report, errors.Wrap(err, "open ManagedInstallReport file")
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			log.Printf("close ManagedInstallReport file: %v", err)
+		}
+	}()
 
 	if err := plist.NewDecoder(file).Decode(&report); err != nil {
 		return &report, errors.Wrap(err, "decode ManagedInstallReport plist")
