@@ -71,6 +71,11 @@ func UnifiedLogColumns() []table.ColumnDefinition {
 }
 
 func UnifiedLogGenerate(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
+	r := utils.NewRunner()
+	return generateWithRunner(queryContext, r)
+}
+
+func generateWithRunner(queryContext table.QueryContext, r utils.Runner) ([]map[string]string, error) {
 	predicate := ""
 	last := ""
 	logLevel := ""
@@ -109,8 +114,6 @@ func UnifiedLogGenerate(ctx context.Context, queryContext table.QueryContext) ([
 	if predicate == "" && last == "" {
 		return []map[string]string{}, nil
 	}
-
-	r := utils.NewRunner()
 
 	output, err := execute(predicate, last, logLevel, r)
 	if err != nil {
@@ -176,7 +179,7 @@ func execute(predicate string, last string, logLevel string, r utils.Runner) ([]
 			"process_id":                 strconv.Itoa(item.ProcessID),
 			"sender_program_counter":     strconv.Itoa(item.SenderProgramCounter),
 			"parent_activity_identifier": strconv.Itoa(item.ParentActivityIdentifier),
-			"timezone_name":              item.TimezoneName,
+			"time_zone_name":             item.TimezoneName,
 			"predicate":                  predicate,
 			"last":                       last,
 			"log_level":                  logLevel,
