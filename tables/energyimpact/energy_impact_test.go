@@ -1,7 +1,6 @@
 package energyimpact
 
 import (
-	"context"
 	_ "embed"
 	"errors"
 	"testing"
@@ -10,6 +9,23 @@ import (
 	"github.com/osquery/osquery-go/plugin/table"
 	"github.com/stretchr/testify/assert"
 )
+
+type recordingCmdRunner struct {
+	output string
+	err    error
+	name   string
+	args   []string
+}
+
+func (r *recordingCmdRunner) RunCmd(name string, arg ...string) ([]byte, error) {
+	r.name = name
+	r.args = append([]string(nil), arg...)
+	return []byte(r.output), r.err
+}
+
+func (r *recordingCmdRunner) RunCmdWithStdin(name string, stdin string, arg ...string) ([]byte, error) {
+	return r.RunCmd(name, arg...)
+}
 
 //go:embed test_powermetrics_output.plist
 var testPlist string
@@ -41,27 +57,122 @@ func TestEnergyImpactColumns(t *testing.T) {
 	}
 }
 
-func TestEnergyImpactGenerate(t *testing.T) {
-	// This test verifies that the generate function works with the default context
-	// Since it requires actual powermetrics execution, we only test the function signature
-	ctx := context.Background()
-	queryContext := table.QueryContext{
-		Constraints: make(map[string]table.ConstraintList),
+func TestParseInterval(t *testing.T) {
+	tests := []struct {
+		name         string
+		queryContext table.QueryContext
+		expected     int
+	}{
+		{
+			name:         "default",
+			queryContext: table.QueryContext{Constraints: map[string]table.ConstraintList{}},
+			expected:     defaultInterval,
+		},
+		{
+			name: "equals constraint",
+			queryContext: table.QueryContext{Constraints: map[string]table.ConstraintList{
+				"interval": {Constraints: []table.Constraint{{
+					Operator:   table.OperatorEquals,
+					Expression: "2500",
+				}}},
+			}},
+			expected: 2500,
+		},
+		{
+			name: "invalid equals constraint",
+			queryContext: table.QueryContext{Constraints: map[string]table.ConstraintList{
+				"interval": {Constraints: []table.Constraint{{
+					Operator:   table.OperatorEquals,
+					Expression: "not-a-number",
+				}}},
+			}},
+			expected: defaultInterval,
+		},
+		{
+			name: "non equals constraint",
+			queryContext: table.QueryContext{Constraints: map[string]table.ConstraintList{
+				"interval": {Constraints: []table.Constraint{{
+					Operator:   table.OperatorGreaterThan,
+					Expression: "2500",
+				}}},
+			}},
+			expected: defaultInterval,
+		},
 	}
 
-	// Call the function - it may return empty results if powermetrics isn't available
-	// or require root, but it shouldn't panic
-	results, err := EnergyImpactGenerate(ctx, queryContext)
-
-	// The function should return without panicking
-	// On Linux: powermetrics doesn't exist, returns nil results with no error
-	// On macOS without root: returns error (requires superuser)
-	// On macOS with root: returns results
-	if err != nil {
-		// Error case (e.g., not running as root on macOS)
-		assert.Nil(t, results)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, parseInterval(tt.queryContext))
+		})
 	}
-	// If no error, results could be nil (binary not found) or populated (successful run)
+}
+
+func TestGenerateWithRunnerUsesParsedInterval(t *testing.T) {
+	runner := &recordingCmdRunner{output: testPlist}
+	queryContext := table.QueryContext{Constraints: map[string]table.ConstraintList{
+		"interval": {Constraints: []table.Constraint{{
+			Operator:   table.OperatorEquals,
+			Expression: "5000",
+		}}},
+	}}
+
+	results, err := generateWithRunner(
+		queryContext,
+		utils.Runner{Runner: runner},
+		utils.MockFileSystem{FileExists: true},
+	)
+	assert.NoError(t, err)
+	assert.Len(t, results, 3)
+	assert.Equal(t, "5000", results[0]["interval"])
+	assert.Equal(t, "/usr/bin/powermetrics", runner.name)
+	assert.Contains(t, runner.args, "5000")
+}
+
+func TestBuildOutputFormatsValues(t *testing.T) {
+	results := buildOutput([]task{{
+		PID:                    1234,
+		Name:                   "Safari",
+		EnergyImpact:           125.555,
+		EnergyImpactPerS:       12.554,
+		CPUTimeNS:              500000000,
+		CPUTimeMSPerS:          50.505,
+		CPUTimeUserlandRatio:   0.755,
+		IntrWakeups:            100,
+		IntrWakeupsPerS:        10.555,
+		IdleWakeups:            50,
+		IdleWakeupsPerS:        5.255,
+		DiskIOBytesRead:        1048576,
+		DiskIOBytesReadPerS:    104857.655,
+		DiskIOBytesWritten:     524288,
+		DiskIOBytesWrittenPerS: 52428.855,
+		PacketsReceived:        200,
+		PacketsSent:            150,
+		BytesReceived:          204800,
+		BytesSent:              102400,
+	}}, 2500)
+
+	assert.Equal(t, []map[string]string{{
+		"pid":                       "1234",
+		"name":                      "Safari",
+		"energy_impact":             "125.56",
+		"energy_impact_per_s":       "12.55",
+		"cputime_ns":                "500000000",
+		"cputime_ms_per_s":          "50.51",
+		"cputime_userland_ratio":    "0.76",
+		"intr_wakeups":              "100",
+		"intr_wakeups_per_s":        "10.55",
+		"idle_wakeups":              "50",
+		"idle_wakeups_per_s":        "5.25",
+		"diskio_bytesread":          "1048576",
+		"diskio_bytesread_per_s":    "104857.65",
+		"diskio_byteswritten":       "524288",
+		"diskio_byteswritten_per_s": "52428.86",
+		"packets_received":          "200",
+		"packets_sent":              "150",
+		"bytes_received":            "204800",
+		"bytes_sent":                "102400",
+		"interval":                  "2500",
+	}}, results)
 }
 
 func TestRunPowermetrics(t *testing.T) {
@@ -134,6 +245,17 @@ func TestRunPowermetrics(t *testing.T) {
 			wantTasks: 0,
 		},
 		{
+			name: "Stat error",
+			mockCmd: utils.MockCmdRunner{
+				Output: "",
+				Err:    nil,
+			},
+			fileExist: true,
+			interval:  1000,
+			wantErr:   true,
+			wantTasks: 0,
+		},
+		{
 			name: "Invalid plist output",
 			mockCmd: utils.MockCmdRunner{
 				Output: "invalid plist data",
@@ -161,6 +283,9 @@ func TestRunPowermetrics(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			runner := utils.Runner{Runner: tt.mockCmd}
 			fs := utils.MockFileSystem{FileExists: tt.fileExist}
+			if tt.name == "Stat error" {
+				fs.Err = errors.New("stat error")
+			}
 
 			tasks, err := runPowermetrics(runner, fs, tt.interval)
 			if tt.wantErr {
