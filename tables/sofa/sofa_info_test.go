@@ -2,12 +2,27 @@ package sofa
 
 import (
 	_ "embed"
+	"errors"
 	"testing"
 
 	"github.com/macadmins/osquery-extension/pkg/utils"
 	"github.com/osquery/osquery-go/plugin/table"
 	"github.com/stretchr/testify/assert"
 )
+
+type errorOsqueryClient struct {
+	err error
+}
+
+func (e errorOsqueryClient) QueryRows(query string) ([]map[string]string, error) {
+	return nil, e.err
+}
+
+func (e errorOsqueryClient) QueryRow(query string) (map[string]string, error) {
+	return nil, e.err
+}
+
+func (e errorOsqueryClient) Close() {}
 
 func TestGetSecurityReleaseInfoForOSVersion(t *testing.T) {
 	tests := []struct {
@@ -50,6 +65,28 @@ func TestGetSecurityReleaseInfoForOSVersion(t *testing.T) {
 			osVersion: "11.0",
 			wantErr:   true,
 		},
+		{
+			name:      "invalid os version",
+			root:      Root{},
+			osVersion: "not-a-version",
+			wantErr:   true,
+		},
+		{
+			name: "invalid product version",
+			root: Root{
+				OSVersions: []OSVersion{
+					{
+						SecurityReleases: []SecurityRelease{
+							{
+								ProductVersion: "not-a-version",
+							},
+						},
+					},
+				},
+			},
+			osVersion: "14.0",
+			wantErr:   true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -69,6 +106,19 @@ func TestGetSecurityReleaseInfoForOSVersion(t *testing.T) {
 	}
 }
 
+func TestSofaSecurityReleaseInfoColumns(t *testing.T) {
+	assert.Equal(t, []table.ColumnDefinition{
+		table.TextColumn("update_name"),
+		table.TextColumn("product_version"),
+		table.TextColumn("release_date"),
+		table.TextColumn("security_info"),
+		table.IntegerColumn("unique_cves_count"),
+		table.IntegerColumn("days_since_previous_release"),
+		table.TextColumn("os_version"),
+		table.TextColumn("url"),
+	}, SofaSecurityReleaseInfoColumns())
+}
+
 func TestGetCurrentOSVersion(t *testing.T) {
 	mockClient := &utils.MockOsqueryClient{
 		Data: map[string][]map[string]string{
@@ -78,6 +128,12 @@ func TestGetCurrentOSVersion(t *testing.T) {
 	version, err := getCurrentOSVersion(mockClient)
 	assert.NoError(t, err)
 	assert.Equal(t, "1.0.0", version)
+}
+
+func TestGetCurrentOSVersionQueryError(t *testing.T) {
+	_, err := getCurrentOSVersion(errorOsqueryClient{err: errors.New("query failed")})
+	assert.Error(t, err)
+	assert.ErrorContains(t, err, "query failed")
 }
 
 func TestGetVersionFromResponse(t *testing.T) {
@@ -130,6 +186,27 @@ func TestProcessContextConstraints(t *testing.T) {
 
 	assert.Equal(t, "http://testurl.com", url)
 	assert.Equal(t, "14.5.1", osVersion)
+}
+
+func TestProcessContextConstraintsDefaultsAndIgnoresNonEquals(t *testing.T) {
+	url, osVersion := processContextConstraints(table.QueryContext{})
+	assert.Equal(t, SofaV1URL, url)
+	assert.Empty(t, osVersion)
+
+	url, osVersion = processContextConstraints(table.QueryContext{
+		Constraints: map[string]table.ConstraintList{
+			"url": {Constraints: []table.Constraint{{
+				Operator:   table.OperatorLike,
+				Expression: "ignored",
+			}}},
+			"os_version": {Constraints: []table.Constraint{{
+				Operator:   table.OperatorGreaterThan,
+				Expression: "14",
+			}}},
+		},
+	})
+	assert.Equal(t, SofaV1URL, url)
+	assert.Empty(t, osVersion)
 }
 
 func TestBuildSecurityReleaseInfoOutput(t *testing.T) {
