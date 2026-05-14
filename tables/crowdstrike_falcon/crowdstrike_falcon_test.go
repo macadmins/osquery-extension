@@ -166,7 +166,8 @@ rfm-state=true,`,
 				assert.NoError(t, err)
 				if tt.fileExist {
 					assert.NotEmpty(t, output)
-					if tt.name == "Successful execution (with loaded sensor)" {
+					switch tt.name {
+					case "Successful execution (with loaded sensor)":
 						expectedOutput := CrowdStrikeOutput{
 							AgentID:                  "f3edc954d286243b5bd94130c2f2647d",
 							CID:                      "79391c24113773b01d8181c38c3e111a",
@@ -174,7 +175,7 @@ rfm-state=true,`,
 							ReducedFunctionalityMode: true,
 							SensorLoaded:             true}
 						assert.Equal(t, expectedOutput, output)
-					} else if tt.name == "Successful execution (with unloaded sensor)" {
+					case "Successful execution (with unloaded sensor)":
 						expectedOutput := CrowdStrikeOutput{
 							AgentID:                  "f3edc954d286243b5bd94130c2f2647d",
 							CID:                      "79391c24113773b01d8181c38c3e111a",

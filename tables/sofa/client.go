@@ -267,7 +267,11 @@ func (s *SofaClient) downloadFile(url, path string) error {
 		if err != nil {
 			log.Fatal(err)
 		}
-		defer reader.Close()
+		defer func() {
+			if err := reader.Close(); err != nil {
+				log.Printf("close gzip reader: %v", err)
+			}
+		}()
 	default:
 		reader = resp.Body
 	}
