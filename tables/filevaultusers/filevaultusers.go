@@ -62,7 +62,9 @@ func getFileVaultUsers() ([]FileVaultUser, error) {
 
 }
 
-func runFDESetupList() ([]byte, error) {
+var runFDESetupList = runFDESetupListCommand
+
+func runFDESetupListCommand() ([]byte, error) {
 	var out []byte
 	out, err := exec.Command("/usr/bin/fdesetup", "list").Output()
 
