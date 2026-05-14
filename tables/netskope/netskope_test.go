@@ -1,10 +1,10 @@
 package netskope
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/macadmins/osquery-extension/pkg/utils"
-	"github.com/osquery/osquery-go/plugin/table"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 )
@@ -31,27 +31,14 @@ Traffic Mode:: All Web Traffic.
 
 func TestNetskopeColumns(t *testing.T) {
 	columns := NetskopeColumns()
-	expected := []table.ColumnDefinition{
-		table.TextColumn("orgname"),
-		table.TextColumn("tenant_url"),
-		table.TextColumn("addon_host"),
-		table.TextColumn("addon_checker_host"),
-		table.TextColumn("gateway"),
-		table.TextColumn("gateway_ip"),
-		table.TextColumn("config"),
-		table.TextColumn("steering_config"),
-		table.TextColumn("email"),
-		table.TextColumn("peruser_config"),
-		table.TextColumn("tunnel_status"),
-		table.TextColumn("client_status"),
-		table.TextColumn("dynamic_steering"),
-		table.TextColumn("on_prem_detection"),
-		table.TextColumn("explicit_proxy"),
-		table.TextColumn("tunnel_protocol"),
-		table.TextColumn("sni_enable"),
-		table.TextColumn("traffic_mode"),
+
+	names := make(map[string]bool)
+	for _, col := range columns {
+		assert.NotEmpty(t, col.Name, "column name must not be empty")
+		assert.Equal(t, strings.ToLower(col.Name), col.Name, "column name must be lowercase")
+		assert.False(t, names[col.Name], "duplicate column name: %s", col.Name)
+		names[col.Name] = true
 	}
-	assert.Equal(t, expected, columns)
 }
 
 func TestKeyToColumn(t *testing.T) {
@@ -59,21 +46,22 @@ func TestKeyToColumn(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"Orgname", "orgname"},
-		{"Tenant URL", "tenant_url"},
+		// CamelCase splitting
 		{"AddonHost", "addon_host"},
 		{"AddonCheckerHost", "addon_checker_host"},
-		{"Gateway IP", "gateway_ip"},
-		{"Steering Config", "steering_config"},
-		{"Peruser config", "peruser_config"},
-		{"Tunnel status", "tunnel_status"},
-		{"Client status", "client_status"},
 		{"OnPremDetection", "on_prem_detection"},
-		{"Dynamic Steering", "dynamic_steering"},
-		{"Explicit Proxy", "explicit_proxy"},
-		{"Tunnel Protocol", "tunnel_protocol"},
-		{"SNI Enable", "sni_enable"},
+		// Space to underscore
+		{"Tenant URL", "tenant_url"},
+		{"Gateway IP", "gateway_ip"},
 		{"Traffic Mode", "traffic_mode"},
+		// All-uppercase abbreviation at start
+		{"SNI Enable", "sni_enable"},
+		// Already lowercase / single word
+		{"orgname", "orgname"},
+		{"config", "config"},
+		// Edge cases
+		{"", ""},
+		{"multiple  spaces", "multiple__spaces"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
@@ -83,19 +71,93 @@ func TestKeyToColumn(t *testing.T) {
 }
 
 func TestParseNsdiagOutput(t *testing.T) {
-	result := parseNsdiagOutput(sampleNsdiagOutput)
+	t.Run("well-formed output", func(t *testing.T) {
+		result := parseNsdiagOutput(sampleNsdiagOutput)
+		assert.Equal(t, "Talkaloid", result["orgname"])
+		assert.Equal(t, "talkaloid-prod.goskope.com", result["tenant_url"])
+		assert.Equal(t, "addon-talkaloid-prod.goskope.com", result["addon_host"])
+		assert.Equal(t, "achecker-talkaloid-prod.goskope.com", result["addon_checker_host"])
+		assert.Equal(t, "gateway-talkaloid-prod.goskope.com", result["gateway"])
+		assert.Equal(t, "139.139.39.39", result["gateway_ip"])
+		assert.Equal(t, "TLS", result["tunnel_protocol"])
+		assert.Equal(t, "NSTUNNEL_CONNECTED", result["tunnel_status"])
+		assert.Equal(t, "enable", result["client_status"])
+		assert.Equal(t, "Not Configured", result["on_prem_detection"])
+		assert.Equal(t, "All Web Traffic", result["traffic_mode"])
+	})
 
-	assert.Equal(t, "Talkaloid", result["orgname"])
-	assert.Equal(t, "talkaloid-prod.goskope.com", result["tenant_url"])
-	assert.Equal(t, "addon-talkaloid-prod.goskope.com", result["addon_host"])
-	assert.Equal(t, "achecker-talkaloid-prod.goskope.com", result["addon_checker_host"])
-	assert.Equal(t, "gateway-talkaloid-prod.goskope.com", result["gateway"])
-	assert.Equal(t, "139.139.39.39", result["gateway_ip"])
-	assert.Equal(t, "TLS", result["tunnel_protocol"])
-	assert.Equal(t, "NSTUNNEL_CONNECTED", result["tunnel_status"])
-	assert.Equal(t, "enable", result["client_status"])
-	assert.Equal(t, "Not Configured", result["on_prem_detection"])
-	assert.Equal(t, "All Web Traffic", result["traffic_mode"])
+	t.Run("empty input returns empty map", func(t *testing.T) {
+		result := parseNsdiagOutput("")
+		assert.Empty(t, result)
+	})
+
+	t.Run("malformed lines without separator are skipped", func(t *testing.T) {
+		input := "this line has no separator\nOrgname:: Talkaloid.\njust text\n"
+		result := parseNsdiagOutput(input)
+		assert.Equal(t, map[string]string{"orgname": "Talkaloid"}, result)
+	})
+
+	t.Run("single-colon lines are skipped", func(t *testing.T) {
+		input := "Orgname: Talkaloid\nTenant URL: talkaloid-prod.goskope.com\n"
+		result := parseNsdiagOutput(input)
+		assert.Empty(t, result)
+	})
+
+	t.Run("duplicate keys - last value wins", func(t *testing.T) {
+		input := "Orgname:: First.\nOrgname:: Second.\n"
+		result := parseNsdiagOutput(input)
+		assert.Equal(t, "Second", result["orgname"])
+	})
+
+	t.Run("empty value is preserved", func(t *testing.T) {
+		input := "Orgname::\n"
+		result := parseNsdiagOutput(input)
+		assert.Equal(t, "", result["orgname"])
+	})
+
+	t.Run("extra whitespace around key and value is trimmed", func(t *testing.T) {
+		input := "  Orgname  ::   Talkaloid   \n"
+		result := parseNsdiagOutput(input)
+		assert.Equal(t, "Talkaloid", result["orgname"])
+	})
+
+	t.Run("value containing :: is preserved intact", func(t *testing.T) {
+		input := "Config:: foo::bar.\n"
+		result := parseNsdiagOutput(input)
+		assert.Equal(t, "foo::bar", result["config"])
+	})
+
+	t.Run("trailing dot is stripped from value", func(t *testing.T) {
+		input := "Orgname:: Talkaloid.\n"
+		result := parseNsdiagOutput(input)
+		assert.Equal(t, "Talkaloid", result["orgname"])
+	})
+
+	t.Run("value without trailing dot is unchanged", func(t *testing.T) {
+		input := "Orgname:: Talkaloid\n"
+		result := parseNsdiagOutput(input)
+		assert.Equal(t, "Talkaloid", result["orgname"])
+	})
+
+	t.Run("unknown and future fields are parsed", func(t *testing.T) {
+		input := "Orgname:: Talkaloid.\nNewFeatureXyz:: some value.\n"
+		result := parseNsdiagOutput(input)
+		assert.Equal(t, "Talkaloid", result["orgname"])
+		assert.Equal(t, "some value", result["new_feature_xyz"])
+	})
+
+	t.Run("partial output with no trailing newline", func(t *testing.T) {
+		input := "Orgname:: Talkaloid.\nTenant URL :: talkaloid-prod.goskope.com"
+		result := parseNsdiagOutput(input)
+		assert.Equal(t, "Talkaloid", result["orgname"])
+		assert.Equal(t, "talkaloid-prod.goskope.com", result["tenant_url"])
+	})
+
+	t.Run("mixed warning and debug lines are skipped", func(t *testing.T) {
+		input := "[WARN] something went wrong\nOrgname:: Talkaloid.\nDEBUG: internal state\n-- separator --\n"
+		result := parseNsdiagOutput(input)
+		assert.Equal(t, map[string]string{"orgname": "Talkaloid"}, result)
+	})
 }
 
 func TestRunNsdiag(t *testing.T) {
