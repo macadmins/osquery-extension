@@ -66,12 +66,16 @@ func WifiNetworkGenerate(
 	}
 	defer osqueryClient.Close()
 
-	wifiStatus, err := getWifiStatus(osqueryClient)
+	cmdExecutor := CmdExecutor{}
+	return generateWithDeps(osqueryClient, cmdExecutor)
+}
+
+func generateWithDeps(client utils.OsqueryClient, cmdExecutor CommandExecutor) ([]map[string]string, error) {
+	wifiStatus, err := getWifiStatus(client)
 	if err != nil {
 		return nil, err
 	}
 
-	cmdExecutor := CmdExecutor{}
 	wifiNetwork, err := buildWifiNetworkFromResponse(cmdExecutor, wifiStatus)
 	if err != nil {
 		return nil, err
