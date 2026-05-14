@@ -1,14 +1,45 @@
 package macosrsr
 
 import (
+	"context"
 	_ "embed"
+	"errors"
 	"testing"
 
+	"github.com/osquery/osquery-go/plugin/table"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 //go:embed test_SystemVersion.plist
 var testSystemVersion []byte
+
+func withReadSystemVersionPlistToBytes(t *testing.T, fn func() ([]byte, error)) {
+	t.Helper()
+	original := readSystemVersionPlistToBytes
+	readSystemVersionPlistToBytes = fn
+	t.Cleanup(func() {
+		readSystemVersionPlistToBytes = original
+	})
+}
+
+func withRunSwVersCmd(t *testing.T, fn func() ([]byte, error)) {
+	t.Helper()
+	original := runSwVersCmd
+	runSwVersCmd = fn
+	t.Cleanup(func() {
+		runSwVersCmd = original
+	})
+}
+
+func TestMacOSRsrColumns(t *testing.T) {
+	assert.Equal(t, []table.ColumnDefinition{
+		table.TextColumn("rsr_version"),
+		table.TextColumn("macos_version"),
+		table.TextColumn("full_macos_version"),
+		table.TextColumn("rsr_supported"),
+	}, MacOSRsrColumns())
+}
 
 func TestMacOSRsrGenerate(t *testing.T) {
 	t.Parallel()
@@ -144,6 +175,97 @@ func TestUnmarshalSystemVersionBytesToStruct(t *testing.T) {
 	assert.Nil(t, err, "unmarshalSystemVersionBytesToStruct erorr not nil")
 
 	assert.Equal(t, expectedOutput, out, "output from unmarshalSystemVersionBytesToStruct does not match expected output")
+}
+
+func TestUnmarshalSystemVersionBytesToStructInvalidPlist(t *testing.T) {
+	t.Parallel()
+	out, err := unmarshalSystemVersionBytesToStruct([]byte("not plist"))
+	assert.Error(t, err)
+	assert.Empty(t, out)
+}
+
+func TestGetSystemVersionReadError(t *testing.T) {
+	withReadSystemVersionPlistToBytes(t, func() ([]byte, error) {
+		return nil, errors.New("read failed")
+	})
+
+	out, err := getSystemVersion()
+	assert.Error(t, err)
+	assert.Empty(t, out)
+	assert.ErrorContains(t, err, "readSystemVersionPlistToBytes")
+}
+
+func TestMacOSRsrGenerateSupportedWithRsr(t *testing.T) {
+	withReadSystemVersionPlistToBytes(t, func() ([]byte, error) {
+		return testSystemVersion, nil
+	})
+	withRunSwVersCmd(t, func() ([]byte, error) {
+		return []byte("(a)\n"), nil
+	})
+
+	rows, err := MacOSRsrGenerate(context.Background(), table.QueryContext{})
+	require.NoError(t, err)
+	assert.Equal(t, []map[string]string{{
+		"full_macos_version": "13.3.1 (a)",
+		"macos_version":      "13.3.1",
+		"rsr_supported":      "true",
+		"rsr_version":        "(a)",
+	}}, rows)
+}
+
+func TestMacOSRsrGenerateUnsupportedSkipsSwVers(t *testing.T) {
+	withReadSystemVersionPlistToBytes(t, func() ([]byte, error) {
+		return []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>ProductVersion</key><string>12.6.1</string>
+<key>ProductBuildVersion</key><string>21G217</string>
+</dict></plist>`), nil
+	})
+	swVersCalled := false
+	withRunSwVersCmd(t, func() ([]byte, error) {
+		swVersCalled = true
+		return []byte("(a)\n"), nil
+	})
+
+	rows, err := MacOSRsrGenerate(context.Background(), table.QueryContext{})
+	require.NoError(t, err)
+	assert.False(t, swVersCalled)
+	assert.Equal(t, []map[string]string{{
+		"full_macos_version": "12.6.1",
+		"macos_version":      "12.6.1",
+		"rsr_supported":      "false",
+		"rsr_version":        "",
+	}}, rows)
+}
+
+func TestMacOSRsrGenerateSwVersError(t *testing.T) {
+	withReadSystemVersionPlistToBytes(t, func() ([]byte, error) {
+		return testSystemVersion, nil
+	})
+	withRunSwVersCmd(t, func() ([]byte, error) {
+		return nil, errors.New("sw_vers failed")
+	})
+
+	rows, err := MacOSRsrGenerate(context.Background(), table.QueryContext{})
+	assert.Error(t, err)
+	assert.Nil(t, rows)
+	assert.ErrorContains(t, err, "run sw_vers command")
+}
+
+func TestMacOSRsrGenerateCompatibilityError(t *testing.T) {
+	withReadSystemVersionPlistToBytes(t, func() ([]byte, error) {
+		return []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>ProductVersion</key><string>not-a-version</string>
+</dict></plist>`), nil
+	})
+
+	rows, err := MacOSRsrGenerate(context.Background(), table.QueryContext{})
+	assert.Error(t, err)
+	assert.Nil(t, rows)
+	assert.ErrorContains(t, err, "rsrCompatible")
 }
 
 func TestRsrCompatible(t *testing.T) {
