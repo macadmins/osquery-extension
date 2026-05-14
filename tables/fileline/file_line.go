@@ -98,7 +98,11 @@ func readLines(path string, fs utils.FileSystem) ([]FileLine, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			fmt.Printf("error closing file: %s\n", err)
+		}
+	}()
 
 	scanner := bufio.NewScanner(file)
 	scanner.Split(bufio.ScanLines)

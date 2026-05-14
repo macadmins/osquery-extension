@@ -48,8 +48,8 @@ func teardown(server *httptest.Server) {
 }
 
 func removeTestFiles() {
-	os.Remove(testCacheFile)
-	os.Remove(testEtagFile)
+	_ = os.Remove(testCacheFile)
+	_ = os.Remove(testEtagFile)
 }
 
 func TestDownloadFile(t *testing.T) {
@@ -135,7 +135,9 @@ func TestLoacCachedEtag(t *testing.T) {
 	// Create a temporary file
 	tempEtagFile, err := os.CreateTemp("", "test")
 	assert.NoError(t, err)
-	defer os.Remove(tempEtagFile.Name()) // clean up
+	defer func() {
+		assert.NoError(t, os.Remove(tempEtagFile.Name()))
+	}()
 
 	// Write the etag to the etag file
 	err = os.WriteFile(tempEtagFile.Name(), testEtag, 0644)
@@ -176,7 +178,9 @@ func TestSaveEtag(t *testing.T) {
 	// Create a temporary file
 	tempEtagFile, err := os.CreateTemp("", "test")
 	assert.NoError(t, err)
-	defer os.Remove(tempEtagFile.Name()) // clean up
+	defer func() {
+		assert.NoError(t, os.Remove(tempEtagFile.Name()))
+	}()
 
 	// Create a SofaClient
 	client := &SofaClient{
@@ -201,7 +205,9 @@ func TestLoadCachedData(t *testing.T) {
 	// Create a temporary file
 	tempCacheFile, err := os.CreateTemp("", "test")
 	assert.NoError(t, err)
-	defer os.Remove(tempCacheFile.Name()) // clean up
+	defer func() {
+		assert.NoError(t, os.Remove(tempCacheFile.Name()))
+	}()
 
 	// Write the data to the cache file
 	err = os.WriteFile(tempCacheFile.Name(), testData, 0644)
@@ -230,11 +236,15 @@ func TestCacheValid(t *testing.T) {
 	// Create a temporary file
 	tempCacheFile, err := os.CreateTemp("", "test")
 	assert.NoError(t, err)
-	defer os.Remove(tempCacheFile.Name()) // clean up
+	defer func() {
+		assert.NoError(t, os.Remove(tempCacheFile.Name()))
+	}()
 
 	tempEtagFile, err := os.CreateTemp("", "test")
 	assert.NoError(t, err)
-	defer os.Remove(tempEtagFile.Name()) // clean up
+	defer func() {
+		assert.NoError(t, os.Remove(tempEtagFile.Name()))
+	}()
 
 	// Create a SofaClient
 	client := &SofaClient{

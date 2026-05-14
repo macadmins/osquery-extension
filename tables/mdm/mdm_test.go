@@ -107,7 +107,9 @@ func TestHasCheckedCloudConfigInPast24Hours(t *testing.T) {
 			assert.NoError(t, err)
 			_, err = tmpFile.WriteString(c.cloudConfigContents)
 			assert.NoError(t, err)
-			defer os.Remove(tmpFile.Name())
+			defer func() {
+				assert.NoError(t, os.Remove(tmpFile.Name()))
+			}()
 			assert.Equal(t, c.want, hasCheckedCloudConfigInPast24Hours(tmpFile.Name(), fs))
 		})
 	}

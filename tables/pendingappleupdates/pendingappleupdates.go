@@ -2,6 +2,7 @@ package pendingappleupdates
 
 import (
 	"context"
+	"log"
 	"os"
 
 	"github.com/macadmins/osquery-extension/pkg/utils"
@@ -63,7 +64,11 @@ func readSoftwareUpdatePlist(fs utils.FileSystem) (*softwareUpdatePlist, error) 
 	if err != nil {
 		return &updatePlist, errors.Wrap(err, "open com.apple.SoftwareUpdate plist")
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			log.Printf("close com.apple.SoftwareUpdate plist: %v", err)
+		}
+	}()
 
 	if err := plist.NewBinaryDecoder(file).Decode(&updatePlist); err != nil {
 		return &updatePlist, errors.Wrap(err, "decode com.apple.SoftwareUpdate plist")
