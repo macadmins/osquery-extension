@@ -17,5 +17,8 @@ go_test(
     srcs = ["macos_profiles_test.go"],
     embed = [":macos_profiles"],
     embedsrcs = ["test_profiles_stdout.plist"],
-    deps = ["@com_github_stretchr_testify//assert"],
+    deps = [
+        "@com_github_stretchr_testify//assert",
+        "@com_github_stretchr_testify//require",
+    ],
 )
