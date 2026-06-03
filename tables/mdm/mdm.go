@@ -86,16 +86,16 @@ func MDMInfoGenerate(
 ) ([]map[string]string, error) {
 	fs := utils.OSFileSystem{}
 	// There might not be any profiles installed, but we still care if the device is DEP capable, so discard the error
-	profiles, _ := getMDMProfile()
+	profiles, _ := getMDMProfileFunc()
 
 	depEnrolled, userApproved := "unknown", "unknown"
-	status, err := getMDMProfileStatus(fs)
+	status, err := getMDMProfileStatusFunc(fs)
 	if err == nil { // only supported on 10.13.4+
 		depEnrolled = strconv.FormatBool(status.DEPEnrolled)
 		userApproved = strconv.FormatBool(status.UserApproved)
 	}
 
-	depstatus := getDEPStatus(status, fs)
+	depstatus := getDEPStatusFunc(status, fs)
 	depCapable := strconv.FormatBool(depstatus.DEPCapable)
 
 	var enrollProfileItems []profileItem
@@ -142,9 +142,12 @@ func MDMInfoGenerate(
 	return results, nil
 }
 
+var getMDMProfileFunc = getMDMProfile
+var getMDMProfileStatusFunc = getMDMProfileStatus
+var getDEPStatusFunc = getDEPStatus
+
 func getMDMProfile() (*profilesOutput, error) {
-	cmd := exec.Command("/usr/bin/profiles", "-L", "-o", "stdout-xml")
-	out, err := cmd.Output()
+	out, err := runProfilesListCmd()
 	if err != nil {
 		return nil, errors.Wrap(err, "calling /usr/bin/profiles to get MDM profile payload")
 	}
@@ -157,19 +160,38 @@ func getMDMProfile() (*profilesOutput, error) {
 	return &profiles, nil
 }
 
+var runProfilesListCmd = func() ([]byte, error) {
+	cmd := exec.Command("/usr/bin/profiles", "-L", "-o", "stdout-xml")
+	return cmd.Output()
+}
+
 func getMDMProfileStatus(fs utils.FileSystem) (profileStatus, error) {
-	if !utils.FileExists(fs, "/usr/bin/profiles") {
+	if _, err := fs.Stat("/usr/bin/profiles"); err != nil {
 		return profileStatus{}, errors.New("mdm: /usr/bin/profiles does not exist")
 	}
-	cmd := exec.Command("/usr/bin/profiles", "status", "-type", "enrollment")
-	out, err := cmd.Output()
+	out, err := runProfilesStatusCmd()
 	if err != nil {
 		return profileStatus{}, errors.Wrap(
 			err,
 			"calling /usr/bin/profiles to get MDM profile status",
 		)
 	}
+	return parseMDMProfileStatus(out)
+}
+
+var runProfilesStatusCmd = func() ([]byte, error) {
+	cmd := exec.Command("/usr/bin/profiles", "status", "-type", "enrollment")
+	return cmd.Output()
+}
+
+func parseMDMProfileStatus(out []byte) (profileStatus, error) {
 	lines := bytes.Split(out, []byte("\n"))
+	if len(lines) < 2 {
+		return profileStatus{}, errors.Errorf(
+			"mdm: could not split the DEP Enrollment status %s",
+			string(out),
+		)
+	}
 	depEnrollmentParts := bytes.SplitN(lines[0], []byte(":"), 2)
 	if len(depEnrollmentParts) < 2 {
 		return profileStatus{}, errors.Errorf(
