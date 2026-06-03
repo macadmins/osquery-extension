@@ -17,5 +17,8 @@ go_test(
     srcs = ["rsr_test.go"],
     embed = [":macosrsr"],
     embedsrcs = ["test_SystemVersion.plist"],
-    deps = ["@com_github_stretchr_testify//assert"],
+    deps = [
+        "@com_github_stretchr_testify//assert",
+        "@com_github_stretchr_testify//require",
+    ],
 )

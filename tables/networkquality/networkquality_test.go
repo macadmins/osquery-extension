@@ -5,8 +5,18 @@ import (
 	"testing"
 
 	"github.com/macadmins/osquery-extension/pkg/utils"
+	"github.com/osquery/osquery-go/plugin/table"
 	"github.com/stretchr/testify/assert"
 )
+
+func TestNetworkQualityColumns(t *testing.T) {
+	assert.Equal(t, []table.ColumnDefinition{
+		table.IntegerColumn("dl_throughput_kbps"),
+		table.IntegerColumn("ul_throughput_kbps"),
+		table.TextColumn("dl_throughput_mbps"),
+		table.TextColumn("ul_throughput_mbps"),
+	}, NetworkQualityColumns())
+}
 
 func TestRunNetworkQuality(t *testing.T) {
 	tests := []struct {
@@ -60,12 +70,24 @@ func TestRunNetworkQuality(t *testing.T) {
 			fileExist: true,
 			wantErr:   true,
 		},
+		{
+			name: "File stat error",
+			mockCmd: utils.MockCmdRunner{
+				Output: "",
+				Err:    nil,
+			},
+			fileExist: true,
+			wantErr:   true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			runner := utils.Runner{Runner: tt.mockCmd}
 			fs := utils.MockFileSystem{FileExists: tt.fileExist}
+			if tt.name == "File stat error" {
+				fs.Err = errors.New("stat failed")
+			}
 
 			output, err := runNetworkQuality(runner, fs)
 			if tt.wantErr {
@@ -89,4 +111,41 @@ func TestRunNetworkQuality(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBuildOutputFormatsThroughput(t *testing.T) {
+	rows := buildOutput(NetworkQualityOutput{
+		DlThroughput: 20500000,
+		UlThroughput: 10500000,
+	})
+
+	assert.Equal(t, []map[string]string{{
+		"dl_throughput_kbps": "20500000",
+		"ul_throughput_kbps": "10500000",
+		"dl_throughput_mbps": "20.50",
+		"ul_throughput_mbps": "10.50",
+	}}, rows)
+}
+
+func TestGenerateWithRunner(t *testing.T) {
+	rows, err := generateWithRunner(
+		utils.Runner{Runner: utils.MockCmdRunner{Output: `{"dl_throughput": 20500000, "ul_throughput": 10500000}`}},
+		utils.MockFileSystem{FileExists: true},
+	)
+	assert.NoError(t, err)
+	assert.Equal(t, []map[string]string{{
+		"dl_throughput_kbps": "20500000",
+		"ul_throughput_kbps": "10500000",
+		"dl_throughput_mbps": "20.50",
+		"ul_throughput_mbps": "10.50",
+	}}, rows)
+}
+
+func TestGenerateWithRunnerError(t *testing.T) {
+	rows, err := generateWithRunner(
+		utils.Runner{Runner: utils.MockCmdRunner{Err: errors.New("command failed")}},
+		utils.MockFileSystem{FileExists: true},
+	)
+	assert.Error(t, err)
+	assert.Nil(t, rows)
 }

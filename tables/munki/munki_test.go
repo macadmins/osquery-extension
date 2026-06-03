@@ -3,12 +3,16 @@ package munki
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/macadmins/osquery-extension/pkg/utils"
 	"github.com/osquery/osquery-go/plugin/table"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 //go:embed test_ManagedInstallReport.plist
@@ -20,9 +24,19 @@ var testManagedInstallReportMunki7 []byte
 //go:embed test_ManagedInstallReport_with_pending.plist
 var testManagedInstallReportWithPending []byte
 
-func TestMunkiInstallsGenerate(t *testing.T) {
+func withReportPath(t *testing.T) string {
+	t.Helper()
+	original := reportPath
 	reportPath = filepath.Join(t.TempDir(), "ManagedInstallReport.plist")
-	err := os.WriteFile(reportPath, testManagedInstallReport, 0600)
+	t.Cleanup(func() {
+		reportPath = original
+	})
+	return reportPath
+}
+
+func TestMunkiInstallsGenerate(t *testing.T) {
+	path := withReportPath(t)
+	err := os.WriteFile(path, testManagedInstallReport, 0600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,8 +68,8 @@ func TestMunkiInstallsGenerate(t *testing.T) {
 }
 
 func TestMunkiInstallsGenerateMunki7(t *testing.T) {
-	reportPath = filepath.Join(t.TempDir(), "ManagedInstallReport.plist")
-	err := os.WriteFile(reportPath, testManagedInstallReportMunki7, 0600)
+	path := withReportPath(t)
+	err := os.WriteFile(path, testManagedInstallReportMunki7, 0600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,8 +92,8 @@ func TestMunkiInstallsGenerateMunki7(t *testing.T) {
 }
 
 func TestMunkiInfoGenerateMunki7(t *testing.T) {
-	reportPath = filepath.Join(t.TempDir(), "ManagedInstallReport.plist")
-	err := os.WriteFile(reportPath, testManagedInstallReportMunki7, 0600)
+	path := withReportPath(t)
+	err := os.WriteFile(path, testManagedInstallReportMunki7, 0600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,8 +119,8 @@ func TestMunkiInfoGenerateMunki7(t *testing.T) {
 }
 
 func TestMunkiInstallsGenerateWithPendingVersions(t *testing.T) {
-	reportPath = filepath.Join(t.TempDir(), "ManagedInstallReport.plist")
-	err := os.WriteFile(reportPath, testManagedInstallReportWithPending, 0600)
+	path := withReportPath(t)
+	err := os.WriteFile(path, testManagedInstallReportWithPending, 0600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,4 +163,72 @@ func TestMunkiInstallsColumnsIncludesVersionToInstall(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "MunkiInstallsColumns should include version_to_install")
+}
+
+func TestMunkiInfoColumns(t *testing.T) {
+	assert.Equal(t, []table.ColumnDefinition{
+		table.TextColumn("version"),
+		table.TextColumn("start_time"),
+		table.TextColumn("end_time"),
+		table.TextColumn("success"),
+		table.TextColumn("errors"),
+		table.TextColumn("warnings"),
+		table.TextColumn("console_user"),
+		table.TextColumn("problem_installs"),
+		table.TextColumn("manifest_name"),
+	}, MunkiInfoColumns())
+}
+
+func TestMunkiInstallsColumns(t *testing.T) {
+	assert.Equal(t, []table.ColumnDefinition{
+		table.TextColumn("installed_version"),
+		table.TextColumn("version_to_install"),
+		table.TextColumn("installed"),
+		table.TextColumn("name"),
+		table.TextColumn("end_time"),
+		table.TextColumn("display_name"),
+	}, MunkiInstallsColumns())
+}
+
+func TestMunkiInfoGenerateMissingReport(t *testing.T) {
+	withReportPath(t)
+	rows, err := MunkiInfoGenerate(context.Background(), table.QueryContext{})
+	require.NoError(t, err)
+	assert.Nil(t, rows)
+}
+
+func TestMunkiInstallsGenerateMissingReport(t *testing.T) {
+	withReportPath(t)
+	rows, err := MunkiInstallsGenerate(context.Background(), table.QueryContext{})
+	require.NoError(t, err)
+	assert.Nil(t, rows)
+}
+
+func TestLoadMunkiReportInvalidPlist(t *testing.T) {
+	path := withReportPath(t)
+	err := os.WriteFile(path, []byte("not plist"), 0600)
+	require.NoError(t, err)
+
+	report, err := loadMunkiReport(utils.MockFileSystem{FileExists: true})
+	assert.Error(t, err)
+	assert.NotNil(t, report)
+	assert.ErrorContains(t, err, "decode ManagedInstallReport plist")
+}
+
+func TestMunkiDateUnmarshalInvalidString(t *testing.T) {
+	var md MunkiDate
+	err := md.UnmarshalPlist(func(v interface{}) error {
+		switch target := v.(type) {
+		case *time.Time:
+			return errors.New("not a date")
+		case *string:
+			*target = "not a date"
+			return nil
+		default:
+			return errors.New("unexpected target")
+		}
+	})
+	assert.Error(t, err)
+	assert.ErrorContains(t, err, "unable to parse date")
+	assert.Empty(t, md.String())
 }
