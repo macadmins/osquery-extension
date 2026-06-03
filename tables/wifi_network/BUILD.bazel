@@ -22,5 +22,6 @@ go_test(
         "//pkg/utils",
         "@com_github_osquery_osquery_go//plugin/table",
         "@com_github_stretchr_testify//assert",
+        "@com_github_stretchr_testify//require",
     ],
 )

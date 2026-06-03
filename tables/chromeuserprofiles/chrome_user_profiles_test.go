@@ -26,6 +26,11 @@ func TestGoogleChromeProfilesColumns(t *testing.T) {
 }
 
 func TestFindFileInUserDirs(t *testing.T) {
+	originalHomeDirs := homeDirLocations[runtime.GOOS]
+	t.Cleanup(func() {
+		homeDirLocations[runtime.GOOS] = originalHomeDirs
+	})
+
 	// Create a temporary directory for testing
 	tempDir := t.TempDir()
 
@@ -55,6 +60,45 @@ func TestFindFileInUserDirs(t *testing.T) {
 	assert.Len(t, foundFiles, 1)
 	assert.Equal(t, "testuser", foundFiles[0].user)
 	assert.Equal(t, testFile, foundFiles[0].path)
+}
+
+func TestFindFileInUserDirsSkipsMissingRootsAndNonRegularFiles(t *testing.T) {
+	originalHomeDirs := homeDirLocations[runtime.GOOS]
+	t.Cleanup(func() {
+		homeDirLocations[runtime.GOOS] = originalHomeDirs
+	})
+
+	tempDir := t.TempDir()
+	userDir := filepath.Join(tempDir, "testuser")
+	err := os.Mkdir(userDir, os.ModePerm)
+	assert.NoError(t, err)
+
+	dirMatch := filepath.Join(userDir, "Local State")
+	err = os.Mkdir(dirMatch, os.ModePerm)
+	assert.NoError(t, err)
+
+	homeDirLocations[runtime.GOOS] = []string{filepath.Join(tempDir, "missing"), tempDir}
+
+	foundFiles, err := findFileInUserDirs("Local State")
+	assert.NoError(t, err)
+	assert.Empty(t, foundFiles)
+}
+
+func TestFindFileInUserDirsUnknownHomeLocation(t *testing.T) {
+	originalHomeDirs, ok := homeDirLocations[runtime.GOOS]
+	t.Cleanup(func() {
+		if ok {
+			homeDirLocations[runtime.GOOS] = originalHomeDirs
+		} else {
+			delete(homeDirLocations, runtime.GOOS)
+		}
+	})
+	delete(homeDirLocations, runtime.GOOS)
+
+	foundFiles, err := findFileInUserDirs("Local State")
+	assert.Error(t, err)
+	assert.Empty(t, foundFiles)
+	assert.ErrorContains(t, err, "No homedir location found")
 }
 
 func TestGenerateForPath(t *testing.T) {
@@ -118,6 +162,60 @@ func TestGenerateForPath(t *testing.T) {
 	}
 
 	assert.ElementsMatch(t, expectedProfiles, results)
+}
+
+func TestGenerateForPathErrors(t *testing.T) {
+	t.Run("read failure", func(t *testing.T) {
+		results, err := generateForPath(context.Background(), userFileInfo{
+			user: "testuser",
+			path: filepath.Join(t.TempDir(), "missing", "Local State"),
+		})
+		assert.Error(t, err)
+		assert.Nil(t, results)
+		assert.ErrorContains(t, err, "reading chrome local state file")
+	})
+
+	t.Run("invalid json", func(t *testing.T) {
+		tempDir := t.TempDir()
+		localStateFile := filepath.Join(tempDir, "Local State")
+		err := os.WriteFile(localStateFile, []byte("not json"), os.ModePerm)
+		assert.NoError(t, err)
+
+		results, err := generateForPath(context.Background(), userFileInfo{
+			user: "testuser",
+			path: localStateFile,
+		})
+		assert.Error(t, err)
+		assert.Nil(t, results)
+		assert.ErrorContains(t, err, "unmarshalling chome local state")
+	})
+
+	t.Run("profile stat failure", func(t *testing.T) {
+		tempDir := t.TempDir()
+		localStateFile := filepath.Join(tempDir, "Local State")
+		err := os.WriteFile(localStateFile, []byte(`{
+			"profile": {
+				"info_cache": {
+					"profile-parent/profile1": {
+						"name": "Profile 1",
+						"is_ephemeral": false,
+						"user_name": "profile1@example.com"
+					}
+				}
+			}
+		}`), os.ModePerm)
+		assert.NoError(t, err)
+		err = os.WriteFile(filepath.Join(tempDir, "profile-parent"), []byte("not a dir"), os.ModePerm)
+		assert.NoError(t, err)
+
+		results, err := generateForPath(context.Background(), userFileInfo{
+			user: "testuser",
+			path: localStateFile,
+		})
+		assert.Error(t, err)
+		assert.Nil(t, results)
+		assert.ErrorContains(t, err, "checking profile path exists")
+	})
 }
 
 func TestProfilePathStat(t *testing.T) {

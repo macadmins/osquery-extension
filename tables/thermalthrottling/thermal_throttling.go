@@ -27,6 +27,12 @@ func ThermalPressureColumns() []table.ColumnDefinition {
 }
 
 func ThermalPressureGenerate(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
+	r := utils.NewRunner()
+	fs := utils.OSFileSystem{}
+	return generateWithRunner(queryContext, r, fs)
+}
+
+func parseInterval(queryContext table.QueryContext) int {
 	interval := defaultInterval
 	if constraintList, present := queryContext.Constraints["interval"]; present {
 		for _, constraint := range constraintList.Constraints {
@@ -38,8 +44,11 @@ func ThermalPressureGenerate(ctx context.Context, queryContext table.QueryContex
 		}
 	}
 
-	r := utils.NewRunner()
-	fs := utils.OSFileSystem{}
+	return interval
+}
+
+func generateWithRunner(queryContext table.QueryContext, r utils.Runner, fs utils.FileSystem) ([]map[string]string, error) {
+	interval := parseInterval(queryContext)
 	result, err := runPowermetrics(r, fs, interval)
 	if err != nil {
 		fmt.Println(err)
@@ -49,6 +58,10 @@ func ThermalPressureGenerate(ctx context.Context, queryContext table.QueryContex
 		return nil, nil
 	}
 
+	return buildOutput(result, interval), nil
+}
+
+func buildOutput(result *powermetricsOutput, interval int) []map[string]string {
 	isThrottling := 0
 	if result.ThermalPressure != "" && result.ThermalPressure != "Nominal" {
 		isThrottling = 1
@@ -58,7 +71,7 @@ func ThermalPressureGenerate(ctx context.Context, queryContext table.QueryContex
 		"thermal_pressure": result.ThermalPressure,
 		"is_throttling":    strconv.Itoa(isThrottling),
 		"interval":         strconv.Itoa(interval),
-	}}, nil
+	}}
 }
 
 func runPowermetrics(r utils.Runner, fs utils.FileSystem, interval int) (*powermetricsOutput, error) {

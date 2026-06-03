@@ -8,6 +8,20 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+type errorOsqueryClient struct {
+	err error
+}
+
+func (e errorOsqueryClient) QueryRows(query string) ([]map[string]string, error) {
+	return nil, e.err
+}
+
+func (e errorOsqueryClient) QueryRow(query string) (map[string]string, error) {
+	return nil, e.err
+}
+
+func (e errorOsqueryClient) Close() {}
+
 func TestRunCrowdstrikeFalconDarwin(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -66,12 +80,24 @@ func TestRunCrowdstrikeFalconDarwin(t *testing.T) {
 			fileExist: true,
 			wantErr:   true,
 		},
+		{
+			name: "File stat error",
+			mockCmd: utils.MockCmdRunner{
+				Output: "",
+				Err:    nil,
+			},
+			fileExist: true,
+			wantErr:   true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			runner := utils.Runner{Runner: tt.mockCmd}
 			fs := utils.MockFileSystem{FileExists: tt.fileExist}
+			if tt.name == "File stat error" {
+				fs.Err = errors.New("stat failed")
+			}
 
 			output, err := runCrowdstrikeFalconDarwin(runner, fs)
 			if tt.wantErr {
@@ -149,12 +175,24 @@ rfm-state=true,`,
 				"SELECT 1 FROM processes WHERE name like 'falcon-sensor%';": {},
 			},
 		},
+		{
+			name: "File stat error",
+			mockCmd: utils.MockCmdRunner{
+				Output: "",
+				Err:    nil,
+			},
+			fileExist: true,
+			wantErr:   true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			runner := utils.Runner{Runner: tt.mockCmd}
 			fs := utils.MockFileSystem{FileExists: tt.fileExist}
+			if tt.name == "File stat error" {
+				fs.Err = errors.New("stat failed")
+			}
 			mockOsqueryClient := &utils.MockOsqueryClient{
 				Data: tt.mockOsqData,
 			}
@@ -192,6 +230,16 @@ rfm-state=true,`,
 	}
 }
 
+func TestRunCrowdstrikeFalconLinuxQueryError(t *testing.T) {
+	runner := utils.Runner{Runner: utils.MockCmdRunner{}}
+	fs := utils.MockFileSystem{FileExists: true}
+
+	output, err := runCrowdstrikeFalconLinux(runner, fs, errorOsqueryClient{err: errors.New("query failed")})
+	assert.Error(t, err)
+	assert.Empty(t, output)
+	assert.ErrorContains(t, err, "query failed")
+}
+
 func TestLinuxParsing(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -205,6 +253,24 @@ func TestLinuxParsing(t *testing.T) {
 			expected: CrowdStrikeOutput{
 				CID:           "9c50db0d05ff453995e52701d2dbb259",
 				FalconVersion: "7.30.18306.0",
+			},
+		},
+		{
+			name:      "Uppercase agent ID and false rfm-state",
+			cmdOutput: "CID=\"79391C24113773B01D8181C38C3E111A\", AID=\"F3EDC954D286243B5BD94130C2F2647D\", version=7.29.18202.0\nrfm-state=false,",
+			expected: CrowdStrikeOutput{
+				AgentID:       "f3edc954d286243b5bd94130c2f2647d",
+				CID:           "79391c24113773b01d8181c38c3e111a",
+				FalconVersion: "7.29.18202.0",
+			},
+			sensorLoaded: true,
+		},
+		{
+			name:      "Missing version does not panic",
+			cmdOutput: `cid="79391c24113773b01d8181c38c3e111a", aid="f3edc954d286243b5bd94130c2f2647d"`,
+			expected: CrowdStrikeOutput{
+				AgentID: "f3edc954d286243b5bd94130c2f2647d",
+				CID:     "79391c24113773b01d8181c38c3e111a",
 			},
 		},
 	}

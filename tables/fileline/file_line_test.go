@@ -1,13 +1,22 @@
 package fileline
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/macadmins/osquery-extension/pkg/utils"
+	"github.com/osquery/osquery-go/plugin/table"
 	"github.com/stretchr/testify/assert"
 )
+
+func TestFileLineColumns(t *testing.T) {
+	assert.Equal(t, []table.ColumnDefinition{
+		table.TextColumn("line"),
+		table.TextColumn("path"),
+	}, FileLineColumns())
+}
 
 func TestProcessFile(t *testing.T) {
 	t.Run("processFile with wildcard", func(t *testing.T) {
@@ -57,6 +66,29 @@ func TestProcessFile(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Len(t, lines, 2)
 	})
+
+	t.Run("invalid wildcard pattern", func(t *testing.T) {
+		lines, err := processFile("[", true, utils.MockFileSystem{FileExists: true})
+		assert.Error(t, err)
+		assert.Nil(t, lines)
+	})
+
+	t.Run("read error is returned without wildcard", func(t *testing.T) {
+		lines, err := processFile(filepath.Join(t.TempDir(), "missing.txt"), false, utils.MockFileSystem{FileExists: true})
+		assert.Error(t, err)
+		assert.Nil(t, lines)
+	})
+
+	t.Run("read error is returned with wildcard", func(t *testing.T) {
+		tmpFile := filepath.Join(t.TempDir(), "testfile-one.txt")
+		err := os.Mkdir(tmpFile, os.ModePerm)
+		assert.NoError(t, err)
+
+		path := filepath.Join(filepath.Dir(tmpFile), "testfile%.txt")
+		lines, err := processFile(path, true, utils.MockFileSystem{FileExists: false})
+		assert.Error(t, err)
+		assert.Nil(t, lines)
+	})
 }
 
 func TestReadLines(t *testing.T) {
@@ -84,4 +116,50 @@ func TestReadLines(t *testing.T) {
 		assert.Nil(t, lines)
 		assert.Equal(t, "file does not exist", err.Error())
 	})
+
+	t.Run("readLines open error", func(t *testing.T) {
+		fs := utils.MockFileSystem{FileExists: true, Err: nil}
+		lines, err := readLines(filepath.Join(t.TempDir(), "missing.txt"), fs)
+		assert.Error(t, err)
+		assert.Nil(t, lines)
+	})
+}
+
+func TestFileLineGenerate(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "testfile-*.txt")
+	assert.NoError(t, err)
+	defer func() {
+		assert.NoError(t, os.Remove(tmpFile.Name()))
+	}()
+
+	_, err = tmpFile.WriteString("line1\nline2\n")
+	assert.NoError(t, err)
+	assert.NoError(t, tmpFile.Close())
+
+	results, err := FileLineGenerate(context.Background(), table.QueryContext{
+		Constraints: map[string]table.ConstraintList{
+			"path": {Constraints: []table.Constraint{{
+				Operator:   table.OperatorEquals,
+				Expression: tmpFile.Name(),
+			}}},
+		},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, []map[string]string{
+		{"line": "line1", "path": tmpFile.Name()},
+		{"line": "line2", "path": tmpFile.Name()},
+	}, results)
+}
+
+func TestFileLineGenerateReturnsPathErrors(t *testing.T) {
+	results, err := FileLineGenerate(context.Background(), table.QueryContext{
+		Constraints: map[string]table.ConstraintList{
+			"path": {Constraints: []table.Constraint{{
+				Operator:   table.OperatorEquals,
+				Expression: filepath.Join(t.TempDir(), "missing.txt"),
+			}}},
+		},
+	})
+	assert.Error(t, err)
+	assert.Empty(t, results)
 }

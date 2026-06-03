@@ -1,7 +1,6 @@
 package thermalthrottling
 
 import (
-	"context"
 	_ "embed"
 	"errors"
 	"testing"
@@ -24,30 +23,39 @@ const throttlingPlist = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>`
 
 func TestThermalPressureColumns(t *testing.T) {
-	columns := ThermalPressureColumns()
+	assert.Equal(t, []table.ColumnDefinition{
+		table.TextColumn("thermal_pressure"),
+		table.IntegerColumn("is_throttling"),
+		table.IntegerColumn("interval"),
+	}, ThermalPressureColumns())
+}
 
-	assert.Len(t, columns, 3)
-
-	columnNames := make(map[string]bool)
-	for _, col := range columns {
-		columnNames[col.Name] = true
-	}
-
-	for _, name := range []string{"thermal_pressure", "is_throttling", "interval"} {
-		assert.True(t, columnNames[name], "expected column %s not found", name)
-	}
+func TestParseInterval(t *testing.T) {
+	assert.Equal(t, defaultInterval, parseInterval(table.QueryContext{}))
+	assert.Equal(t, 5000, parseInterval(table.QueryContext{Constraints: map[string]table.ConstraintList{
+		"interval": {Constraints: []table.Constraint{{
+			Operator:   table.OperatorEquals,
+			Expression: "5000",
+		}}},
+	}}))
+	assert.Equal(t, defaultInterval, parseInterval(table.QueryContext{Constraints: map[string]table.ConstraintList{
+		"interval": {Constraints: []table.Constraint{{
+			Operator:   table.OperatorEquals,
+			Expression: "bad",
+		}}},
+	}}))
 }
 
 func TestRunPowermetrics(t *testing.T) {
 	tests := []struct {
-		name            string
-		mockCmd         utils.MockCmdRunner
-		fileExists      bool
-		interval        int
-		wantErr         bool
-		wantNil         bool
-		wantPressure    string
-		wantThrottling  bool
+		name           string
+		mockCmd        utils.MockCmdRunner
+		fileExists     bool
+		interval       int
+		wantErr        bool
+		wantNil        bool
+		wantPressure   string
+		wantThrottling bool
 	}{
 		{
 			name:       "Binary not present",
@@ -141,14 +149,35 @@ func TestRunPowermetricsStatError(t *testing.T) {
 	assert.Nil(t, result)
 }
 
-func TestThermalPressureGenerate(t *testing.T) {
-	ctx := context.Background()
-	queryContext := table.QueryContext{
-		Constraints: make(map[string]table.ConstraintList),
-	}
-	// Calls the real function; may error on CI without root but must not panic.
-	results, err := ThermalPressureGenerate(ctx, queryContext)
-	if err != nil {
-		assert.Nil(t, results)
-	}
+func TestBuildOutput(t *testing.T) {
+	assert.Equal(t, []map[string]string{{
+		"thermal_pressure": "Nominal",
+		"is_throttling":    "0",
+		"interval":         "1000",
+	}}, buildOutput(&powermetricsOutput{ThermalPressure: "Nominal"}, 1000))
+
+	assert.Equal(t, []map[string]string{{
+		"thermal_pressure": "Heavy",
+		"is_throttling":    "1",
+		"interval":         "5000",
+	}}, buildOutput(&powermetricsOutput{ThermalPressure: "Heavy"}, 5000))
+}
+
+func TestGenerateWithRunner(t *testing.T) {
+	results, err := generateWithRunner(
+		table.QueryContext{Constraints: map[string]table.ConstraintList{
+			"interval": {Constraints: []table.Constraint{{
+				Operator:   table.OperatorEquals,
+				Expression: "5000",
+			}}},
+		}},
+		utils.Runner{Runner: utils.MockCmdRunner{Output: throttlingPlist}},
+		utils.MockFileSystem{FileExists: true},
+	)
+	assert.NoError(t, err)
+	assert.Equal(t, []map[string]string{{
+		"thermal_pressure": "Heavy",
+		"is_throttling":    "1",
+		"interval":         "5000",
+	}}, results)
 }

@@ -1,6 +1,7 @@
 package authdb
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/macadmins/osquery-extension/pkg/utils"
@@ -45,6 +46,23 @@ func TestGetRuleNames(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, expected, out)
 
+}
+
+func TestGetRuleNamesErrors(t *testing.T) {
+	t.Run("command error", func(t *testing.T) {
+		r := utils.Runner{Runner: utils.MockCmdRunner{Err: errors.New("sqlite failed")}}
+		out, err := getRuleNames(r)
+		assert.Error(t, err)
+		assert.Nil(t, out)
+		assert.ErrorContains(t, err, "sqlite failed")
+	})
+
+	t.Run("invalid json", func(t *testing.T) {
+		r := utils.Runner{Runner: utils.MockCmdRunner{Output: `not json`}}
+		out, err := getRuleNames(r)
+		assert.Error(t, err)
+		assert.Nil(t, out)
+	})
 }
 
 func TestGetRule(t *testing.T) {
@@ -105,6 +123,23 @@ func TestGetRule(t *testing.T) {
 	assert.Equal(t, expected, out)
 }
 
+func TestGetRuleErrors(t *testing.T) {
+	t.Run("command error", func(t *testing.T) {
+		r := utils.Runner{Runner: utils.MockCmdRunner{Err: errors.New("security failed")}}
+		out, err := getRule(r, "admin")
+		assert.Error(t, err)
+		assert.Equal(t, AuthDBRight{}, out)
+		assert.ErrorContains(t, err, "security failed")
+	})
+
+	t.Run("invalid plist", func(t *testing.T) {
+		r := utils.Runner{Runner: utils.MockCmdRunner{Output: `not plist`}}
+		out, err := getRule(r, "admin")
+		assert.Error(t, err)
+		assert.Equal(t, AuthDBRight{}, out)
+	})
+}
+
 func TestAuthDBColumns(t *testing.T) {
 	expectedColumns := []table.ColumnDefinition{
 		table.TextColumn("name"),
@@ -156,6 +191,39 @@ func TestProcessContextConstraints(t *testing.T) {
 	expectedRuleNames = []string(nil)
 	actualRuleNames = processContextConstraints(queryContext)
 	assert.Equal(t, expectedRuleNames, actualRuleNames, "Expected no rule names")
+}
+
+func TestProcessContextConstraintsIgnoresNonEqualsOperators(t *testing.T) {
+	queryContext := table.QueryContext{
+		Constraints: map[string]table.ConstraintList{
+			"name": {
+				Constraints: []table.Constraint{
+					{
+						Operator:   table.OperatorEquals,
+						Expression: "firstRule",
+					},
+					{
+						Operator:   table.OperatorLike,
+						Expression: "ignored%",
+					},
+					{
+						Operator:   table.OperatorEquals,
+						Expression: "secondRule",
+					},
+				},
+			},
+			"class": {
+				Constraints: []table.Constraint{
+					{
+						Operator:   table.OperatorEquals,
+						Expression: "ignoredClass",
+					},
+				},
+			},
+		},
+	}
+
+	assert.Equal(t, []string{"firstRule", "secondRule"}, processContextConstraints(queryContext))
 }
 
 func TestGetRules(t *testing.T) {
@@ -248,6 +316,14 @@ func TestGetRules(t *testing.T) {
 	assert.Equal(t, expected, out)
 }
 
+func TestGetRulesPropagatesRuleError(t *testing.T) {
+	r := utils.Runner{Runner: utils.MockCmdRunner{Err: errors.New("security failed")}}
+	out, err := getRules(r, []string{"admin", "system.login.console"})
+	assert.Error(t, err)
+	assert.Nil(t, out)
+	assert.ErrorContains(t, err, "security failed")
+}
+
 func TestBuildOutput(t *testing.T) {
 	rights := []AuthDBRight{
 		{
@@ -261,6 +337,7 @@ func TestBuildOutput(t *testing.T) {
 			Mechanisms:         []string{"mechanism1", "mechanism2"},
 			Modified:           2.0,
 			RequireAppleSigned: true,
+			Rule:               []string{"allow", "is-admin"},
 			SessionOwner:       false,
 			Shared:             true,
 			Timeout:            10,
@@ -280,7 +357,7 @@ func TestBuildOutput(t *testing.T) {
 			"group":                "group",
 			"mechanisms":           "mechanism1,mechanism2",
 			"modified":             "2.000000",
-			"rule":                 "",
+			"rule":                 "allow,is-admin",
 			"require_apple_signed": "true",
 			"session_owner":        "false",
 			"shared":               "true",

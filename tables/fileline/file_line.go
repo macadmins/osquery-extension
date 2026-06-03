@@ -74,12 +74,18 @@ func processFile(path string, wildcard bool, fs utils.FileSystem) ([]FileLine, e
 			return nil, err
 		}
 		for _, file := range files {
-			lines, _ := readLines(file, fs)
+			lines, err := readLines(file, fs)
+			if err != nil {
+				return nil, err
+			}
 			output = append(output, lines...)
 
 		}
 	} else {
-		lines, _ := readLines(path, fs)
+		lines, err := readLines(path, fs)
+		if err != nil {
+			return nil, err
+		}
 		output = append(output, lines...)
 	}
 
