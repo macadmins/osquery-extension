@@ -28,6 +28,7 @@ import (
 	"github.com/macadmins/osquery-extension/tables/wifi_network"
 
 	"github.com/macadmins/osquery-extension/tables/authdb"
+	"github.com/macadmins/osquery-extension/tables/carafe"
 	osquery "github.com/osquery/osquery-go"
 	"github.com/osquery/osquery-go/plugin/table"
 )
@@ -127,6 +128,7 @@ func main() {
 			),
 			table.NewPlugin("macos_thermal_pressure", thermalthrottling.ThermalPressureColumns(), thermalthrottling.ThermalPressureGenerate),
 			table.NewPlugin("macos_soc_power", socpower.SocPowerColumns(), socpower.SocPowerGenerate),
+			table.NewPlugin("carafe_homebrew_formulae", carafe.HomebrewFormulaeColumns(), carafe.HomebrewFormulaeGenerate),
 		}
 		plugins = append(plugins, darwinPlugins...)
 	}
