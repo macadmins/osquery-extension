@@ -24,6 +24,9 @@ var testManagedInstallReportMunki7 []byte
 //go:embed test_ManagedInstallReport_with_pending.plist
 var testManagedInstallReportWithPending []byte
 
+//go:embed test_ManagedInstallReport_with_problem_installs.plist
+var testManagedInstallReportWithProblemInstalls []byte
+
 func withReportPath(t *testing.T) string {
 	t.Helper()
 	original := reportPath
@@ -151,6 +154,50 @@ func TestMunkiInstallsGenerateWithPendingVersions(t *testing.T) {
 	assert.Equal(t, "4.47.72", rows[2]["version_to_install"], "Pending Slack should have version_to_install")
 }
 
+// Munki records ProblemInstalls as the managed install dicts of items it could
+// not install, so the report must still decode when the array holds dicts
+// rather than strings.
+func TestMunkiInfoGenerateWithProblemInstalls(t *testing.T) {
+	path := withReportPath(t)
+	err := os.WriteFile(path, testManagedInstallReportWithProblemInstalls, 0600)
+	require.NoError(t, err)
+
+	rows, err := MunkiInfoGenerate(context.Background(), table.QueryContext{})
+	require.NoError(t, err)
+
+	expectedRows := []map[string]string{
+		{
+			"start_time":       "2026-02-11 09:14:03 +0000",
+			"end_time":         "2026-02-11 09:14:52 +0000",
+			"console_user":     "Foo",
+			"version":          "6.6.1.4682",
+			"success":          "true",
+			"errors":           "",
+			"warnings":         "Could not retrieve managed install primary manifest",
+			"problem_installs": "Slack;Zoom",
+			"manifest_name":    "e388bb34-ea80-49e2-8d79-da164f8bf9af",
+		},
+	}
+
+	assert.Equal(t, expectedRows, rows, "Problem install output rows are not equal")
+}
+
+// A report with dict entries in ProblemInstalls must not break munki_installs
+// either, since both tables decode the same report.
+func TestMunkiInstallsGenerateWithProblemInstalls(t *testing.T) {
+	path := withReportPath(t)
+	err := os.WriteFile(path, testManagedInstallReportWithProblemInstalls, 0600)
+	require.NoError(t, err)
+
+	rows, err := MunkiInstallsGenerate(context.Background(), table.QueryContext{})
+	require.NoError(t, err)
+
+	require.Len(t, rows, 3)
+	assert.Equal(t, "GoogleChrome", rows[0]["name"])
+	assert.Equal(t, "Slack", rows[1]["name"])
+	assert.Equal(t, "Zoom", rows[2]["name"])
+}
+
 func TestMunkiInstallsColumnsIncludesVersionToInstall(t *testing.T) {
 	columns := MunkiInstallsColumns()
 
@@ -213,6 +260,11 @@ func TestLoadMunkiReportInvalidPlist(t *testing.T) {
 	assert.Error(t, err)
 	assert.NotNil(t, report)
 	assert.ErrorContains(t, err, "decode ManagedInstallReport plist")
+}
+
+func TestJoinProblemInstalls(t *testing.T) {
+	assert.Equal(t, "", joinProblemInstalls(nil))
+	assert.Equal(t, "Slack;Zoom", joinProblemInstalls([]managedInstall{{Name: "Slack"}, {Name: "Zoom"}}))
 }
 
 func TestMunkiDateUnmarshalInvalidString(t *testing.T) {
