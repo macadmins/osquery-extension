@@ -32,7 +32,7 @@ func TestExecute(t *testing.T) {
 			last:      "",
 			logLevel:  "",
 			mockCmd: utils.MockCmdRunner{
-				Output: `[{"eventMessage": "test message"}]`,
+				Output: `{"eventMessage": "test message"}`,
 				Err:    nil,
 			},
 			wantErr: false,
@@ -43,7 +43,7 @@ func TestExecute(t *testing.T) {
 			last:      "",
 			logLevel:  "",
 			mockCmd: utils.MockCmdRunner{
-				Output: `[{"eventMessage": "test message"}]`,
+				Output: `{"eventMessage": "test message"}`,
 				Err:    nil,
 			},
 			wantErr: false,
@@ -54,7 +54,7 @@ func TestExecute(t *testing.T) {
 			last:      "1h",
 			logLevel:  "",
 			mockCmd: utils.MockCmdRunner{
-				Output: `[{"eventMessage": "test message"}]`,
+				Output: `{"eventMessage": "test message"}`,
 				Err:    nil,
 			},
 			wantErr: false,
@@ -65,7 +65,7 @@ func TestExecute(t *testing.T) {
 			last:      "",
 			logLevel:  "debug",
 			mockCmd: utils.MockCmdRunner{
-				Output: `[{"eventMessage": "test message"}]`,
+				Output: `{"eventMessage": "test message"}`,
 				Err:    nil,
 			},
 			wantErr: false,
@@ -76,7 +76,7 @@ func TestExecute(t *testing.T) {
 			last:      "",
 			logLevel:  "info",
 			mockCmd: utils.MockCmdRunner{
-				Output: `[{"eventMessage": "test message"}]`,
+				Output: `{"eventMessage": "test message"}`,
 				Err:    nil,
 			},
 			wantErr: false,
@@ -119,7 +119,7 @@ func TestExecute(t *testing.T) {
 
 func TestExecuteBuildsCompleteRows(t *testing.T) {
 	runner := utils.Runner{Runner: utils.MockCmdRunner{
-		Output: `[{
+		Output: `{
 			"traceID": 42,
 			"eventType": "logEvent",
 			"formatString": "format",
@@ -140,7 +140,7 @@ func TestExecuteBuildsCompleteRows(t *testing.T) {
 			"senderProgramCounter": 789,
 			"parentActivityIdentifier": 6,
 			"timezoneName": "America/Los_Angeles"
-		}]`,
+		}`,
 	}}
 
 	output, err := execute("eventMessage contains 'test'", "1h", "debug", runner)
@@ -194,9 +194,24 @@ func TestGenerateWithRunnerUsesConstraints(t *testing.T) {
 				Expression: "info",
 			}}},
 		},
-	}, utils.Runner{Runner: utils.MockCmdRunner{Output: `[{"eventMessage":"test message"}]`}})
+	}, utils.Runner{Runner: utils.MockCmdRunner{Output: `{"eventMessage":"test message"}`}})
 	assert.NoError(t, err)
 	assert.Equal(t, "eventMessage contains 'test'", output[0]["predicate"])
 	assert.Equal(t, "1h", output[0]["last"])
 	assert.Equal(t, "info", output[0]["log_level"])
+}
+
+// TestExecuteParsesNdjsonStream verifies every object in a multi-line ndjson
+// stream is returned, including tolerating the trailing newline `log show` emits.
+func TestExecuteParsesNdjsonStream(t *testing.T) {
+	runner := utils.Runner{Runner: utils.MockCmdRunner{
+		Output: "{\"eventMessage\":\"one\",\"processID\":1}\n{\"eventMessage\":\"two\",\"processID\":2}\n",
+	}}
+
+	output, err := execute("", "1h", "", runner)
+
+	assert.NoError(t, err)
+	assert.Len(t, output, 2)
+	assert.Equal(t, "one", output[0]["event_message"])
+	assert.Equal(t, "two", output[1]["event_message"])
 }
