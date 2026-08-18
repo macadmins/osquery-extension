@@ -1,8 +1,10 @@
 package unifiedlog
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"math/big"
 	"strconv"
 
@@ -124,10 +126,13 @@ func generateWithRunner(queryContext table.QueryContext, r utils.Runner) ([]map[
 
 func execute(predicate string, last string, logLevel string, r utils.Runner) ([]map[string]string, error) {
 	var output []map[string]string
-	var unifiedlogs []UnifiedLog
 
 	bin := "/usr/bin/log"
-	args := []string{"show", "--style", "json"}
+	// ndjson emits one JSON object per line and lets `log` stream results as it
+	// scans the store, rather than buffering the entire result set into a single
+	// JSON array (the `json` style). For hour-wide predicates this is a large
+	// memory and CPU saving on both the `log` process and here.
+	args := []string{"show", "--style", "ndjson"}
 
 	if last != "" {
 		args = append(args, "--last")
@@ -153,12 +158,19 @@ func execute(predicate string, last string, logLevel string, r utils.Runner) ([]
 		return output, err
 	}
 
-	err = json.Unmarshal(stdout, &unifiedlogs)
-	if err != nil {
-		return output, err
-	}
-
-	for _, item := range unifiedlogs {
+	// Decode the ndjson stream one object at a time. Looping until io.EOF
+	// tolerates the trailing newline `log show` emits while still surfacing a
+	// genuinely malformed stream as an error.
+	dec := json.NewDecoder(bytes.NewReader(stdout))
+	for {
+		var item UnifiedLog
+		err := dec.Decode(&item)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return output, err
+		}
 		output = append(output, map[string]string{
 			"trace_id":                   strconv.FormatUint(item.TraceID, 10),
 			"event_type":                 item.EventType,
