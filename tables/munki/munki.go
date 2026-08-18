@@ -57,13 +57,23 @@ func (md MunkiDate) String() string {
 	return t.UTC().Format("2006-01-02 15:04:05 +0000")
 }
 
+// joinProblemInstalls concatenates the names of the items Munki could not
+// install.
+func joinProblemInstalls(items []managedInstall) string {
+	names := make([]string, 0, len(items))
+	for _, item := range items {
+		names = append(names, item.Name)
+	}
+	return strings.Join(names, ";")
+}
+
 type munkiReport struct {
 	ConsoleUser           string
 	StartTime             MunkiDate
 	EndTime               MunkiDate
 	Errors                []string
 	Warnings              []string
-	ProblemInstalls       []string
+	ProblemInstalls       []managedInstall
 	ManagedInstallVersion string
 	ManifestName          string
 	ManagedInstalls       []managedInstall
@@ -104,7 +114,7 @@ func MunkiInfoGenerate(ctx context.Context, queryContext table.QueryContext) ([]
 
 	errors := strings.Join(report.Errors, ";")
 	warnings := strings.Join(report.Warnings, ";")
-	problemInstalls := strings.Join(report.ProblemInstalls, ";")
+	problemInstalls := joinProblemInstalls(report.ProblemInstalls)
 
 	results := []map[string]string{
 		{

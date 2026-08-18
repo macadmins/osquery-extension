@@ -21,6 +21,7 @@ go_test(
         "test_ManagedInstallReport.plist",
         "test_ManagedInstallReport_munki7.plist",
         "test_ManagedInstallReport_with_pending.plist",
+        "test_ManagedInstallReport_with_problem_installs.plist",
     ],
     deps = [
         "@com_github_osquery_osquery_go//plugin/table",

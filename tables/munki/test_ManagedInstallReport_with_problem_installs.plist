@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>ConsoleUser</key>
+	<string>Foo</string>
+	<key>EndTime</key>
+	<string>2026-02-11 09:14:52 +0000</string>
+	<key>Errors</key>
+	<array/>
+	<key>InstalledItems</key>
+	<array>
+		<string>GoogleChrome</string>
+	</array>
+	<key>ManagedInstallVersion</key>
+	<string>6.6.1.4682</string>
+	<key>ManagedInstalls</key>
+	<array>
+		<dict>
+			<key>display_name</key>
+			<string>Google Chrome</string>
+			<key>installed</key>
+			<true/>
+			<key>installed_size</key>
+			<integer>473937</integer>
+			<key>installed_version</key>
+			<string>130.0.6723.116</string>
+			<key>name</key>
+			<string>GoogleChrome</string>
+		</dict>
+		<dict>
+			<key>display_name</key>
+			<string>Slack</string>
+			<key>installed</key>
+			<false/>
+			<key>name</key>
+			<string>Slack</string>
+			<key>version_to_install</key>
+			<string>4.47.72</string>
+		</dict>
+		<dict>
+			<key>display_name</key>
+			<string>Zoom</string>
+			<key>installed</key>
+			<false/>
+			<key>name</key>
+			<string>Zoom</string>
+			<key>version_to_install</key>
+			<string>6.2.11</string>
+		</dict>
+	</array>
+	<key>ManifestName</key>
+	<string>e388bb34-ea80-49e2-8d79-da164f8bf9af</string>
+	<key>ProblemInstalls</key>
+	<array>
+		<dict>
+			<key>display_name</key>
+			<string>Slack</string>
+			<key>installed</key>
+			<false/>
+			<key>name</key>
+			<string>Slack</string>
+			<key>version_to_install</key>
+			<string>4.47.72</string>
+		</dict>
+		<dict>
+			<key>display_name</key>
+			<string>Zoom</string>
+			<key>installed</key>
+			<false/>
+			<key>name</key>
+			<string>Zoom</string>
+			<key>version_to_install</key>
+			<string>6.2.11</string>
+		</dict>
+	</array>
+	<key>RunType</key>
+	<string>auto</string>
+	<key>StartTime</key>
+	<string>2026-02-11 09:14:03 +0000</string>
+	<key>Warnings</key>
+	<array>
+		<string>Could not retrieve managed install primary manifest</string>
+	</array>
+</dict>
+</plist>
