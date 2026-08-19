@@ -163,12 +163,27 @@ func execute(predicate string, last string, logLevel string, r utils.Runner) ([]
 	// genuinely malformed stream as an error.
 	dec := json.NewDecoder(bytes.NewReader(stdout))
 	for {
-		var item UnifiedLog
-		err := dec.Decode(&item)
+		var raw json.RawMessage
+		err := dec.Decode(&raw)
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
+			return output, err
+		}
+
+		var finishedRecord struct {
+			Finished *json.RawMessage `json:"finished"`
+		}
+		if err := json.Unmarshal(raw, &finishedRecord); err != nil {
+			return output, err
+		}
+		if finishedRecord.Finished != nil {
+			continue
+		}
+
+		var item UnifiedLog
+		if err := json.Unmarshal(raw, &item); err != nil {
 			return output, err
 		}
 		output = append(output, map[string]string{
