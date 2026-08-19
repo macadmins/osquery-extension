@@ -201,11 +201,24 @@ func TestGenerateWithRunnerUsesConstraints(t *testing.T) {
 	assert.Equal(t, "info", output[0]["log_level"])
 }
 
-// TestExecuteParsesNdjsonStream verifies every object in a multi-line ndjson
+// TestExecuteParsesNdjsonStream verifies every log event in a multi-line ndjson
 // stream is returned, including tolerating the trailing newline `log show` emits.
 func TestExecuteParsesNdjsonStream(t *testing.T) {
 	runner := utils.Runner{Runner: utils.MockCmdRunner{
 		Output: "{\"eventMessage\":\"one\",\"processID\":1}\n{\"eventMessage\":\"two\",\"processID\":2}\n",
+	}}
+
+	output, err := execute("", "1h", "", runner)
+
+	assert.NoError(t, err)
+	assert.Len(t, output, 2)
+	assert.Equal(t, "one", output[0]["event_message"])
+	assert.Equal(t, "two", output[1]["event_message"])
+}
+
+func TestExecuteSkipsNdjsonFinishedRecord(t *testing.T) {
+	runner := utils.Runner{Runner: utils.MockCmdRunner{
+		Output: "{\"eventMessage\":\"one\",\"processID\":1}\n{\"eventMessage\":\"two\",\"processID\":2}\n{\"count\":2,\"finished\":1}\n",
 	}}
 
 	output, err := execute("", "1h", "", runner)
