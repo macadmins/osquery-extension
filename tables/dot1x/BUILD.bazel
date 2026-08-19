@@ -1,0 +1,55 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "dot1x",
+    srcs = [
+        "dot1x.go",
+        "dot1x_darwin.go",
+        "dot1x_other.go",
+        "dot1x_wlanprofile.go",
+        "dot1x_windows.go",
+    ],
+    # cgo is only needed on darwin: dot1x_darwin.go (//go:build darwin) calls
+    # EAP8021X.framework (via dlopen/dlsym) + CoreFoundation via cgo.
+    # The darwin build constraint does NOT include ios, so only darwin gets
+    # the cgo + framework links; linux/windows stay pure Go.
+    cgo = select({
+        "@io_bazel_rules_go//go/platform:darwin": True,
+        "//conditions:default": False,
+    }),
+    clinkopts = select({
+        "@io_bazel_rules_go//go/platform:darwin": [
+            "-framework",
+            "CoreFoundation",
+        ],
+        "//conditions:default": [],
+    }),
+    importpath = "github.com/macadmins/osquery-extension/tables/dot1x",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_github_osquery_osquery_go//plugin/table",
+    ] + select({
+        "@io_bazel_rules_go//go/platform:windows": [
+            "@org_golang_x_sys//windows",
+        ],
+        "//conditions:default": [],
+    }),
+)
+
+go_test(
+    name = "dot1x_test",
+    srcs = [
+        "dot1x_test.go",
+        "dot1x_darwin_test.go",
+        "dot1x_helpers_test.go",
+        "dot1x_other_test.go",
+        "dot1x_wlanprofile_test.go",
+        "dot1x_windows_test.go",
+    ],
+    embed = [":dot1x"],
+    deps = [
+        "@com_github_osquery_osquery_go//plugin/table",
+        "@com_github_stretchr_testify//assert",
+        "@com_github_stretchr_testify//require",
+    ],
+)
