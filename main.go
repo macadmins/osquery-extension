@@ -106,7 +106,6 @@ func main() {
 			table.NewPlugin("munki_installs", munki.MunkiInstallsColumns(), munki.MunkiInstallsGenerate),
 			table.NewPlugin("network_quality", networkquality.NetworkQualityColumns(), networkquality.NetworkQualityGenerate),
 			table.NewPlugin("pending_apple_updates", pendingappleupdates.PendingAppleUpdatesColumns(), pendingappleupdates.PendingAppleUpdatesGenerate),
-			table.NewPlugin("privileges_info", privileges.PrivilegesInfoColumns(), privileges.PrivilegesInfoGenerate),
 			table.NewPlugin("privileges_events", privileges.PrivilegesEventsColumns(), privileges.PrivilegesEventsGenerate),
 			table.NewPlugin("macadmins_unified_log", unifiedlog.UnifiedLogColumns(), unifiedlog.UnifiedLogGenerate),
 			table.NewPlugin("macos_rsr", macosrsr.MacOSRsrColumns(), macosrsr.MacOSRsrGenerate),

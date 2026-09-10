@@ -2,7 +2,6 @@ package privileges
 
 import (
 	"encoding/json"
-	"regexp"
 	"strings"
 
 	"github.com/macadmins/osquery-extension/pkg/utils"
@@ -35,8 +34,6 @@ type privilegesEvent struct {
 	} `json:"privileges"`
 }
 
-var versionPattern = regexp.MustCompile(`PrivilegesCLI\s+(\S+)\s+\((\S+)\)`)
-
 func cliInstalled(fs utils.FileSystem) bool {
 	info, err := fs.Stat(cliPath)
 	if err != nil {
@@ -44,18 +41,6 @@ func cliInstalled(fs utils.FileSystem) bool {
 	}
 	// utils.MockFileSystem returns a nil FileInfo for existing files.
 	return info == nil || !info.IsDir()
-}
-
-func parseVersion(output string) (string, string) {
-	matches := versionPattern.FindStringSubmatch(output)
-	if matches == nil {
-		return "", ""
-	}
-	return matches[1], matches[2]
-}
-
-func parseExtensionStatus(output string) bool {
-	return strings.Contains(output, " enabled")
 }
 
 func parseEvents(output []byte) []privilegesEvent {

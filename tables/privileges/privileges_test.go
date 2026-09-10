@@ -7,33 +7,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestParseVersion(t *testing.T) {
-	tests := []struct {
-		name        string
-		output      string
-		wantVersion string
-		wantBuild   string
-	}{
-		{"normal", "PrivilegesCLI 2.6.0 (193)\n", "2.6.0", "193"},
-		{"garbage", "something unexpected", "", ""},
-		{"empty", "", "", ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			version, build := parseVersion(tt.output)
-			assert.Equal(t, tt.wantVersion, version)
-			assert.Equal(t, tt.wantBuild, build)
-		})
-	}
-}
-
-func TestParseExtensionStatus(t *testing.T) {
-	assert.True(t, parseExtensionStatus("System extension is enabled\n"))
-	assert.False(t, parseExtensionStatus("System extension is disabled\n"))
-	assert.False(t, parseExtensionStatus("garbage"))
-	assert.False(t, parseExtensionStatus(""))
-}
-
 const validEventLine = `{"esf":{"process":{"cdhash":"330081dcbf4f3086cb71af1e1b0152be78fff23a","tty":"","ppid":1,"start_time":"2026-08-11T09:26:42Z","executable":"/Applications/Privileges.app/Contents/MacOS/PrivilegesDaemon","is_platform_binary":false,"team_id":"7R5ZEU67FQ","is_es_client":false,"signing_id":"corp.sap.privileges.daemon","pid":64557}},"privileges":{"subject":"user","event_type":"ADMIN_ADD","id":"henry"}}`
 
 func TestParseEvents(t *testing.T) {
