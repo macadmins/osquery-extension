@@ -1,0 +1,31 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "privileges",
+    srcs = [
+        "privileges.go",
+        "privileges_events.go",
+        "privileges_info.go",
+    ],
+    importpath = "github.com/macadmins/osquery-extension/tables/privileges",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/utils",
+        "@com_github_osquery_osquery_go//plugin/table",
+    ],
+)
+
+go_test(
+    name = "privileges_test",
+    srcs = [
+        "privileges_events_test.go",
+        "privileges_info_test.go",
+        "privileges_test.go",
+    ],
+    embed = [":privileges"],
+    deps = [
+        "//pkg/utils",
+        "@com_github_osquery_osquery_go//plugin/table",
+        "@com_github_stretchr_testify//assert",
+    ],
+)

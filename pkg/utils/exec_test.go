@@ -54,3 +54,16 @@ func TestExecCmdRunner_RunCmdWithStdin(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, "test", string(output))
 }
+
+func TestExecCmdCombinedRunner_RunCmd_CapturesStderr(t *testing.T) {
+	runner := &ExecCmdCombinedRunner{}
+	output, err := runner.RunCmd("sh", "-c", "echo to-stderr 1>&2")
+	assert.NoError(t, err)
+	assert.Equal(t, "to-stderr\n", string(output))
+}
+
+func TestNewCombinedRunner(t *testing.T) {
+	runner := NewCombinedRunner()
+	assert.NotNil(t, runner.Runner)
+	assert.IsType(t, &ExecCmdCombinedRunner{}, runner.Runner)
+}
