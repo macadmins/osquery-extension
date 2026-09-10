@@ -60,7 +60,11 @@ func NewCombinedRunner() Runner {
 
 func (r *ExecCmdCombinedRunner) RunCmd(name string, arg ...string) ([]byte, error) {
 	cmd := exec.Command(name, arg...)
-	return cmd.CombinedOutput()
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return output, errors.New(string(output))
+	}
+	return output, nil
 }
 
 func (r *ExecCmdCombinedRunner) RunCmdWithStdin(name string, stdin string, arg ...string) ([]byte, error) {
