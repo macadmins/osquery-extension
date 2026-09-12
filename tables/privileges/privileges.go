@@ -2,6 +2,7 @@ package privileges
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 
 	"github.com/macadmins/osquery-extension/pkg/utils"
@@ -25,6 +26,9 @@ type privilegesEvent struct {
 			IsESClient       bool   `json:"is_es_client"`
 			SigningID        string `json:"signing_id"`
 			PID              int    `json:"pid"`
+			// audit_token_t layout: auid, euid, egid, ruid, rgid, pid, asid, pidversion.
+			AuditToken            []uint32 `json:"audit_token"`
+			ResponsibleAuditToken []uint32 `json:"responsible_audit_token"`
 		} `json:"process"`
 	} `json:"esf"`
 	Privileges struct {
@@ -57,6 +61,28 @@ func parseEvents(output []byte) []privilegesEvent {
 		events = append(events, event)
 	}
 	return events
+}
+
+// Indexes into an audit_token_t.
+const (
+	auditTokenAUID = 0
+	auditTokenEUID = 1
+	auditTokenEGID = 2
+	auditTokenPID  = 5
+)
+
+// auditTokenNone is AUDIT_UID_NONE / (uid_t)-1, used by daemons that have
+// no audit session. Rendered as -1 to match osquery's process tables.
+const auditTokenNone = 4294967295
+
+func auditTokenField(token []uint32, index int) string {
+	if index >= len(token) {
+		return ""
+	}
+	if token[index] == auditTokenNone {
+		return "-1"
+	}
+	return strconv.FormatUint(uint64(token[index]), 10)
 }
 
 func boolToIntString(b bool) string {
