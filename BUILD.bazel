@@ -51,6 +51,7 @@ go_library(
         "//tables/munki",
         "//tables/networkquality",
         "//tables/pendingappleupdates",
+        "//tables/privileges",
         "//tables/puppet",
         "//tables/socpower",
         "//tables/sofa",
