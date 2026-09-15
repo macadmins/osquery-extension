@@ -4,6 +4,10 @@ current_dir = $(shell pwd)
 
 SHELL = /bin/sh
 
+# Computed once, with a safe empty default if `uname` is unavailable (some
+# Windows shells / CI images). Used to gate the darwin-only binary builds.
+UNAME_S := $(shell uname -s 2>/dev/null)
+
 BAZEL_OUTPUT_PATH := $(shell bazel info output_path)
 
 APP_NAME = macadmins_extension
@@ -50,11 +54,25 @@ update-repos:
 	bazel run //:gazelle-update-repos -- -from_file=go.mod
 
 test:
-	bazel test --test_output=errors //...
+	# Query only test targets (any *_test kind) rather than `bazel test //...`,
+	# which would also analyze the darwin go_binary targets (pure="off",
+	# cgo=True in root BUILD.bazel) and fail on Linux CI where no darwin
+	# C++ toolchain exists.
+	# Matching all *_test kinds (not just go_test) keeps non-Go tests
+	# (sh_test, py_test, etc.) in scope if any are added later. The target
+	# list is passed via --target_pattern_file rather than expanded onto the
+	# command line, so a growing test set can't hit argv length limits.
+	@set -e; \
+	targets="$$(mktemp "$${TMPDIR:-/tmp}/dot1x-test-targets.XXXXXX")"; \
+	trap 'rm -f "$$targets"' EXIT; \
+	bazel query 'kind(".*_test", //...)' > "$$targets"; \
+	bazel test --test_output=errors --target_pattern_file="$$targets"
 
 build: .pre-build
+ifeq ($(UNAME_S),Darwin)
 	bazel build --verbose_failures //:osquery-extension-mac-amd
 	bazel build --verbose_failures //:osquery-extension-mac-arm
+endif
 	bazel build --verbose_failures //:osquery-extension-linux-amd
 	bazel build --verbose_failures //:osquery-extension-linux-arm
 	bazel build --verbose_failures //:osquery-extension-win-amd
