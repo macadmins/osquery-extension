@@ -1,0 +1,14 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "redact",
+    srcs = ["redact.go"],
+    importpath = "github.com/macadmins/osquery-extension/pkg/redact",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "redact_test",
+    srcs = ["redact_test.go"],
+    embed = [":redact"],
+)

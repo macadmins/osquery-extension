@@ -1,0 +1,61 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "mcp_servers",
+    srcs = [
+        "allowlist.go",
+        "approval.go",
+        "codexpaths.go",
+        "command.go",
+        "discover.go",
+        "identity.go",
+        "jsonc.go",
+        "mcp_servers.go",
+        "parse.go",
+        "paths.go",
+        "plugins.go",
+        "projects.go",
+        "redact.go",
+        "toml.go",
+        "warnings.go",
+    ],
+    importpath = "github.com/macadmins/osquery-extension/tables/mcp_servers",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/fsscan",
+        "//pkg/redact",
+        "//pkg/utils",
+        "@com_github_burntsushi_toml//:toml",
+        "@com_github_osquery_osquery_go//plugin/table",
+    ],
+)
+
+go_test(
+    name = "mcp_servers_test",
+    srcs = [
+        "allowlist_test.go",
+        "approval_test.go",
+        "command_test.go",
+        "discover_integration_test.go",
+        "discover_symlink_unix_test.go",
+        "mcp_servers_test.go",
+        "mcp_test.go",
+        "paths_test.go",
+        "plugins_test.go",
+        "projects_test.go",
+        "provenance_test.go",
+        "refusal_unix_test.go",
+        "roster_test_helper_test.go",
+        "sandbox_sandboxed_unix_test.go",
+        "toml_test.go",
+        "warnings_test.go",
+    ],
+    embed = [":mcp_servers"],
+    deps = [
+        "//pkg/fsscan",
+        "//pkg/redact",
+        "//pkg/utils",
+        "@com_github_burntsushi_toml//:toml",
+        "@com_github_osquery_osquery_go//plugin/table",
+    ],
+)

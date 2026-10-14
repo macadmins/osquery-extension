@@ -11,6 +11,14 @@ type OsqueryClienter interface {
 	NewOsqueryClient() (OsqueryClient, error)
 }
 
+// OsqueryClient is deliberately narrow, and currently narrower than it should be.
+//
+// KNOWN GAP: osquery-go also provides QueryRowsContext,
+// QueryRowContext and QueryContext, and *ExtensionManagerClient satisfies them today. They
+// are absent here, so every caller queries with an implicit context.Background() and cannot
+// honour a cancelled table query or bound the call by its own deadline. Adding them is
+// additive -- the concrete client needs nothing and existing callers are unaffected -- but
+// it widens an interface four tables depend on, so it wants its own review.
 type OsqueryClient interface {
 	QueryRows(query string) ([]map[string]string, error)
 	QueryRow(query string) (map[string]string, error)

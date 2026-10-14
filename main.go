@@ -16,6 +16,7 @@ import (
 	"github.com/macadmins/osquery-extension/tables/localnetworkpermissions"
 	macosprofiles "github.com/macadmins/osquery-extension/tables/macos_profiles"
 	"github.com/macadmins/osquery-extension/tables/macosrsr"
+	mcpservers "github.com/macadmins/osquery-extension/tables/mcp_servers"
 	"github.com/macadmins/osquery-extension/tables/mdm"
 	"github.com/macadmins/osquery-extension/tables/munki"
 	"github.com/macadmins/osquery-extension/tables/networkquality"
@@ -82,6 +83,19 @@ func main() {
 	// if runtime.GOOS == "windows" {
 	// If there were windows only tables, they would go here
 	// }
+
+	// mcp_servers is not darwin-only: pkg/fsscan has a symlink-refusing backend for POSIX
+	// (iterated openat with O_NOFOLLOW) and for Windows (os.Root plus a reparse-point check
+	// and a post-open identity re-check), and the per-user config locations resolve per OS.
+	// Platforms with neither backend report unsupported rather than degrading, so the table
+	// is registered where it can answer safely and left unregistered where it cannot.
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" || runtime.GOOS == "linux" {
+		plugins = append(plugins, table.NewPlugin(
+			"mcp_servers", mcpservers.MCPServersColumns(),
+			func(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
+				return mcpservers.MCPServersGenerate(ctx, queryContext, *flSocketPath)
+			}))
+	}
 
 	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
 		linuxPlugins := []osquery.OsqueryPlugin{

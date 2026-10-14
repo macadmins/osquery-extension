@@ -47,6 +47,7 @@ go_library(
         "//tables/localnetworkpermissions",
         "//tables/macos_profiles",
         "//tables/macosrsr",
+        "//tables/mcp_servers",
         "//tables/mdm",
         "//tables/munki",
         "//tables/networkquality",

@@ -7,7 +7,25 @@ SHELL = /bin/sh
 BAZEL_OUTPUT_PATH := $(shell bazel info output_path)
 
 APP_NAME = macadmins_extension
-PKGDIR_TMP = ${TMPDIR}golang
+
+# PKGDIR_TMP is the directory `clean` removes with a privileged glob, so its two failure
+# modes are both worth closing explicitly.
+#
+# TMPDIR is set by the shell on macOS but is not guaranteed: a cron job, a CI runner, or a
+# `sudo` invocation that resets the environment can leave it empty. `${TMPDIR}golang` then
+# expands to the bare string `golang`, and `sudo /bin/rm -rf golang*` runs relative to the
+# working directory -- which is the repository root.
+#
+# And TMPDIR may or may not carry a trailing slash. macOS sets one; `/tmp` without it is the
+# ordinary form on Linux and in CI, and simple concatenation then produces `/tmpgolang` --
+# absolute, so an absolute-path check passes it, but a sibling of /tmp rather than a child,
+# so the glob is `sudo /bin/rm -rf /tmpgolang*` at the filesystem root. Normalising the
+# separator is what makes the path the intended one rather than merely an absolute one.
+#
+# $(if $(strip ...)) rather than `?=` because make treats a variable exported as empty as
+# defined, so `?=` would not substitute in the case that matters.
+PKGDIR_BASE = $(patsubst %/,%,$(if $(strip ${TMPDIR}),${TMPDIR},/tmp))
+PKGDIR_TMP = ${PKGDIR_BASE}/golang
 
 all: build
 
@@ -37,10 +55,25 @@ deps:
 init:
 	go mod init github.com/macadmins/osquery-extension
 
+# The glob is guarded rather than interpolated straight into the command, and the guard
+# checks the shape of the path rather than only that it is absolute.
+#
+# An absolute-path test alone is not enough: `/tmpgolang` is absolute and is not the intended
+# directory. So the parent must be an existing directory and the basename must be exactly
+# `golang`, which is the whole of what this target is entitled to remove. Refuses loudly
+# instead of deleting, so an unusual environment is reported rather than acted on.
 clean:
 	@sudo /bin/rm -rf build/
 	@sudo /bin/rm -rf macadmins_extension
-	@sudo /bin/rm -rf ${PKGDIR_TMP}*
+	@case "${PKGDIR_TMP}" in \
+		/*/golang) \
+			if [ -d "${PKGDIR_BASE}" ]; then \
+				sudo /bin/rm -rf "${PKGDIR_TMP}"*; \
+			else \
+				echo "clean: refusing, ${PKGDIR_BASE} is not a directory" >&2; exit 1; \
+			fi ;; \
+		*) echo "clean: refusing to remove unexpected PKGDIR_TMP=\"${PKGDIR_TMP}\"" >&2; exit 1 ;; \
+	esac
 	@sudo /bin/rm -f macadmins_extension.zip
 
 gazelle:
