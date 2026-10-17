@@ -85,8 +85,12 @@ func MDMInfoGenerate(
 	queryContext table.QueryContext,
 ) ([]map[string]string, error) {
 	fs := utils.OSFileSystem{}
-	// There might not be any profiles installed, but we still care if the device is DEP capable, so discard the error
-	profiles, _ := getMDMProfileFunc()
+	// There might not be any profiles installed, but we still care if the device is DEP capable, so only fail if profiles could not be started
+	profiles, err := getMDMProfileFunc()
+	var startErr *os.PathError
+	if errors.As(err, &startErr) {
+		return nil, err
+	}
 
 	depEnrolled, userApproved := "unknown", "unknown"
 	status, err := getMDMProfileStatusFunc(fs)
