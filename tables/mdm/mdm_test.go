@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"syscall"
 	"testing"
 	"time"
 
@@ -145,6 +146,16 @@ func TestMDMInfoGenerateUnenrolledWhenProfileMissing(t *testing.T) {
 		"enrolled":    "false",
 		"dep_capable": "false",
 	}}, results)
+}
+
+func TestMDMInfoGenerateErrorsWhenProfilesCannotStart(t *testing.T) {
+	withRunProfilesListCmd(t, func() ([]byte, error) {
+		return nil, &os.PathError{Op: "fork/exec", Path: "/usr/bin/profiles", Err: syscall.EAGAIN}
+	})
+
+	results, err := MDMInfoGenerate(context.Background(), table.QueryContext{})
+	assert.ErrorIs(t, err, syscall.EAGAIN)
+	assert.Nil(t, results)
 }
 
 func TestGetMDMProfile(t *testing.T) {
