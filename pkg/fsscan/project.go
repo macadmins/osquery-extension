@@ -56,7 +56,33 @@ var (
 	// that reads here are not bounded by local I/O. Folding them together would have the row
 	// claim a cloud provider is involved when the mount might be sshfs or gocryptfs.
 	ErrUserspaceFilesystem = errors.New("fsscan: file is on a userspace filesystem; a read may fetch it on demand")
+
+	// ErrNetworkFilesystem means a project directory is on a network filesystem, so its
+	// content is stored on another machine, where it is inventoried.
+	ErrNetworkFilesystem = errors.New("fsscan: project is on a network filesystem")
 )
+
+// ProbeProjectDir opens a recorded project's directory beneath home, with the symlink refusal
+// every read applies, and reports ErrNetworkFilesystem when the directory is on a network
+// filesystem. A caller probes once per project, before reading any file in it, so a project on
+// a network mount costs one directory open and none of its files are opened. Any other error is
+// the open's own, for ClassifyError.
+func ProbeProjectDir(home, projRel string) error {
+	dir, err := OpenBeneath(home, projRel)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = dir.Close() }()
+	if onNetworkFilesystem(dir) {
+		return ErrNetworkFilesystem
+	}
+	return nil
+}
+
+// UnderCloudStorage reports whether a home-relative path is inside a cloud storage provider's
+// folder by the platform's prefix rule, which ReadProjectFile also applies. It is a string
+// comparison, so a caller can decide from the recorded path alone, before anything is opened.
+func UnderCloudStorage(rel string) bool { return underCloudStorage(rel) }
 
 // ContainProjectPath turns a path recorded in a configuration file into a path relative to
 // home, or refuses it.
@@ -520,4 +546,28 @@ func ListDirNamesUnder(base, rel string, maxEntries int) ([]string, error) {
 		return names[:maxEntries], fmt.Errorf("%w: more than %d entries", ErrTooLarge, maxEntries)
 	}
 	return names, nil
+}
+
+// ListDirNamesCapped applies ListDirNamesUnder's two-part contract in one place.
+//
+// ListDirNamesUnder returns the names it could fit *and* ErrTooLarge, so a caller can use the
+// partial listing and report the shortfall. A caller that tests only `err != nil` skips the
+// level, so a directory holding more entries than the cap yields nothing instead of the capped
+// list -- a bounded answer turned into a silently empty one.
+//
+// truncated separates "the listing was short" from "the listing failed". Absence is neither,
+// and is reported as a nil error with no names, because most directories a client might
+// create do not exist on most hosts.
+func ListDirNamesCapped(base, rel string, limit int) (names []string, truncated bool, err error) {
+	names, err = ListDirNamesUnder(base, rel, limit)
+	switch {
+	case err == nil:
+		return names, false, nil
+	case errors.Is(err, ErrTooLarge):
+		return names, true, nil
+	case IsExpectedAbsent(err):
+		return nil, false, nil
+	default:
+		return nil, false, err
+	}
 }

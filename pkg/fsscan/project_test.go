@@ -2,6 +2,7 @@ package fsscan
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -406,5 +407,47 @@ func TestWindowsCloudPrefixes(t *testing.T) {
 			t.Errorf("underCloudStorageFor(%q, %q) = %v, want %v",
 				tc.goos, tc.rel, got, tc.want)
 		}
+	}
+}
+
+// TestListDirNamesCappedSeparatesShortFromFailed pins the three outcomes the helper exists to
+// keep apart: a full listing, a capped one that still yields its names, and absence.
+func TestListDirNamesCappedSeparatesShortFromFailed(t *testing.T) {
+	base := t.TempDir()
+	for _, name := range []string{"a", "b", "c"} {
+		if err := os.MkdirAll(filepath.Join(base, "d", name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if names, truncated, err := ListDirNamesCapped(base, "d", 5); err != nil || truncated || len(names) != 3 {
+		t.Errorf("full listing: %v %v %v", names, truncated, err)
+	}
+	if names, truncated, err := ListDirNamesCapped(base, "d", 2); err != nil || !truncated || len(names) != 2 {
+		t.Errorf("capped listing: %v %v %v", names, truncated, err)
+	}
+	if names, truncated, err := ListDirNamesCapped(base, "missing", 2); err != nil || truncated || names != nil {
+		t.Errorf("absent directory: %v %v %v", names, truncated, err)
+	}
+}
+
+// TestProbeProjectDir: a local project directory probes clean, a missing one reports absence,
+// and the network sentinel classifies as its own class. A network mount cannot be created in a
+// test, so the local case is what exercises the platform's real filesystem check.
+func TestProbeProjectDir(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "code", "svc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ProbeProjectDir(home, filepath.Join("code", "svc")); err != nil {
+		t.Errorf("a local project directory = %v, want nil", err)
+	}
+	if err := ProbeProjectDir(home, filepath.Join("code", "gone")); ClassifyError(err) != ClassAbsent {
+		t.Errorf("a missing project directory = %v (%s), want absent", err, ClassifyError(err))
+	}
+	if got := ClassifyError(fmt.Errorf("probe: %w", ErrNetworkFilesystem)); got != ClassNetworkFilesystem {
+		t.Errorf("the network sentinel classifies as %s", got)
+	}
+	if UnderCloudStorage(filepath.Join("code", "svc")) {
+		t.Error("an ordinary project directory matched a cloud prefix")
 	}
 }

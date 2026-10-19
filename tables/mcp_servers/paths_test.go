@@ -119,13 +119,13 @@ func TestVSCodeFamilySourcesCoverEveryForkAndClient(t *testing.T) {
 	for _, fork := range vscodeFamily {
 		found := false
 		for _, src := range sources {
-			if filepath.Base(filepath.Dir(filepath.Dir(src.relPath))) == fork.dir {
+			if filepath.Base(filepath.Dir(filepath.Dir(src.relPath))) == fork.Dir {
 				found = true
 				break
 			}
 		}
 		if !found {
-			t.Errorf("fork %q produced no user-scope source", fork.dir)
+			t.Errorf("fork %q produced no user-scope source", fork.Dir)
 		}
 	}
 }

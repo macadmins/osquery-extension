@@ -1,0 +1,27 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "devclients",
+    srcs = [
+        "jetbrains.go",
+        "paths.go",
+        "projects.go",
+        "scankey.go",
+    ],
+    importpath = "github.com/macadmins/osquery-extension/pkg/devclients",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/fsscan",
+        "@com_github_burntsushi_toml//:toml",
+    ],
+)
+
+go_test(
+    name = "devclients_test",
+    srcs = [
+        "devclients_test.go",
+        "snap_unix_test.go",
+    ],
+    embed = [":devclients"],
+    deps = ["//pkg/fsscan"],
+)

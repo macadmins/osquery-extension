@@ -44,6 +44,7 @@ go_library(
         "//tables/energyimpact",
         "//tables/fileline",
         "//tables/filevaultusers",
+        "//tables/go_modules",
         "//tables/localnetworkpermissions",
         "//tables/macos_profiles",
         "//tables/macosrsr",

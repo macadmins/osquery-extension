@@ -63,6 +63,28 @@ var knownTokenRe = regexp.MustCompile(strings.Join([]string{
 	`eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`, // JWT
 }, "|"))
 
+// distinctiveTokenRe is the subset of knownTokenRe whose prefixes ordinary identifiers do not
+// share. It leaves out the bare sk- prefix and gitlab-<word>-, which match repository names
+// such as sk-payments-service-client and gitlab-ci-pipeline-exporter-tools, and keeps the
+// Anthropic and OpenAI forms of sk-, which carry a second distinctive prefix. A value checked
+// against this pattern is one that already passed a grammar, such as a Go module path, where
+// rewriting is not an option and a false positive loses a real value.
+var distinctiveTokenRe = regexp.MustCompile(strings.Join([]string{
+	`(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}`,
+	`github_pat_[A-Za-z0-9_]{20,}`,
+	`glpat-[A-Za-z0-9_-]{20,}`,
+	`xox[abprs]-[A-Za-z0-9-]{10,}`,
+	`sk-(?:ant|proj)-[A-Za-z0-9_-]{20,}`,
+	`AKIA[0-9A-Z]{16}`,
+	`ASIA[0-9A-Z]{16}`,
+	`AIza[0-9A-Za-z_-]{35}`,
+	`eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`, // JWT
+}, "|"))
+
+// ContainsDistinctiveToken reports whether s contains a credential format that ordinary
+// identifiers do not share. Every format it matches, String also redacts.
+func ContainsDistinctiveToken(s string) bool { return distinctiveTokenRe.MatchString(s) }
+
 // String returns s with any known-token-shape substrings replaced with
 // the [REDACTED] marker. Idempotent.
 func String(s string) string {

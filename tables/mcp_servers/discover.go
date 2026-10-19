@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/macadmins/osquery-extension/pkg/devclients"
 	"github.com/macadmins/osquery-extension/pkg/fsscan"
 	"github.com/macadmins/osquery-extension/pkg/utils"
 )
@@ -38,7 +39,11 @@ type Server struct {
 	// users table on name alone can match the wrong account. It is empty where the roster
 	// could not supply one, which is itself information: it means the account could not be
 	// identified, not that it has no identity.
-	UserID         string
+	UserID string
+	// UID is the uid column of osquery's users table, which core osquery's per-user tables
+	// publish so a query can join on it. On Windows osquery fills it with the last component
+	// of the SID, which two accounts can share, so UserID remains the identity to correlate on.
+	UID            string
 	SourcePath     string
 	SourceContext  string // e.g., "mcpServers", "projects[/abs/path].mcpServers"
 	Client         string
@@ -477,7 +482,7 @@ func DiscoverAll(ctx context.Context, clienter utils.OsqueryClienter, userFilter
 		// this a cancelled query still performed ten opens per home for every home on the box.
 		if ctx.Err() != nil {
 			out = append(out, stampUserID([]Server{diagnosticRow(h.Name, h.Path, "",
-				warning{Code: warnCancelledPreHome})}, h.ID)...)
+				warning{Code: warnCancelledPreHome})}, h.ID, h.UID)...)
 			continue
 		}
 		// Scanned once per directory, reported once per account. Accounts legitimately
@@ -502,13 +507,13 @@ func DiscoverAll(ctx context.Context, clienter utils.OsqueryClienter, userFilter
 				// empty answer, which is the confusion the truncation contract exists to
 				// prevent.
 				out = append(out, stampUserID([]Server{diagnosticRow(h.Name, h.Path, "",
-					warning{Code: warnBudgetExhaustedPreHome})}, h.ID)...)
+					warning{Code: warnBudgetExhaustedPreHome})}, h.ID, h.UID)...)
 				continue
 			}
 			rows = discoverForHome(ctx, h, deadline)
 			scanned[key] = rows
 		}
-		out = append(out, stampUserID(copyRowsFor(rows, h.Name), h.ID)...)
+		out = append(out, stampUserID(copyRowsFor(rows, h.Name), h.ID, h.UID)...)
 	}
 	// A rostered account that cannot log in. Skipped on purpose -- it keeps no editor or
 	// agent configuration -- and silent unless someone asked for it by name, because a host
@@ -603,12 +608,14 @@ func unanswered(userFilter, answered map[string]struct{}) []string {
 // stampUserID attaches the account's stable identity to every row discovered for it,
 // including the diagnostic rows, so a correlation query does not lose the identity precisely
 // on the rows describing what went wrong.
-func stampUserID(rows []Server, id string) []Server {
-	if id == "" {
-		return rows
-	}
+func stampUserID(rows []Server, id, uid string) []Server {
 	for i := range rows {
-		rows[i].UserID = id
+		if id != "" {
+			rows[i].UserID = id
+		}
+		if uid != "" {
+			rows[i].UID = uid
+		}
 	}
 	return rows
 }
@@ -621,11 +628,15 @@ func stampUserID(rows []Server, id string) []Server {
 // configuration is still found. A redirection out of the profile, or an answer that could
 // not be read at all, means this account's application-support configuration is not being
 // inspected, and saying nothing there is the failure mode being fixed.
+// roamingAppDataFor reads an account's registry hive on Windows. Tests use temporary homes with
+// no hive, so they substitute it.
+var roamingAppDataFor = fsscan.RoamingAppDataFor
+
 func roamingRootFor(account fsscan.UserHome) (root string, note warning) {
 	if runtime.GOOS != "windows" {
 		return "", warning{}
 	}
-	resolved, redirected, ok := fsscan.RoamingAppDataFor(account.ID, account.Path)
+	resolved, redirected, ok := roamingAppDataFor(account.ID, account.Path)
 	if !ok {
 		return "", warning{Code: warnAppDataUndetermined}
 	}
@@ -644,60 +655,20 @@ func roamingRootFor(account fsscan.UserHome) (root string, note warning) {
 	return resolved, warning{}
 }
 
-// withinHome reports whether an absolute path lies beneath home. Redirection inside the
-// profile is still reachable by the ordinary bounded, symlink-refusing traversal; redirection
-// outside it is not, because that traversal is anchored to the home on purpose.
-func withinHome(path, home string) bool {
-	rel, err := filepath.Rel(home, path)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
-}
+// The roaming-root redirect and the home containment test are shared with every table that
+// reads a client's application-support files. These names keep this package's call sites
+// unchanged.
+var (
+	redirectAppSupport = devclients.RedirectAppSupport
+	withinHome         = devclients.WithinHome
+)
 
-// redirectAppSupport rewrites an application-support-relative path to sit under a redirected
-// roaming root. It reports usable=false when the source cannot be reached at all, which is
-// the out-of-profile case the caller has already warned about.
-func redirectAppSupport(relPath, appDataRoot, home string) (rewritten string, usable bool) {
-	if appDataRoot == "" {
-		return "", true // conventional location; relPath already correct
-	}
-	prefix := appSupportDir() + string(os.PathSeparator)
-	if !strings.HasPrefix(relPath, prefix) {
-		return "", true // a dotfile source, unaffected by where AppData points
-	}
-	if !withinHome(appDataRoot, home) {
-		return "", false
-	}
-	rel, err := filepath.Rel(home, appDataRoot)
-	if err != nil {
-		return "", false
-	}
-	return filepath.Join(rel, strings.TrimPrefix(relPath, prefix)), true
-}
-
-// scanKey names everything discovery depends on, so a cached result is only reused where it
-// would genuinely have been identical.
-//
-// The home path alone is wrong on Windows. discoverForHome resolves Roaming AppData from the
-// registry hive named by the account's SID, so two accounts reporting the same profile path
-// can have different roaming roots, different warnings and different rows. Keyed on path
-// alone, the first account scanned decided the answer for the rest and copyRowsFor merely
-// relabelled it -- attributing one account's redirected AppData, or its "could not be
-// determined" warning, to another.
-//
-// Elsewhere discovery is a pure function of the directory, so the path is the whole key and
-// a shared home is scanned once.
-func scanKey(account fsscan.UserHome) string {
-	return scanKeyFor(runtime.GOOS, account)
-}
-
-// scanKeyFor takes the OS as a parameter so both branches are reachable from a test on any
-// host. The Windows branch is the one that matters and the one no test here can otherwise
-// execute, which is exactly how it went wrong in the first place.
-func scanKeyFor(goos string, account fsscan.UserHome) string {
-	if goos == "windows" {
-		return account.ID + "\x00" + account.Path
-	}
-	return account.Path
-}
+// scanKey and scanKeyFor are the shared devclients.ScanKey and ScanKeyFor under this
+// package's names.
+var (
+	scanKey    = devclients.ScanKey
+	scanKeyFor = devclients.ScanKeyFor
+)
 
 // copyRowsFor re-stamps a cached scan for another account sharing the same home.
 //

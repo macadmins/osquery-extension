@@ -123,6 +123,8 @@ const (
 	// ClassUserspaceFilesystem is a file on a filesystem whose reads are serviced by a
 	// userspace process, so a read may fetch content on demand and cannot be bounded.
 	ClassUserspaceFilesystem ErrClass = "userspace_filesystem"
+	// ClassNetworkFilesystem is a project directory on a network filesystem.
+	ClassNetworkFilesystem ErrClass = "network_filesystem"
 	// ClassUnsupportedOrigin is a recorded location naming a filesystem that is not this
 	// one: a remote-development URL, a UNC share.
 	ClassUnsupportedOrigin ErrClass = "unsupported_origin"
@@ -161,6 +163,8 @@ func ClassifyError(err error) ErrClass {
 		return ClassCloudPlaceholder
 	case errors.Is(err, ErrUserspaceFilesystem):
 		return ClassUserspaceFilesystem
+	case errors.Is(err, ErrNetworkFilesystem):
+		return ClassNetworkFilesystem
 	case errors.Is(err, ErrUnsupportedOrigin):
 		return ClassUnsupportedOrigin
 	case errors.Is(err, ErrNotContained):
@@ -345,4 +349,25 @@ func splitSafeComponents(relPath string) ([]string, error) {
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// ReadLinkBeneath reads the target of the symlink name inside the directory relDir, which is
+// relative to base. relDir is opened one component at a time with symlinks refused, exactly as
+// OpenBeneath opens it, and the link is then read relative to that open directory, so no
+// component on the way is followed and nothing outside base is consulted. The link itself is
+// read rather than followed. name must be a single path component.
+//
+// A path-based os.Lstat or os.Readlink is not equivalent: either resolves every intermediate
+// component on the way, so a symlinked parent redirects the lookup outside base and a parent
+// pointing at an unavailable mount blocks the call.
+func ReadLinkBeneath(base, relDir, name string) (string, error) {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+		return "", fmt.Errorf("%w: %q is not a single path component", ErrMalformedPath, name)
+	}
+	dir, err := OpenBeneath(base, relDir)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = dir.Close() }()
+	return readLinkAt(dir, name)
 }

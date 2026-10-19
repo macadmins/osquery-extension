@@ -22,6 +22,7 @@ go_library(
     importpath = "github.com/macadmins/osquery-extension/tables/mcp_servers",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/devclients",
         "//pkg/fsscan",
         "//pkg/redact",
         "//pkg/utils",
@@ -37,6 +38,7 @@ go_test(
         "approval_test.go",
         "command_test.go",
         "discover_integration_test.go",
+        "discover_junction_windows_test.go",
         "discover_symlink_unix_test.go",
         "mcp_servers_test.go",
         "mcp_test.go",

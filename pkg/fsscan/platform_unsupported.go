@@ -42,3 +42,7 @@ func isRefusedOrNotDirectory(error) bool {
 func checkDescriptor(*os.File, os.FileInfo, ReadOpts) error {
 	return nil
 }
+
+func readLinkAt(*os.File, string) (string, error) {
+	return "", errUnsupported
+}

@@ -3,7 +3,8 @@ package mcp_servers
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
+	"log"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -79,24 +80,15 @@ import (
 // of *names* with an allowlist of the *format* a name has: both of those basenames match
 // `^[A-Za-z0-9][A-Za-z0-9._+-]*$` and are published unchanged, while `API_KEY=xyz npx -y pkg`
 // does not, because a filename cannot contain an equals sign.
+//
+// The columns run in the order a reader needs them: the server, what it runs, whether it is
+// live, the file and user it was found for, and whether the listing is complete. The table
+// README's "Column order" section gives the reasoning; go_modules follows the same order.
 func MCPServersColumns() []table.ColumnDefinition {
 	return []table.ColumnDefinition{
-		table.TextColumn("user"),
-		table.TextColumn("user_id"),
-		table.TextColumn("source_path"),
-		table.TextColumn("source_context"),
-		table.TextColumn("client"),
 		table.TextColumn("server_name"),
+		table.TextColumn("client"),
 		table.TextColumn("transport"),
-		// Replaces the previous `command` column. Just the executable name,
-		// no args, no flags, no paths. Whitespace-embedded args are stripped
-		// before this is written, while a path that merely contains a space --
-		// `C:\Program Files\nodejs\npx.cmd` -- is not mistaken for a pair of
-		// them. command.go decides which of the two a field is.
-		table.TextColumn("command_basename"),
-		table.IntegerColumn("args_count"),
-		table.TextColumn("url_endpoint"),
-		table.TextColumn("env_keys"),
 		table.TextColumn("package_manager"),
 		table.TextColumn("package_name"),
 		table.TextColumn("requested_spec"),
@@ -107,6 +99,15 @@ func MCPServersColumns() []table.ColumnDefinition {
 		// feed needs and the old name hid.
 		table.TextColumn("pinned_version"),
 		table.TextColumn("confidence"),
+		// Replaces the previous `command` column. Just the executable name,
+		// no args, no flags, no paths. Whitespace-embedded args are stripped
+		// before this is written, while a path that merely contains a space --
+		// `C:\Program Files\nodejs\npx.cmd` -- is not mistaken for a pair of
+		// them. command.go decides which of the two a field is.
+		table.TextColumn("command_basename"),
+		table.IntegerColumn("args_count"),
+		table.TextColumn("url_endpoint"),
+		table.TextColumn("env_keys"),
 		table.IntegerColumn("disabled"),
 		// Whether a declared server is actually live. Claude Code treats a server in a
 		// project's .mcp.json as inert until approved, so `disabled = 0` on an unapproved
@@ -114,6 +115,14 @@ func MCPServersColumns() []table.ColumnDefinition {
 		// column: `disabled` means "the file said disabled", and folding approval into it
 		// would make one column mean different things depending on the client.
 		table.TextColumn("approval_state"),
+		table.TextColumn("source_path"),
+		table.TextColumn("source_context"),
+		table.TextColumn("user"),
+		// The uid column of osquery's users table, as core osquery's per-user tables publish it,
+		// so `JOIN users USING (uid)` works. On Windows osquery fills it with the last component
+		// of the SID, which two accounts can share; user_id holds the whole SID.
+		table.BigIntColumn("uid"),
+		table.TextColumn("user_id"),
 		// The completeness predicate. `WHERE scan_complete = 1` selects the rows whose
 		// source was listed in full by an enumeration that finished, which leaves `warning`
 		// purely descriptive. Before this there was no single predicate for the question:
@@ -143,9 +152,12 @@ func MCPServersGenerate(ctx context.Context, queryContext table.QueryContext, so
 // wifi_network and alt_system_info already use.
 func generate(ctx context.Context, queryContext table.QueryContext, clienter utils.OsqueryClienter) (rows []map[string]string, err error) {
 	defer func() {
-		if r := recover(); r != nil {
+		if recovered := recover(); recovered != nil {
+			// The panic value can quote a file the table was reading, so it is not logged and
+			// does not reach osquery. The stack names functions and offsets only.
+			log.Printf("mcp_servers: recovered from a panic\n%s", debug.Stack())
 			rows = nil
-			err = fmt.Errorf("mcp_servers panic: %v\n%s", r, debug.Stack())
+			err = errors.New("mcp_servers: internal error; the extension log has the stack")
 		}
 	}()
 
@@ -162,28 +174,9 @@ func generate(ctx context.Context, queryContext table.QueryContext, clienter uti
 }
 
 // userConstraint builds the set of usernames a query narrowed to, or nil to scan every home.
-//
-// Equality only, and *all* of it or none. An earlier version kept the equality values and
-// ignored any other operator in the same list, which can under-scan: QueryContext does not
-// carry enough of the original boolean structure to prove the equality subset is sufficient,
-// so `user = 'alice' OR user LIKE 'b%'` could be answered with alice's rows alone. Scanning
-// more than asked costs time; returning fewer rows than the query matches is a wrong answer.
+// See utils.EqualityConstraints for why a mixed operator list scans everything.
 func userConstraint(qc table.QueryContext) map[string]struct{} {
-	constraintList, ok := qc.Constraints["user"]
-	if !ok {
-		return nil
-	}
-	users := make(map[string]struct{})
-	for _, constraint := range constraintList.Constraints {
-		if constraint.Operator != table.OperatorEquals {
-			return nil
-		}
-		users[constraint.Expression] = struct{}{}
-	}
-	if len(users) == 0 {
-		return nil
-	}
-	return users
+	return utils.EqualityConstraints(qc, "user")
 }
 
 // serverToRow builds the emitted row, applying each column's allowlist.
@@ -299,6 +292,7 @@ func serverToRow(s Server) map[string]string {
 		// every realistic query filters on, so a grammar here would break the table's
 		// purpose to protect a value this package did not choose and cannot improve.
 		"user":    s.User,
+		"uid":     allowedUID(s.UID),
 		"user_id": userID,
 		// redactSecret, not redact.String, on every column a user's file can reach. It runs
 		// redact.String first and then catches the one opaque case the token shapes cannot:

@@ -273,3 +273,9 @@ func IsCloudPlaceholder(file *os.File) (bool, error) {
 	}
 	return info.FileAttributes&cloudPlaceholderFlags != 0, nil
 }
+
+// readLinkAt is not implemented on Windows. Its one caller resolves snap's revision pointer,
+// which exists only on Linux.
+func readLinkAt(*os.File, string) (string, error) {
+	return "", errUnsupported
+}

@@ -81,8 +81,7 @@ func recordVSCodeWorkspace(t *testing.T, home, fork, projectRel string) {
 	// The directory name under workspaceStorage is a generated hash; any stable string
 	// serves, since it is reached by listing rather than by a fixed path.
 	id := "ws-" + strings.ReplaceAll(projectRel, string(filepath.Separator), "-")
-	record := `{"folder":"file://` +
-		filepath.ToSlash(filepath.Join(home, projectRel)) + `"}`
+	record := `{"folder":"` + fileURL(filepath.Join(home, projectRel)) + `"}`
 	writeTestFile(t, filepath.Join(home,
 		appSupport(fork, "User", "workspaceStorage", id, "workspace.json")), record)
 }

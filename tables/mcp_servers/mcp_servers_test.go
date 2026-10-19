@@ -969,3 +969,22 @@ func TestASharedHomeIsReportedForBothAccountsAfterTheBudgetIsGone(t *testing.T) 
 		}
 	}
 }
+
+// panickingClienter panics with a value that quotes input, as a parser panic can.
+type panickingClienter struct{}
+
+func (panickingClienter) NewOsqueryClient() (utils.OsqueryClient, error) {
+	panic("unexpected token in TOKEN=opaqueSecret")
+}
+
+// TestAPanicReachesOsqueryAsFixedText: a panic is recovered into an error, and the panic value,
+// which can quote a file the table was reading, does not reach osquery.
+func TestAPanicReachesOsqueryAsFixedText(t *testing.T) {
+	rows, err := generate(context.Background(), table.QueryContext{}, panickingClienter{})
+	if err == nil || rows != nil {
+		t.Fatalf("rows = %v, err = %v; want no rows and an error", rows, err)
+	}
+	if strings.Contains(err.Error(), "opaqueSecret") || strings.Contains(err.Error(), "goroutine") {
+		t.Errorf("the error carries the panic value or the stack: %q", err)
+	}
+}

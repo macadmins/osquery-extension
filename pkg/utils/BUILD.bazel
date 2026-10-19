@@ -3,6 +3,7 @@ load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "utils",
     srcs = [
+        "constraints.go",
         "exec.go",
         "exec_mocks.go",
         "osquery.go",
@@ -11,18 +12,23 @@ go_library(
     ],
     importpath = "github.com/macadmins/osquery-extension/pkg/utils",
     visibility = ["//visibility:public"],
-    deps = ["@com_github_osquery_osquery_go//:osquery-go"],
+    deps = [
+        "@com_github_osquery_osquery_go//:osquery-go",
+        "@com_github_osquery_osquery_go//plugin/table",
+    ],
 )
 
 go_test(
     name = "utils_test",
     srcs = [
+        "constraints_test.go",
         "exec_test.go",
         "osquery_test.go",
         "utils_test.go",
     ],
     embed = [":utils"],
     deps = [
+        "@com_github_osquery_osquery_go//plugin/table",
         "@com_github_stretchr_testify//assert",
         "@com_github_stretchr_testify//require",
     ],

@@ -82,11 +82,11 @@ Project-local files are found by reading the list of projects a client already m
 
 | Origin | Source | What is read |
 |---|---|---|
-| `claude_json` | `.claude.json` → `projects` | the key, `enabledMcpjsonServers`, `disabledMcpjsonServers` |
+| `claude_json` | `.claude.json` → `projects` | the key, `enabledMcpjsonServers`, `disabledMcpjsonServers`, `hasTrustDialogAccepted` |
 | `codex_toml` | `.codex/config.toml` → `[projects."…"]` | the key and `trust_level` |
 | `vscode_workspace` | `<appsupport>/<fork>/User/workspaceStorage/*/workspace.json` | the `folder` field |
 
-Four things are read from a Claude project entry — the key, the two server-name arrays, and `hasTrustDialogAccepted`, which decides whether a repository-provided `.claude/settings.json` in that project is eligible to approve anything. The count is stated because it is a hard rule rather than a minimisation: the same object carries `lastSessionFirstPrompt`, the literal text of the last thing the user typed at the client. The code decodes into a struct naming only those two arrays, which cannot reach it, and a test asserts the property from the outside.
+Four things are read from a Claude project entry — the key, the two server-name arrays, and `hasTrustDialogAccepted`, which decides whether a repository-provided `.claude/settings.json` in that project is eligible to approve anything. The count is stated because it is a hard rule rather than a minimization: the same object carries `lastSessionFirstPrompt`, the literal text of the last thing the user typed at the client. The code decodes into a struct naming only the two arrays and `hasTrustDialogAccepted`, which cannot reach it, and a test asserts the property from the outside.
 
 Codex's `trust_level` is read from its project table for the same reason and under the same rule: it is a closed enum rather than free text, it decides whether that project's `.codex/config.toml` is consulted at all, and nothing else in the table is decoded.
 
@@ -209,28 +209,29 @@ Reads also refuse a file with more than one hard link. **This can drop rows on a
 
 ## Columns
 
-Twenty columns.
+Twenty-one columns, in the order a query writer needs them: the server, what it runs, whether it is live, the file and user it was found for, and whether the listing is complete. Core osquery's package tables lead with the item the same way (`npm_packages` and `vscode_extensions` start with `name`), and `SELECT *`, `.mode line` and fleet consoles show columns in declared order, so `package_name` and `url_endpoint`, the values a hunt filters on, come before the file and user columns. `go_modules` follows the same order.
 
 | Column | Meaning | Format enforced |
 |---|---|---|
-| `user` | Account name, from osquery's `users` table | none — it is the join key |
-| `user_id` | uid on POSIX, SID on Windows | `^(S-1-[0-9-]+\|[0-9]+)$` |
-| `source_path` | Absolute path of the file the row came from | structural only (see below) |
-| `source_context` | Where in the file the server was declared | closed token set, or `projects[P].mcpServers` with `P` contained |
-| `client` | Which client owns the configuration | closed set |
 | `server_name` | The name the configuration gives the server | redaction, with a placeholder fallback |
+| `client` | Which client owns the configuration | closed set |
 | `transport` | `stdio` \| `http` \| `sse` \| `unknown` | closed set |
-| `command_basename` | Executable name only — no directories, no arguments | `^[A-Za-z0-9][A-Za-z0-9._+-]*$`, ≤ 64 bytes |
-| `args_count` | Length of the `args` array as written | integer |
-| `url_endpoint` | Scheme and host only | scheme in `{http,https,ws,wss}`, host hostname-shaped or bracketed IPv6 |
-| `env_keys` | JSON array of variable **names**; values are never read | each `^[A-Za-z_][A-Za-z0-9_]*$` |
 | `package_manager` | `npx`, `uvx`, `docker`, `mcp-remote`, … | closed set |
 | `package_name` | The package the launcher installs | npm/PyPI or Docker name grammar |
 | `requested_spec` | The spec as written, including any pin | package spec, Docker ref, or a validated endpoint |
 | `pinned_version` | The version **the configuration pins** | `^[A-Za-z0-9][A-Za-z0-9.+_~*-]*$` or `sha256:<64 hex>` |
 | `confidence` | `low` \| `medium` \| `high` | closed set |
+| `command_basename` | Executable name only — no directories, no arguments | `^[A-Za-z0-9][A-Za-z0-9._+-]*$`, ≤ 64 bytes |
+| `args_count` | Length of the `args` array as written | integer |
+| `url_endpoint` | Scheme and host only | scheme in `{http,https,ws,wss}`, host hostname-shaped or bracketed IPv6 |
+| `env_keys` | JSON array of variable **names**; values are never read | each `^[A-Za-z_][A-Za-z0-9_]*$` |
 | `disabled` | `1` when the configuration file says disabled | integer |
 | `approval_state` | `enabled` \| `not_approved` \| `disabled` \| `unknown` \| `not_applicable` | closed set |
+| `source_path` | Absolute path of the file the row came from | structural only (see below) |
+| `source_context` | Where in the file the server was declared | closed token set, or `projects[P].mcpServers` with `P` contained |
+| `user` | Account name, from osquery's `users` table | none — it is the join key |
+| `uid` | The `uid` column of osquery's `users` table, as core osquery's per-user tables publish it; on Windows osquery fills it with the last component of the SID, which two accounts can share, so `user_id` stays the identity to correlate on | integer |
+| `user_id` | uid on POSIX, SID on Windows | `^(S-1-[0-9-]+\|[0-9]+)$` |
 | `scan_complete` | `1` when this row's source was listed in full by an enumeration that finished | integer |
 | `warning` | What was not listed, and why | built from a closed catalogue |
 
@@ -260,7 +261,100 @@ What does **not** make a row incomplete is the table's own scope boundary. A rec
 
 That is not fastidiousness. Four columns were built by concatenating an error message, and both parsers quote the input they failed on: BurntSushi's `ParseError.Message` carries `found "…"`, so an `env = { TOKEN = abc123 }` put the token in the column verbatim, and `encoding/json` names the offending value. What is read instead is position — a line number from TOML, a byte offset from JSON — because those are integers, they are what an operator needs to go and look, and neither can carry a secret. TOML's `LastKey` is also user bytes, since the format permits quoted keys, so it passes the identifier grammar before being reported.
 
-Codes group as: roster and per-account omissions; one home's enumeration (budget, cancellation, unreadable home, AppData, profile and project lists); one source file (unreadable, over cap, parse failure, entries skipped); and one column of one row dropped by its allowlist. Only the last group leaves `scan_complete` at `1`, because a dropped column means one field of a listed server is empty rather than a server being missing.
+### Warning codes
+
+Every `warning` value is one sentence from `warnSentences` in `warnings.go`, followed by details in brackets, such as `[count=4]` or `[reason=denied]`. The code names below are the identifiers this documentation and the source use; the column publishes the sentence, so a query selects a kind of warning with `LIKE` on the sentence's opening words. A warning either sits on a server row, about that row, or is a diagnostic row of its own, which always reads `scan_complete = 0`. A server row carries at most one warning, and a finding that rows are missing takes precedence over a dropped column. Each code's effect on `scan_complete` is its scope, set in `scope()` in `warnings.go`, and a code with no scope is treated as home scope.
+
+| Detail | What it holds |
+| --- | --- |
+| `count=` | how many entries, projects, plugins or keys the warning is about |
+| `limit=` | the cap a count or size was measured against |
+| `line=` | a line number from the TOML parser |
+| `offset=` | a byte offset from the JSON parser |
+| `reason=` | the failure type, from `pkg/fsscan`'s closed set, such as `denied` or `hard_link` |
+| `shape=` | what defeated the parser: `unterminated_block_comment`, `top_level_is_not_an_object`, `envelope_present_but_undecodable`, `value_has_the_wrong_type` or `unrecognised` |
+| `value=` | a JSON value kind: `string`, `number`, `bool`, `array`, `object` or `null` |
+| `key=` | a configuration key that passed `^[A-Za-z_][A-Za-z0-9_.-]*$` and is at most 64 characters |
+
+**About a user that was not scanned.** These come from the roster or from the first checks on a home. The user has no server rows, so the row is the whole answer for that user.
+
+| Code | Sentence | Details |
+| --- | --- | --- |
+| `roster_unreachable` | osquery could not be reached to list user accounts, so no account's configuration was inspected | none |
+| `roster_query_failed` | the osquery users table could not be read, so no account could be confirmed or ruled out | none |
+| `roster_account_unnamed` | the roster returned an account with no username, so it could not be attributed or inspected and this account may be it | none |
+| `account_not_in_roster` | no account of this name is in the roster osquery returned, so nothing was scanned for it: the name may be misspelled, the account may have been removed, or it may be one the roster does not enumerate | none |
+| `account_non_login` | this account cannot log in, so it was not inspected and keeps no editor or agent configuration | none |
+| `account_no_home_declared` | this account declares no home directory, so there was nowhere to look | none |
+| `account_home_missing` | the home directory this account declares does not exist, which may mean it is offline rather than absent, so its configuration is not listed | none |
+| `account_home_unstattable` | this account's home directory could not be inspected, so its configuration is not listed | none |
+| `account_home_redirected` | this account's home directory is a symlink or reparse point, which is not followed, so its configuration is not listed | none |
+| `account_home_not_directory` | the home directory this account declares is not a directory, so its configuration is not listed | none |
+| `accounts_home_unusable` | accounts with no usable home directory were not inspected; query a specific user to see which | `count=` |
+| `home_unreadable` | this account's home directory could not be opened, so none of its configuration is listed | `reason=` |
+| `budget_exhausted_before_home` | the query budget was exhausted before this account was scanned, so none of its configuration is listed | none |
+| `cancelled_before_home` | the query was cancelled before this account was scanned, so none of its configuration is listed | none |
+| `budget_exhausted_opening_home` | the query budget was exhausted opening this account's home directory, so none of its configuration is listed | none |
+
+**About one user's scan: every row for that user reads `scan_complete = 0`.** Home scope. The user's enumeration is short, so every row for that user is marked incomplete, including rows from files that were read in full.
+
+| Code | Sentence | Details |
+| --- | --- | --- |
+| `budget_exhausted_during_home` | the query budget was exhausted part way through this account, so some of its configuration may not be listed | none |
+| `cancelled_during_home` | the query was cancelled part way through this account, so some of its configuration may not be listed | none |
+| `appdata_undetermined` | the roaming application data location could not be determined for this account, so its editor and agent configuration may not be listed; the conventional location was inspected instead | none |
+| `appdata_redirected_outside_profile` | roaming application data for this account is redirected outside the profile, which is not inspected, so its editor and agent configuration is not listed | none |
+| `profile_directory_unreadable` | a per-profile configuration directory could not be listed, so any profile-scoped servers in it are not listed | `reason=`, or `count=` and `limit=` when the directory holds more than this scan lists |
+| `project_list_unreadable` | the list of projects this client records could not be read, so no project-local configuration was found for it | none |
+| `project_list_truncated` | the list of projects this client records was longer than this scan will follow, so projects past the limit were not inspected | `count=`, `limit=` |
+| `project_cloud_placeholder` | recorded projects are held by a cloud storage provider and were not inspected, because reading them would download their contents | `count=` |
+| `project_userspace_filesystem` | recorded projects are on a filesystem implemented in userspace, where a read may fetch their contents on demand, and were not inspected | `count=` |
+| `project_read_refused` | a project configuration file was refused by a safety check rather than being absent, so it exists and was deliberately not read | `reason=` |
+| `project_trust_unknown` | the trust state of recorded projects could not be read, and project-scoped configuration is only loaded for trusted projects, so any servers they declare are not listed | `count=` |
+| `workspace_list_unreadable` | an editor's workspace list could not be read, so the projects it records and any configuration in them are not listed | `reason=` |
+| `workspace_list_truncated` | an editor's workspace list held more entries than this scan reads, so projects past the limit are not inspected | `count=`, `limit=` |
+| `workspace_record_unreadable` | workspace records exist and could not be read, so the projects they name and any configuration in them are not listed | `count=` |
+| `workspace_record_malformed` | workspace records could not be parsed, so the projects they name and any configuration in them are not listed | `count=` |
+| `plugin_list_unreadable` | the installed plugin directory could not be listed, so any servers declared by plugins are not listed | `reason=` |
+| `plugin_list_truncated` | more installed plugins were found than this scan will probe, so servers declared by plugins past the limit are not listed | `count=`, `limit=` |
+| `plugin_settings_unreadable` | the settings recording which plugins are enabled could not be read, so plugin-declared servers are listed with an unknown approval state | `reason=` when the file could not be read; none when it could not be parsed |
+| `plugin_records_unreadable` | the plugin installation records could not be read, so it is not known which installed version the client would load | `reason=` when the file could not be read; none when it could not be parsed |
+| `plugin_manifest_unreadable` | a plugin manifest exists and could not be read, so any MCP servers it declares are not listed | `reason=` when the file could not be read; none when it could not be parsed |
+| `plugin_manifest_unsupported` | a plugin manifest declares MCP servers in a bundle or at a URL, which this table does not unpack or fetch, so they are not listed | `count=` |
+| `plugin_manifest_truncated` | a plugin manifest declares more MCP configuration sources than this table will read, so some of its servers are not listed | `count=`, `limit=` |
+| `plugin_manifest_missing_source` | a plugin manifest names an MCP configuration file that could not be read, so any servers it declares are not listed | `reason=` |
+| `plugin_manifest_invalid_declaration` | a plugin manifest declares MCP servers with a value of a type the field does not accept, so that declaration was not read | `count=` |
+
+**About one source file: that file's rows read `scan_complete = 0`.** Source scope. `source_path` names the file. `plugin_declaration_shadowed` sits on the server rows it qualifies; the others are diagnostic rows.
+
+| Code | Sentence | Details |
+| --- | --- | --- |
+| `source_unreadable` | this configuration file could not be read, so any servers it declares are not listed | `reason=` |
+| `source_too_large` | this configuration file is larger than the limit this scan reads, so the servers it declares are not listed | `limit=` |
+| `parse_failed` | this configuration file could not be parsed, so the servers it declares are not listed | TOML: `line=` and `key=`; JSON: `offset=`, with `shape=value_has_the_wrong_type`, `key=` and `value=` for a value of the wrong type; otherwise `shape=` |
+| `entries_skipped` | server entries in this file could not be decoded and are not listed | `count=` |
+| `plugin_declaration_shadowed` | a higher-precedence declaration for this server could not be read, so this definition may not be the one the client loads | none |
+
+**Descriptive: `scan_complete` is unchanged.** These describe what the table reads, or a field left empty on a server that is still listed. The column drops, `env_*`, `identity_dropped`, `unknown_launcher_option` and the two plugin-selection codes sit on the server row they describe; the project counts are rows of their own.
+
+| Code | Sentence | Details |
+| --- | --- | --- |
+| `project_outside_home` | recorded projects lie outside this account's home and were not inspected | `count=` |
+| `project_remote_origin` | recorded projects are on another host rather than this filesystem and were not inspected | `count=` |
+| `project_path_malformed` | recorded project locations were not usable absolute paths and were not inspected | `count=` |
+| `project_untrusted` | recorded projects are marked untrusted by their client, which does not load project-scoped configuration for them, so any servers they declare are not listed | `count=` |
+| `approval_settings_unreadable` | a settings file recording which project servers are approved exists and could not be used, so the approval state of the servers it governs is reported as unknown rather than guessed | `key=` naming the settings file, with `reason=` when it could not be read or the parse details when it could not be parsed |
+| `plugin_version_superseded` | a plugin version is present in the cache but is not the installation the client would load, so its servers may be from a superseded release | `count=` |
+| `plugin_selection_unknown` | it could not be established whether this cached plugin version is the installation the client would load | none |
+| `command_basename_dropped` | the command name in this entry did not match the format this column records and was dropped | none |
+| `server_name_unrepresentable` | this server's name could not be published safely and has been replaced with a placeholder naming the file it came from | none |
+| `source_context_path_dropped` | the project path in this entry's location could not be published and was dropped, leaving the section name | none |
+| `url_endpoint_dropped` | the endpoint in this entry did not match the format this column records and was dropped | none |
+| `env_key_dropped` | environment variable names in this entry did not match the format this column records and were dropped | `count=` |
+| `env_header_literal_value` | this entry supplies an HTTP header value literally rather than naming an environment variable, so the configuration file itself holds the credential | `count=` |
+| `identity_dropped` | the package this entry launches could not be identified unambiguously, so the package columns are empty rather than guessed | none |
+| `user_id_dropped` | the account identity the roster supplied was not in a recognised form and was dropped | none |
+| `unknown_launcher_option` | this entry passes an option this table does not recognise to its launcher, so the package columns are empty rather than guessed: an unrecognised option may or may not consume the value after it | none |
 
 ### The redaction contract, and what it does not cover
 

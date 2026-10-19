@@ -78,6 +78,11 @@ func defaultUsersRoot() string {
 type UserHome struct {
 	Name string
 	ID   string
+	// UID is the uid column of osquery's users table as it reported it: the uid on macOS and
+	// Linux, and on Windows the last component of the SID, which osquery puts there. It is the
+	// value core osquery's per-user tables publish as uid, so a query can join on it; ID stays
+	// the identity this package keys on, because on Windows two accounts can share that number.
+	UID  string
 	Path string
 }
 
@@ -136,19 +141,6 @@ type Omission struct {
 	// asked, so it aggregates these when nobody did and reports them individually when
 	// someone did.
 	HomeUnusable bool
-}
-
-// Warning renders this omission for the diagnostic row a caller emits in its place.
-func (o Omission) Warning() string {
-	who := o.Name
-	if who == "" {
-		who = o.ID
-	}
-	if who == "" {
-		who = "an account"
-	}
-	return fmt.Sprintf("user home for %q was not inspected (%s), so this account's "+
-		"configuration is not listed", who, o.Reason)
 }
 
 // UserHomes is the result of enumerating user homes: the homes found, the accounts that were
@@ -358,7 +350,7 @@ func homesFromUsers(rows []map[string]string, filter map[string]struct{},
 				HomeUnusable: true})
 			continue
 		}
-		result.Homes = append(result.Homes, UserHome{Name: name, ID: accountID(row), Path: home})
+		result.Homes = append(result.Homes, UserHome{Name: name, ID: accountID(row), UID: row["uid"], Path: home})
 	}
 	return result
 }

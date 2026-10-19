@@ -333,11 +333,11 @@ func TestVSCodeWorkspaceProjects(t *testing.T) {
 	storage := filepath.Join(home, appSupport("Code", "User", "workspaceStorage"))
 	// A generated directory name, which is why this needs a listing rather than a path.
 	writeTestFile(t, filepath.Join(storage, "a1b2c3d4", "workspace.json"),
-		`{"folder":"file://`+filepath.ToSlash(filepath.Join(home, "code", "repo"))+`"}`)
+		`{"folder":"`+fileURL(filepath.Join(home, "code", "repo"))+`"}`)
 	// A multi-root workspace records `workspace`, not `folder`. Only `folder` is read, and
 	// this entry is therefore skipped rather than guessed at.
 	writeTestFile(t, filepath.Join(storage, "e5f6a7b8", "workspace.json"),
-		`{"workspace":"file://`+filepath.ToSlash(filepath.Join(home, "multi.code-workspace"))+`"}`)
+		`{"workspace":"`+fileURL(filepath.Join(home, "multi.code-workspace"))+`"}`)
 	// A remote workspace, which names a filesystem that is not this one.
 	writeTestFile(t, filepath.Join(storage, "c9d0e1f2", "workspace.json"),
 		`{"folder":"vscode-remote://ssh-remote%2Bbox/home/alice/p"}`)
@@ -405,4 +405,16 @@ func TestListCappedUsesThePartialListing(t *testing.T) {
 		t.Errorf("an absent directory came back as (%d names, truncated=%v, err=%v)",
 			len(names), truncated, err)
 	}
+}
+
+// fileURL renders a path the way VS Code records a workspace folder: file:///Users/alice/x on
+// POSIX and file:///C:/Users/alice/x on Windows, where the drive letter follows a third slash.
+// Joining "file://" to a Windows path directly gives file://C:/..., whose host is "C:", which
+// the reader correctly refuses as a remote location.
+func fileURL(path string) string {
+	slashed := filepath.ToSlash(path)
+	if !strings.HasPrefix(slashed, "/") {
+		slashed = "/" + slashed
+	}
+	return "file://" + slashed
 }

@@ -221,6 +221,19 @@ func allowedIdentity(name, spec, version string) (outName, outSpec, outVersion s
 // format is completely known, so there is no reason to publish anything else.
 var userIDRe = regexp.MustCompile(`^(S-1-[0-9-]+|[0-9]+)$`)
 
+// uidRe is the form of a uid: an integer. macOS reports some system accounts' uids as negative
+// numbers.
+var uidRe = regexp.MustCompile(`^-?[0-9]+$`)
+
+// allowedUID returns candidate if it is an integer, and "" otherwise. Like the user_id gate,
+// cheap and complete: the value comes from osquery's users table and its format is known.
+func allowedUID(candidate string) string {
+	if !uidRe.MatchString(candidate) {
+		return ""
+	}
+	return candidate
+}
+
 func allowedUserID(candidate string) (string, bool) {
 	if candidate == "" {
 		return "", false

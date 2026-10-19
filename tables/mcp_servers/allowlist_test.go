@@ -287,6 +287,22 @@ func TestColumnAllowlists(t *testing.T) {
 		}
 	})
 
+	t.Run("uid", func(t *testing.T) {
+		for candidate, want := range map[string]string{
+			"501": "501", "0": "0", "-2": "-2", "S-1-5-21-1": "", "not-a-uid": "", "": "",
+		} {
+			if got := allowedUID(candidate); got != want {
+				t.Errorf("allowedUID(%q) = %q, want %q", candidate, got, want)
+			}
+		}
+		rows := stampUserID([]Server{{}, {UserID: "kept"}}, "S-1-5-21-1-2-3-1001", "1001")
+		for _, row := range rows {
+			if row.UserID != "S-1-5-21-1-2-3-1001" || row.UID != "1001" {
+				t.Errorf("stampUserID left %+v, want the SID and the uid on every row", row)
+			}
+		}
+	})
+
 	t.Run("user_id", func(t *testing.T) {
 		for candidate, want := range map[string]string{
 			"501": "501", "0": "0",
@@ -337,8 +353,8 @@ func TestEveryProducibleEnumValueIsAllowed(t *testing.T) {
 		}
 	}
 	for _, fork := range vscodeFamily {
-		if _, ok := allowedClients[fork.client]; !ok {
-			t.Errorf("vscodeFamily client %q is not in allowedClients", fork.client)
+		if _, ok := allowedClients[fork.Client]; !ok {
+			t.Errorf("vscodeFamily client %q is not in allowedClients", fork.Client)
 		}
 	}
 	// package_manager: every launcher the identity table dispatches, plus the remote

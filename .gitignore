@@ -8,3 +8,4 @@ coverage/*
 version_config.go
 cover.out
 .claude/settings.local.json
+.idea/

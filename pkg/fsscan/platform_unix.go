@@ -105,3 +105,20 @@ func checkDescriptor(_ *os.File, info os.FileInfo, opts ReadOpts) error {
 	}
 	return nil
 }
+
+// readLinkAt reads the target of the symlink name inside dir, without following any link.
+// name must be a single component. It fails with EINVAL when name is not a symlink.
+func readLinkAt(dir *os.File, name string) (string, error) {
+	// A target longer than the buffer is reported as an error rather than truncated: every
+	// caller compares the target against a narrow expected form, and a truncated target could
+	// match one the full target does not.
+	buf := make([]byte, 256)
+	size, err := unix.Readlinkat(int(dir.Fd()), name, buf)
+	if err != nil {
+		return "", &os.PathError{Op: "readlinkat", Path: name, Err: err}
+	}
+	if size >= len(buf) {
+		return "", &os.PathError{Op: "readlinkat", Path: name, Err: syscall.ENAMETOOLONG}
+	}
+	return string(buf[:size]), nil
+}
