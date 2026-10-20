@@ -123,17 +123,27 @@ func readShellFolder(root registry.Key, path string) (string, bool) {
 // the account does not keep it. Resolving them needs that account's environment, which this
 // file cannot read, so they are left unexpanded and the guard below reports the location as
 // undetermined.
+//
+// %USERPROFILE% is substituted only as a prefix, where Windows writes it, by comparing that
+// prefix ignoring case, so the index is into the value itself; an index found in an uppercased
+// copy is off by however many bytes uppercasing added or removed before it, as ı does. A value
+// that is not absolute, or that holds "..", is refused before filepath.Clean, which would
+// resolve the ".." away, as every other path in this package is.
 func expandProfileVars(raw, profileDir string) string {
+	const name = "%USERPROFILE%"
 	expanded := raw
-	for _, name := range []string{"%USERPROFILE%"} {
-		if idx := strings.Index(strings.ToUpper(expanded), name); idx >= 0 {
-			expanded = expanded[:idx] + profileDir + expanded[idx+len(name):]
-		}
+	if len(expanded) >= len(name) && strings.EqualFold(expanded[:len(name)], name) {
+		expanded = profileDir + expanded[len(name):]
 	}
 	// Anything still unexpanded is a variable this does not know how to resolve for another
 	// account; guessing would be worse than reporting the location as undetermined.
-	if strings.Contains(expanded, "%") {
+	if strings.Contains(expanded, "%") || !filepath.IsAbs(expanded) {
 		return ""
+	}
+	for _, part := range strings.FieldsFunc(expanded, isPathSeparator) {
+		if part == ".." {
+			return ""
+		}
 	}
 	return filepath.Clean(expanded)
 }

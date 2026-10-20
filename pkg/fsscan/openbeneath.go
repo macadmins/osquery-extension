@@ -336,6 +336,49 @@ func isPathSeparator(r rune) bool {
 	return r < 0x80 && os.IsPathSeparator(byte(r))
 }
 
+// The Windows file attributes providerReparsePoint reads, written out rather than taken from
+// golang.org/x/sys/windows so the rule is tested on every host.
+const (
+	fileAttributeDirectory          = 0x10     // FILE_ATTRIBUTE_DIRECTORY
+	fileAttributeOffline            = 0x1000   // FILE_ATTRIBUTE_OFFLINE
+	fileAttributeRecallOnOpen       = 0x40000  // FILE_ATTRIBUTE_RECALL_ON_OPEN
+	fileAttributeRecallOnDataAccess = 0x400000 // FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
+)
+
+// providerReparsePoint reports whether a path component Windows reports as a reparse point was
+// placed by a storage provider rather than being a link, from the mode and attributes
+// os.Root.Lstat returned for it, without opening it. Both are refused; a provider's is reported
+// as stored with a cloud provider, and a link stays a silent refusal.
+//
+// Go gives every reparse point other than a symbolic link, a socket or a deduplicated file
+// os.ModeIrregular, and sets os.ModeDir on one only when its tag is not a name surrogate. A
+// junction is a name surrogate and always a directory, so a reparse point that has ModeDir, or
+// that is not a directory, is a provider's: a Cloud Files placeholder or synced file, a ProjFS
+// file, a file an HSM moved offline, or a file WOF compressed, which is reported the same way.
+// A recall or offline attribute says the content is not local whatever the component's shape.
+func providerReparsePoint(mode os.FileMode, attributes uint32) bool {
+	if mode&os.ModeSymlink != 0 || mode&os.ModeIrregular == 0 {
+		return false
+	}
+	if attributes&(fileAttributeRecallOnOpen|fileAttributeRecallOnDataAccess|fileAttributeOffline) != 0 {
+		return true
+	}
+	return mode.IsDir() || attributes&fileAttributeDirectory == 0
+}
+
+// listedKind is the type a directory listing gives an entry, from the mode Go derives and the
+// Windows attributes. A provider's reparse point that is not a directory, such as a Cloud Files
+// or WOF-compressed file, is the file it holds, so the listing skips it as a file rather than
+// counting it as a refused link; a junction, a symbolic link and a provider's directory keep
+// their type.
+func listedKind(mode os.FileMode, attributes uint32) os.FileMode {
+	kind := mode.Type()
+	if providerReparsePoint(mode, attributes) && attributes&fileAttributeDirectory == 0 {
+		kind &^= os.ModeIrregular
+	}
+	return kind
+}
+
 func splitSafeComponents(relPath string) ([]string, error) {
 	if filepath.IsAbs(relPath) {
 		return nil, errors.New("openbeneath: absolute path not permitted")

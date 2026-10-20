@@ -452,6 +452,41 @@ func TestWhatCountsAsAGoWorkspace(t *testing.T) {
 	}
 }
 
+// TestAGoWorkLinkToAProviderHeldTargetIsCounted: a followed go.work link whose target is refused
+// as a storage provider's reparse point counts, because the link shows the project is a
+// workspace.
+func TestAGoWorkLinkToAProviderHeldTargetIsCounted(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "alice")
+	project := filepath.Join(home, "svc")
+	testutil.WriteFile(t, filepath.Join(home, "shared", "shared.work"), "go 1.25\n\nuse .\n")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(home, "shared", "shared.work"), filepath.Join(project, "go.work")); err != nil {
+		t.Fatal(err)
+	}
+	claudeList(t, home, project)
+	saved := openGoWork
+	t.Cleanup(func() { openGoWork = saved })
+	target := filepath.Join("shared", "shared.work")
+	opened := false
+	openGoWork = func(base, rel string) (*os.File, error) {
+		if rel == target {
+			opened = true
+			return nil, fsscan.ErrCloudPlaceholder
+		}
+		return saved(base, rel)
+	}
+	got := warnings(run(t, roster(map[string]string{"alice": home}), table.QueryContext{}))
+	if !opened {
+		t.Fatal("the link was not followed to its target")
+	}
+	if len(got) != 1 || !strings.HasPrefix(got[0], warnSentences[warnWorkspaceUnsupported]) ||
+		!strings.Contains(got[0], "count=1") {
+		t.Errorf("warnings = %v, want one go_workspace_unsupported row with count=1", got)
+	}
+}
+
 // TestAnInHomeSymlinkedProjectListIsFollowed: a ~/.claude.json or ~/.codex/config.toml that a
 // dotfile manager links to a file in the same home is read as that file, so the projects it
 // records are listed and no list is reported lost. A link out of the home is still refused and

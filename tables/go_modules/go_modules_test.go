@@ -788,27 +788,32 @@ func TestTheAgentListsRespectTheBudget(t *testing.T) {
 	}
 }
 
-// TestProjectsStoredElsewhereAreCounted: a project in a cloud provider's folder, a project on a
-// network filesystem, and a project with a module file whose content is not on this disk are
-// each counted into one descriptive row and not read. The project stored locally is listed and
-// stays complete.
+// TestProjectsStoredElsewhereAreCounted: a project in a cloud provider's folder, a project whose
+// directory a provider holds, a project on a network filesystem, and a project with a module
+// file whose content is not on this disk are each counted into one descriptive row and not read.
+// The project stored locally is listed and stays complete.
 func TestProjectsStoredElsewhereAreCounted(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "alice")
 	local := filepath.Join(home, "local")
 	cloudFolder := filepath.Join(home, "cloud")
+	held := filepath.Join(home, "held")
 	network := filepath.Join(home, "network")
 	evicted := filepath.Join(home, "evicted")
-	for _, project := range []string{local, cloudFolder, network, evicted} {
+	for _, project := range []string{local, cloudFolder, held, network, evicted} {
 		testutil.WriteFile(t, filepath.Join(project, "go.mod"), "module x\n\nrequire github.com/"+filepath.Base(project)+"/dep v1.0.0\n")
 	}
-	claudeList(t, home, local, cloudFolder, network, evicted)
+	claudeList(t, home, local, cloudFolder, held, network, evicted)
 
 	savedCloud, savedProbe, savedPlaceholder := underCloudStorage, probeProject, cloudPlaceholder
 	t.Cleanup(func() { underCloudStorage, probeProject, cloudPlaceholder = savedCloud, savedProbe, savedPlaceholder })
 	underCloudStorage = func(rel string) bool { return rel == "cloud" }
 	probeProject = func(home, rel string) error {
-		if rel == "network" {
+		switch rel {
+		case "network":
 			return fsscan.ErrNetworkFilesystem
+		case "held":
+			// What the probe reports on Windows for a directory that is a provider's reparse point.
+			return fsscan.ErrCloudPlaceholder
 		}
 		return savedProbe(home, rel)
 	}
@@ -824,8 +829,8 @@ func TestProjectsStoredElsewhereAreCounted(t *testing.T) {
 	sort.Strings(got)
 	if len(got) != 2 || !strings.HasPrefix(got[0], warnSentences[warnProjectOnNetworkFS]) ||
 		!strings.Contains(got[0], "count=1") || !strings.HasPrefix(got[1], warnSentences[warnProjectInCloudStorage]) ||
-		!strings.Contains(got[1], "count=2") {
-		t.Errorf("warnings = %v, want one network row with count=1 and one cloud row with count=2", got)
+		!strings.Contains(got[1], "count=3") {
+		t.Errorf("warnings = %v, want one network row with count=1 and one cloud row with count=3", got)
 	}
 	for _, r := range rows {
 		if r["module_path"] != "" && r["scan_complete"] != "1" {
@@ -872,6 +877,43 @@ func TestAWorkspaceIsReported(t *testing.T) {
 	for _, r := range rows {
 		if r["module_path"] != "" && r["scan_complete"] != "1" {
 			t.Errorf("a workspace count marked a module row incomplete: %v", r)
+		}
+	}
+}
+
+// TestAProviderHeldGoWorkIsCounted: a go.work that Windows refuses as a storage provider's
+// reparse point exists, so it is counted unopened, whether its root has a go.mod or not, and the
+// root module is still listed.
+func TestAProviderHeldGoWorkIsCounted(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "alice")
+	workspaceOnly := filepath.Join(home, "mono")
+	workspaceAndModule := filepath.Join(home, "mixed")
+	plain := filepath.Join(home, "plain")
+	testutil.WriteFile(t, filepath.Join(workspaceOnly, "go.work"), "go 1.25\n\nuse ./svc\n")
+	testutil.WriteFile(t, filepath.Join(workspaceAndModule, "go.work"), "go 1.25\n\nuse .\n")
+	testutil.WriteFile(t, filepath.Join(workspaceAndModule, "go.mod"), "module x\n\nrequire github.com/mixed/dep v1.0.0\n")
+	testutil.WriteFile(t, filepath.Join(plain, "go.mod"), "module y\n\nrequire github.com/plain/dep v1.0.0\n")
+	claudeList(t, home, workspaceOnly, workspaceAndModule, plain)
+	saved := openGoWork
+	t.Cleanup(func() { openGoWork = saved })
+	openGoWork = func(base, rel string) (*os.File, error) {
+		if _, err := os.Lstat(filepath.Join(base, rel)); err != nil {
+			return saved(base, rel)
+		}
+		return nil, fsscan.ErrCloudPlaceholder
+	}
+
+	rows := run(t, roster(map[string]string{"alice": home}), table.QueryContext{})
+	if got := modules(rows); len(got) != 2 {
+		t.Errorf("modules = %v, want the mixed and plain projects' requirements", got)
+	}
+	if got := warnings(rows); len(got) != 1 || !strings.HasPrefix(got[0], warnSentences[warnWorkspaceUnsupported]) ||
+		!strings.Contains(got[0], "count=2") {
+		t.Errorf("warnings = %v, want one go_workspace_unsupported row with count=2", got)
+	}
+	for _, r := range rows {
+		if r["module_path"] != "" && r["scan_complete"] != "1" {
+			t.Errorf("a provider's go.work marked a module row incomplete: %v", r)
 		}
 	}
 }
@@ -1181,19 +1223,24 @@ func TestACompleteSharedHomeIsReusedAfterACap(t *testing.T) {
 	}
 }
 
-// TestAProjectRecordedInTwoCasesIsListedOnce: on Windows and macOS a project recorded as
-// `Code/Repo` and as `code/repo` is one directory, so its modules are listed once. Codex
-// lowercases every project key on Windows, so a project it and another client both record
-// arrives in two spellings there. On Linux the second spelling names no directory.
-func TestAProjectRecordedInTwoCasesIsListedOnce(t *testing.T) {
+// TestAProjectRecordedInTwoCases: on Windows, where Codex records every project in lowercase, a
+// project recorded as `Code\Repo` and as `code\repo` is one project, and its modules are listed
+// once. Elsewhere the spellings stay two projects, because a case-sensitive volume can hold both
+// as directories: on a case-insensitive volume, macOS's default, the modules are listed twice,
+// and on a case-sensitive one the second spelling names nothing.
+func TestAProjectRecordedInTwoCases(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "alice")
-	project := filepath.Join(home, "Code", "Repo")
-	claudeList(t, home, project, filepath.Join(home, "code", "repo"))
+	project, respelled := filepath.Join(home, "Code", "Repo"), filepath.Join(home, "code", "repo")
+	claudeList(t, home, project, respelled)
 	testutil.WriteFile(t, filepath.Join(project, "go.mod"), "module x\n\nrequire github.com/a/b v1.0.0\n")
+	want := 1
+	if runtime.GOOS != "windows" && testutil.SameFile(t, project, respelled) {
+		want = 2
+	}
 
 	rows := run(t, roster(map[string]string{"alice": home}), table.QueryContext{})
-	if got := modules(rows); len(got) != 1 {
-		t.Errorf("modules = %v, want the one requirement listed once", got)
+	if got := modules(rows); len(got) != want {
+		t.Errorf("modules = %v, want the requirement listed %d times on this %s volume", got, want, runtime.GOOS)
 	}
 }
 

@@ -229,7 +229,7 @@ func (c *Collector) Add(recorded string, origin Origin, allowFileURL bool) (int,
 		}
 		return -1, false
 	}
-	key := fsscan.SameDirectoryKey(rel)
+	key := fsscan.SamePathKey(rel)
 	if existing, seen := c.index[key]; seen {
 		c.projects[existing].Origins[origin] = struct{}{}
 		return existing, true
@@ -374,9 +374,9 @@ type ProjectListScan struct {
 	Listings []DirListing
 
 	// UnreadableRecords counts record files, workspace.json or recentProjects.xml, that exist
-	// and could not be read: a permission failure, the size cap, a refused hard link. Absence is
-	// not counted, because a workspaceStorage directory outlives the workspace it was created
-	// for and most entries have no readable record.
+	// and could not be read: a permission failure, the size cap, a refused hard link, content a
+	// cloud provider holds. Absence is not counted, because a workspaceStorage directory outlives
+	// the workspace it was created for and most entries have no readable record.
 	UnreadableRecords int
 
 	// MalformedRecords counts record files that were read and did not parse. Counted apart
@@ -490,7 +490,9 @@ forks:
 					filepath.Join(relPath, name, "workspace.json"), opts)
 				// Absence is silent, because a workspaceStorage directory outlives its record, and
 				// so is a regular file partway down the path. A record that exists and was not
-				// read, a refused symlink included, is counted.
+				// read, a refused symlink included, is counted. So is one whose content a cloud
+				// provider holds: the record is in the editor's settings, not with its project, so
+				// the project may be on this disk and is missing.
 				if readErr != nil {
 					if fsscan.ClassifyError(readErr) != fsscan.ClassAbsent && !fsscan.IsNotDirectory(readErr) {
 						scan.UnreadableRecords++

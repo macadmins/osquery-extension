@@ -78,6 +78,9 @@ var (
 	// roamingAppDataFor reads an account's registry hive on Windows. Tests use temporary homes
 	// with no hive, so they substitute it.
 	roamingAppDataFor = fsscan.RoamingAppDataFor
+	// openGoWork opens a project's go.work. Tests substitute it to return the refusal Windows
+	// gives a storage provider's reparse point.
+	openGoWork = fsscan.OpenBeneath
 	// cloudPlaceholder is nil in production, which selects fsscan.IsCloudPlaceholder.
 	cloudPlaceholder func(*os.File) (bool, error)
 )
@@ -492,6 +495,11 @@ func discoverHome(ctx context.Context, account fsscan.UserHome, deadline time.Ti
 		// the file reads would give it, and any other failure to open it is counted once by
 		// class rather than left for each read.
 		switch storage := fsscan.ClassifyError(probeProject(home, project.Rel)); {
+		// A directory a provider holds, which on Windows the probe reports from its reparse
+		// point, is counted with the cloud folders rather than as unreadable.
+		case storage == fsscan.ClassCloudPlaceholder:
+			storedElsewhere[storage]++
+			continue
 		case storage == fsscan.ClassNetworkFilesystem && homeStorage != storage:
 			storedElsewhere[storage]++
 			continue
@@ -686,9 +694,11 @@ func addRecordedProjects(ctx context.Context, account fsscan.UserHome, homeStora
 // does not. A symbolic link named go.work, a common way to share one workspace file, counts when
 // linkTarget follows it to a regular file, and counts unopened when linkTarget declines or the
 // target is itself a link, because the link still shows the project is a workspace. A link whose
-// target cannot exist, or whose target is a directory or a device, does not count.
+// target cannot exist, or whose target is a directory or a device, does not count. A go.work,
+// or a followed link's target, that is a storage provider's reparse point, which Windows refuses
+// before opening it, counts unopened for the same reason, whatever the provider holds there.
 func workspaceAt(home string, homeStorage fsscan.ErrClass, projRel string) bool {
-	file, err := fsscan.OpenBeneath(home, filepath.Join(projRel, goWorkFile))
+	file, err := openGoWork(home, filepath.Join(projRel, goWorkFile))
 	if fsscan.ClassifyError(err) == fsscan.ClassRefusedPath {
 		target, link := linkTarget(home, homeStorage, projRel, goWorkFile)
 		switch link {
@@ -697,10 +707,13 @@ func workspaceAt(home string, homeStorage fsscan.ErrClass, projRel string) bool 
 		case fsscan.LinkAbsent:
 			return false
 		}
-		file, err = fsscan.OpenBeneath(home, target)
+		file, err = openGoWork(home, target)
 		if fsscan.ClassifyError(err) == fsscan.ClassRefusedPath {
 			return true // a link to another link, which is not walked
 		}
+	}
+	if fsscan.ClassifyError(err) == fsscan.ClassCloudPlaceholder {
+		return true
 	}
 	if err != nil {
 		return false

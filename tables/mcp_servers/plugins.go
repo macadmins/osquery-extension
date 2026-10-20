@@ -804,7 +804,7 @@ func probePlugins(ctx context.Context, home string, homeStorage fsscan.ErrClass,
 			repeated := false
 			if source.Inline == nil {
 				path = filepath.Join(home, source.Rel)
-				key := readKey{source.Rel, source.Declared}
+				key := readKey{fsscan.SamePathKey(source.Rel), source.Declared}
 				memo, cached := cache[key]
 				repeated = cached
 				read, readErr := memo.data, memo.err

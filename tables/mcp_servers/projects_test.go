@@ -250,34 +250,47 @@ func TestMergeProjectsDedupsAndKeepsApprovals(t *testing.T) {
 	}
 }
 
-// TestAProjectRecordedInTwoCasesIsProbedOnce: on Windows and macOS a project one list records as
-// `Code/Repo` and another as `code/repo` is one directory and merges into one project, as it
-// does when one list records both spellings. On Linux they are two directories.
-func TestAProjectRecordedInTwoCasesIsProbedOnce(t *testing.T) {
+// TestAProjectRecordedInTwoCases: on Windows a project one list records as `Code\Repo` and another
+// as `code\repo` merges into one project, as it does when one list records both spellings.
+// Elsewhere the spellings stay two projects, each with only its own client's record, because a
+// case-sensitive volume can hold both as directories: on a case-insensitive volume, macOS's
+// default, the project is probed twice, and on a case-sensitive one the second spelling names
+// nothing.
+func TestAProjectRecordedInTwoCases(t *testing.T) {
 	fromClaude := []projectRef{{Rel: filepath.Join("Code", "Repo"),
 		Origins: map[devclients.Origin]struct{}{devclients.OriginClaudeJSON: {}}}}
 	fromCodex := []projectRef{{Rel: filepath.Join("code", "repo"),
 		Origins: map[devclients.Origin]struct{}{devclients.OriginCodexTOML: {}}}}
 	merged, _ := mergeProjects(fromClaude, fromCodex)
-	want := 1
-	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
-		want = 2
+	want := 2
+	if runtime.GOOS == "windows" {
+		want = 1
 	}
 	if len(merged) != want {
 		t.Errorf("merged = %+v, want %d on %s", merged, want, runtime.GOOS)
+	}
+	for _, ref := range merged {
+		if want == 2 && len(ref.Origins) != 1 {
+			t.Errorf("%s carries %v, including the other spelling's client", ref.Rel, ref.Origins)
+		}
 	}
 
 	home := buildFakeHomeWithProjects(t,
 		map[string]string{"Code/Repo/.mcp.json": `{"mcpServers":{"srv":{"command":"npx","args":["x"]}}}`},
 		"Code/Repo", "code/repo")
+	listings := 1
+	if runtime.GOOS != "windows" &&
+		testutil.SameFile(t, filepath.Join(home, "Code", "Repo"), filepath.Join(home, "code", "repo")) {
+		listings = 2
+	}
 	listed := 0
 	for _, row := range serversOnly(discoverForTest("alice", home)) {
 		if row.ServerName == "srv" {
 			listed++
 		}
 	}
-	if listed != 1 {
-		t.Errorf("srv listed %d times, want once", listed)
+	if listed != listings {
+		t.Errorf("srv listed %d times, want %d on this %s volume", listed, listings, runtime.GOOS)
 	}
 }
 
@@ -363,6 +376,32 @@ func TestProjectListersAreDeterministic(t *testing.T) {
 		again, _ := claudeProjects(home, data)
 		if !reflect.DeepEqual(first, again) {
 			t.Fatalf("project list differed between runs over identical bytes")
+		}
+	}
+}
+
+// TestCodexTrustForOneProjectIsConjunctive: two keys in one Codex list that contain to one
+// project -- here one with a trailing separator, on macOS and Windows also two spellings of the
+// home -- leave it trusted only when both say trusted, whichever sorts last.
+func TestCodexTrustForOneProjectIsConjunctive(t *testing.T) {
+	home := t.TempDir()
+	project := filepath.Join(home, "code", "repo")
+	for _, tc := range []struct{ plain, trailing string }{
+		{"trusted", "untrusted"},
+		{"untrusted", "trusted"},
+	} {
+		config := codexProjectTable(project) + "trust_level = \"" + tc.plain + "\"\n" +
+			codexProjectTable(project+string(filepath.Separator)) + "trust_level = \"" + tc.trailing + "\"\n"
+		refs, warnings := codexProjects(home, []byte(config))
+		if len(refs) != 1 {
+			t.Fatalf("refs = %+v; want the two keys contained to one project", refs)
+		}
+		if !refs[0].TrustKnown || refs[0].Trusted {
+			t.Errorf("%s then %s: known = %v, trusted = %v; want known and untrusted",
+				tc.plain, tc.trailing, refs[0].TrustKnown, refs[0].Trusted)
+		}
+		if len(warnings) != 1 || warnings[0].Code != warnProjectUntrusted || warnings[0].Count != 1 {
+			t.Errorf("%s then %s: warnings = %v, want one untrusted project", tc.plain, tc.trailing, warnings)
 		}
 	}
 }

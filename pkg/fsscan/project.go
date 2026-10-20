@@ -314,7 +314,8 @@ func cleanFor(goos, value string) string {
 }
 
 // relFor is filepath.Rel for a target already found absolute and free of "..": the components
-// of target below base, compared one by one under goos's case rule. Windows and macOS fold
+// of target below base, compared one by one under goos's case rule. The components it returns
+// keep their case; SamePathKey decides when two of them name one place. Windows and macOS fold
 // case, because their default filesystems are case-insensitive, so a home of `/Users/Alice` and
 // a recorded project of `/users/alice/code` name the same place, and a case-sensitive
 // comparison reported the project as outside the home and never read it. The relative path is
@@ -339,20 +340,29 @@ func relFor(goos, base, target string) (string, error) {
 	return strings.Join(targetParts[len(baseParts):], separator), nil
 }
 
-// SameDirectoryKey is the key under which two paths ContainProjectPath returned name the same
-// directory. relFor admits a project recorded in another case on Windows and macOS, so a
-// directory one client records as `Code/Repo` and another as `code/repo` is admitted twice --
-// Codex lowercases every project key on Windows -- and a caller that merged on the path itself
-// read it twice and published its rows twice.
-func SameDirectoryKey(rel string) string {
-	return sameDirectoryKeyFor(runtime.GOOS, rel)
+// SamePathKey is the key under which two paths below a home name the same file or directory,
+// so a project several clients record is merged into one, and a file named twice is read once.
+// relFor ignores case in the home's own components on macOS as well, because there the
+// spellings it compares are the home's and name one directory; below the home, two spellings
+// can be two directories.
+//
+// On Windows the key ignores case. Codex lowercases every project key there and matches trust
+// to a project ignoring case, so a project it and another client both record arrives as
+// `code\repo` and `Code\Repo` and is one project to Codex too. A directory marked case-sensitive
+// (`fsutil file setCaseSensitiveInfo`) can hold both spellings as two projects, and those merge.
+//
+// Elsewhere the key is the path. A case-sensitive APFS volume can hold `Code/Repo` and
+// `code/repo` as two directories, and merging them would read only the first and attach the
+// second's client records to it, so on the default case-insensitive volume a project recorded
+// in two cases is read twice instead.
+func SamePathKey(rel string) string {
+	return samePathKeyFor(runtime.GOOS, rel)
 }
 
-// sameDirectoryKeyFor folds each rune to the smallest rune in its unicode.SimpleFold orbit,
-// which is the equivalence strings.EqualFold tests, so two keys are equal exactly when relFor
-// would match the paths component by component.
-func sameDirectoryKeyFor(goos, rel string) string {
-	if goos != "windows" && goos != "darwin" {
+// samePathKeyFor folds each rune to the smallest rune in its unicode.SimpleFold orbit,
+// which is the equivalence strings.EqualFold tests.
+func samePathKeyFor(goos, rel string) string {
+	if goos != "windows" {
 		return rel
 	}
 	return strings.Map(func(original rune) rune {
@@ -503,24 +513,18 @@ func ReadProjectFile(home, projRel, relFile string, opts ReadOpts) ([]byte, erro
 	// Inspecting the descriptor removes that second lookup, and reading through the same
 	// descriptor means the file inspected is the file read.
 	//
-	// KNOWN GAP in this ordering: the file is open by the time the attribute check can
-	// refuse it. That matters for exactly one attribute. FILE_ATTRIBUTE_RECALL_ON_OPEN is by
-	// definition set on files whose provider begins fetching at CreateFile, and os.Root
-	// offers no way to pass FILE_FLAG_OPEN_NO_RECALL, so a handle-based check learns it only
-	// after causing the download it exists to prevent. RECALL_ON_DATA_ACCESS and OFFLINE are
-	// still refused before a byte is read, and SF_DATALESS on macOS likewise.
+	// The file is open by the time readGuarded's attribute check can refuse it. That matters
+	// for exactly one attribute: FILE_ATTRIBUTE_RECALL_ON_OPEN is set on files whose provider
+	// begins fetching at CreateFile, and os.Root offers no way to pass
+	// FILE_FLAG_OPEN_NO_RECALL. RECALL_ON_DATA_ACCESS and OFFLINE are refused before a byte is
+	// read, and SF_DATALESS on macOS likewise.
 	//
-	// The prefix rule above is what narrows it: it is a string comparison that runs before
-	// anything is opened, and it covers the Windows sync-provider directories as well as the
-	// macOS ones, so the locations a provider conventionally owns -- including the
-	// Documents and Desktop that OneDrive's Known Folder Move relocates -- are refused with
-	// no syscall at all. What remains is a RECALL_ON_OPEN placeholder somewhere a provider
-	// does not conventionally own.
-	//
-	// Closing that completely wants a metadata lookup anchored to the parent directory's
-	// handle -- fstatat(AT_SYMLINK_NOFOLLOW) on POSIX, NtCreateFile against a RootDirectory
-	// handle on Windows -- which would be new code, and on Windows exercised only by the
-	// windows-latest job.
+	// Two things come first. The prefix rule above is a string comparison, so the locations a
+	// provider conventionally owns -- including the Documents and Desktop that OneDrive's
+	// Known Folder Move relocates -- are refused with no syscall at all. And on Windows every
+	// Cloud Files placeholder is a reparse point, which lstatNoReparse refuses from what
+	// os.Root.Lstat reports against the parent directory's handle, before the open. What
+	// remains is a file that carries RECALL_ON_OPEN without being a reparse point.
 	file, err := OpenBeneath(home, rel)
 	if err != nil {
 		return nil, err

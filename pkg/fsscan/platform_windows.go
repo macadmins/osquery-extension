@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/windows"
@@ -198,6 +199,12 @@ func openBeneathComponents(baseDir, relPath string, components []string) (*os.Fi
 // lstatNoReparse stats one component against the handle of its immediate parent and refuses
 // it if it is a reparse point. Junctions need no privilege to create on Windows, which is
 // why they and not symlinks are the shape this is written against.
+//
+// A reparse point a storage provider placed is refused as ErrCloudPlaceholder, which callers
+// report, rather than as a link, which IsExpectedAbsent treats as absence: every Cloud Files
+// placeholder is a reparse point, so outside the folders cloudPrefixesFor names, a project a
+// provider holds was dropped with no warning. Decided before the component is opened, so a
+// RECALL_ON_OPEN placeholder is refused without the open that starts its download.
 func lstatNoReparse(root *os.Root, name string, index int, relPath string) (os.FileInfo, error) {
 	info, err := root.Lstat(name)
 	if err != nil {
@@ -205,6 +212,14 @@ func lstatNoReparse(root *os.Root, name string, index int, relPath string) (os.F
 			name, index, relPath, err)
 	}
 	if info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+		var attributes uint32
+		if data, ok := info.Sys().(*syscall.Win32FileAttributeData); ok {
+			attributes = data.FileAttributes
+		}
+		if providerReparsePoint(info.Mode(), attributes) {
+			return nil, fmt.Errorf("openbeneath: %w: %q (component %d of %q) is a provider's "+
+				"reparse point", ErrCloudPlaceholder, name, index, relPath)
+		}
 		return nil, fmt.Errorf("openbeneath: %w: %q (component %d of %q)",
 			reparsePointRefused, name, index, relPath)
 	}
@@ -301,12 +316,11 @@ const cloudPlaceholderFlags = windows.FILE_ATTRIBUTE_RECALL_ON_OPEN |
 // be the thing that went there. A handle cannot be redirected after it is held. The link
 // count in checkDescriptor is read from the same call for the same reason.
 //
-// KNOWN GAP: inspecting a handle means the file is already open, and
-// FILE_ATTRIBUTE_RECALL_ON_OPEN is by definition the attribute whose provider starts
-// fetching at CreateFile. os.Root exposes no way to pass FILE_FLAG_OPEN_NO_RECALL, so that
-// one attribute is now detected after the cost it exists to avoid has been incurred;
-// RECALL_ON_DATA_ACCESS and OFFLINE are still caught before any byte is read. See the
-// ordering note in ReadProjectFile.
+// Inspecting a handle means the file is already open, and FILE_ATTRIBUTE_RECALL_ON_OPEN is the
+// attribute whose provider starts fetching at CreateFile. A Cloud Files placeholder is a
+// reparse point, which lstatNoReparse refuses before the open, so what reaches this check with
+// that attribute is a file that carries it without being one. See the ordering note in
+// ReadProjectFile.
 func IsCloudPlaceholder(file *os.File) (bool, error) {
 	var info windows.ByHandleFileInformation
 	if err := windows.GetFileInformationByHandle(windows.Handle(file.Fd()), &info); err != nil {
@@ -328,11 +342,16 @@ func readLinkAt(*os.File, string) (string, error) {
 // entryStat reads the modification time and file type of entry, which dir's ReadDir returned.
 // On Windows the directory listing carries each entry's times and attributes, so DirEntry.Info
 // answers from the handle os.Root opened rather than by a second lookup by path. Go reports a
-// junction as os.ModeIrregular without os.ModeDir, and a symlink as os.ModeSymlink.
+// junction as os.ModeIrregular without os.ModeDir, and a symlink as os.ModeSymlink; listedKind
+// reports a provider's reparse point that is not a directory as a file.
 func entryStat(_ *os.File, entry os.DirEntry) (time.Time, os.FileMode, bool) {
 	info, err := entry.Info()
 	if err != nil {
 		return time.Time{}, 0, false
 	}
-	return info.ModTime(), info.Mode().Type(), true
+	var attributes uint32
+	if data, ok := info.Sys().(*syscall.Win32FileAttributeData); ok {
+		attributes = data.FileAttributes
+	}
+	return info.ModTime(), listedKind(info.Mode(), attributes), true
 }

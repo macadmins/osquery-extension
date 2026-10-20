@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -1311,6 +1312,54 @@ func TestDeclarationsAfterTheReadBoundAreStillTaken(t *testing.T) {
 				t.Errorf("servers %v with %d exhaustion rows, want %v and 1", got, exhausted, testCase.want)
 			}
 		})
+	}
+}
+
+// TestADeclarationInTwoCases: on Windows a manifest that declares one file in two cases reads it
+// once and reports its parse failure once. Elsewhere the spellings are two files: a
+// case-insensitive volume reads the one file twice and reports it twice, and on a case-sensitive
+// one the second spelling is a missing file.
+func TestADeclarationInTwoCases(t *testing.T) {
+	home := t.TempDir()
+	version := filepath.Join(home, ".claude", "plugins", "cache", "mp", "p", "1.0.0")
+	testutil.WriteFile(t, filepath.Join(version, "broken.json"), `{"mcpServers":`)
+	testutil.WriteFile(t, filepath.Join(version, ".claude-plugin", "plugin.json"),
+		`{"name":"p","mcpServers":["./broken.json","./Broken.json"]}`)
+	writeInstalledPlugins(t, home, map[string]string{"p@mp": "1.0.0"})
+	want := 1
+	if runtime.GOOS != "windows" &&
+		testutil.SameFile(t, filepath.Join(version, "broken.json"), filepath.Join(version, "Broken.json")) {
+		want = 2
+	}
+	failures := 0
+	for _, row := range discoverForTest("alice", home) {
+		if row.Warning.Code == warnParseFailed {
+			failures++
+		}
+	}
+	if failures != want {
+		t.Errorf("parse_failed rows = %d, want %d on this %s volume", failures, want, runtime.GOOS)
+	}
+}
+
+// TestAPluginInstalledUnderTwoCasesOfItsName: a plugin is found by listing the cache, which
+// names each directory once, and its install record is looked up by that name, so two records
+// whose names differ only in case add no second root on any platform, and the plugin's server is
+// listed once.
+func TestAPluginInstalledUnderTwoCasesOfItsName(t *testing.T) {
+	home := t.TempDir()
+	cache := filepath.Join(home, ".claude", "plugins", "cache", "mp")
+	testutil.WriteFile(t, filepath.Join(cache, "p", "1.0.0", ".claude-plugin", "plugin.json"),
+		`{"name":"p","mcpServers":{"srv":{"command":"npx","args":["x"]}}}`)
+	writeInstalledPlugins(t, home, map[string]string{"p@mp": "1.0.0", "P@mp": "1.0.0"})
+	listed := 0
+	for _, row := range discoverForTest("alice", home) {
+		if row.rawName == "srv" {
+			listed++
+		}
+	}
+	if listed != 1 {
+		t.Errorf("srv listed %d times, want once", listed)
 	}
 }
 

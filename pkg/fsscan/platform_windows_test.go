@@ -144,3 +144,49 @@ func TestAFileAsAnIntermediateComponentIsRefused(t *testing.T) {
 		t.Errorf("a path through a file = %v (%s), want refused_path", err, got)
 	}
 }
+
+// TestReparseAttributesMatchWindows: the attribute values providerReparsePoint writes out are the
+// ones golang.org/x/sys/windows defines, and its placeholder set is the one IsCloudPlaceholder
+// reads.
+func TestReparseAttributesMatchWindows(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		got, want uint32
+	}{
+		{"directory", fileAttributeDirectory, windows.FILE_ATTRIBUTE_DIRECTORY},
+		{"offline", fileAttributeOffline, windows.FILE_ATTRIBUTE_OFFLINE},
+		{"recall on open", fileAttributeRecallOnOpen, windows.FILE_ATTRIBUTE_RECALL_ON_OPEN},
+		{"recall on data access", fileAttributeRecallOnDataAccess, windows.FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS},
+		{"placeholder set", fileAttributeRecallOnOpen | fileAttributeRecallOnDataAccess | fileAttributeOffline,
+			cloudPlaceholderFlags},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s = %#x, want %#x", tc.name, tc.got, tc.want)
+		}
+	}
+}
+
+// TestExpandProfileVars: %USERPROFILE% is substituted as a prefix in any case, and a value with
+// another variable, a variable anywhere else, a relative path or a ".." names no location this
+// can determine. A UNC value is kept for the caller's containment check to refuse.
+func TestExpandProfileVars(t *testing.T) {
+	const profile = `C:\Users\alice`
+	for _, tc := range []struct{ raw, want string }{
+		{`%USERPROFILE%\AppData\Roaming`, `C:\Users\alice\AppData\Roaming`},
+		{`%userprofile%\AppData\Roaming`, `C:\Users\alice\AppData\Roaming`},
+		{`%USERPROFILE%/AppData/Roaming`, `C:\Users\alice\AppData\Roaming`},
+		{`D:\Data\alice\AppData`, `D:\Data\alice\AppData`},
+		{`\\server\share\alice\AppData`, `\\server\share\alice\AppData`},
+		// Anywhere but the start is not where Windows writes it.
+		{`C:\x\%USERPROFILE%\AppData`, ""},
+		{"\u0131" + `%USERPROFILE%\AppData`, ""},
+		{`%HOMEPATH%\AppData\Roaming`, ""},
+		{`%USERPROFILE%\..\bob\AppData`, ""},
+		{`%USERPROFILE%/../bob/AppData`, ""},
+		{`AppData\Roaming`, ""},
+	} {
+		if got := expandProfileVars(tc.raw, profile); got != tc.want {
+			t.Errorf("expandProfileVars(%q) = %q, want %q", tc.raw, got, tc.want)
+		}
+	}
+}

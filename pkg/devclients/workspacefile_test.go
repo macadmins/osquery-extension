@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -237,6 +238,52 @@ func TestAWorkspaceFileIsReadOnceAndBounded(t *testing.T) {
 	}
 }
 
+// TestAWorkspaceFileNamedInTwoCases: on Windows a .code-workspace file two records name in
+// different case is one file, probed and read once and its folders passed on once. Elsewhere the
+// spellings are two files: a case-insensitive volume reads the one file twice, and on a
+// case-sensitive one the second spelling names nothing. The same scan with samePathKey given
+// Windows's case rule probes once on every host, so the read cache, not only the emission one,
+// is keyed.
+func TestAWorkspaceFileNamedInTwoCases(t *testing.T) {
+	home := t.TempDir()
+	named, respelled := filepath.Join(home, "ws", "Shared.code-workspace"), filepath.Join(home, "ws", "shared.code-workspace")
+	multiRootRecord(t, home, "aa", named, `{"folders":[{"path":"alpha"}]}`)
+	multiRootRecord(t, home, "bb", respelled, "")
+	savedProbe, savedKey := probeDir, samePathKey
+	t.Cleanup(func() { probeDir, samePathKey = savedProbe, savedKey })
+	probes := 0
+	probeDir = func(base, rel string) error {
+		probes++
+		return savedProbe(base, rel)
+	}
+	scanCounts := func() (int, int) {
+		probes = 0
+		taken := 0
+		for _, folder := range scanWorkspaces(home).Folders {
+			if folder.Recorded == filepath.Join(home, "ws", "alpha") {
+				taken++
+			}
+		}
+		return probes, taken
+	}
+
+	wantProbes, wantTaken := 2, 1
+	if runtime.GOOS == "windows" {
+		wantProbes = 1
+	} else if testutil.SameFile(t, named, respelled) {
+		wantTaken = 2
+	}
+	if gotProbes, gotTaken := scanCounts(); gotProbes != wantProbes || gotTaken != wantTaken {
+		t.Errorf("probes %d, alpha passed on %d times; want %d and %d on this %s volume",
+			gotProbes, gotTaken, wantProbes, wantTaken, runtime.GOOS)
+	}
+
+	samePathKey = strings.ToLower
+	if gotProbes, gotTaken := scanCounts(); gotProbes != 1 || gotTaken != 1 {
+		t.Errorf("with Windows's case rule: probes %d, alpha passed on %d times; want 1 and 1", gotProbes, gotTaken)
+	}
+}
+
 // TestAWorkspaceFileStoredElsewhereIsCountedNotRead: a workspace file in a cloud provider's
 // folder, or whose directory is on a network filesystem the home is not on, is counted in
 // StoredElsewhere and not read, not as an unreadable record. One on the same storage as the home
@@ -246,23 +293,29 @@ func TestAWorkspaceFileStoredElsewhereIsCountedNotRead(t *testing.T) {
 	body := `{"folders":[{"path":"alpha"}]}`
 	multiRootRecord(t, home, "aa", filepath.Join(home, "cloud", "a.code-workspace"), body)
 	multiRootRecord(t, home, "bb", filepath.Join(home, "net", "b.code-workspace"), body)
+	multiRootRecord(t, home, "cc", filepath.Join(home, "held", "c.code-workspace"), body)
 	savedCloud, savedProbe := underCloudStorage, probeDir
 	t.Cleanup(func() { underCloudStorage, probeDir = savedCloud, savedProbe })
 	underCloudStorage = func(rel string) bool { return strings.HasPrefix(filepath.ToSlash(rel), "cloud") }
 	probeDir = func(base, rel string) error {
-		if rel == "net" {
+		switch rel {
+		case "net":
 			return fsscan.ErrNetworkFilesystem
+		case "held":
+			// What the probe reports on Windows for a directory that is a provider's reparse point.
+			return fsscan.ErrCloudPlaceholder
 		}
 		return savedProbe(base, rel)
 	}
 	scan := scanWorkspaces(home)
-	want := map[fsscan.ErrClass]int{fsscan.ClassCloudPlaceholder: 1, fsscan.ClassNetworkFilesystem: 1}
+	want := map[fsscan.ErrClass]int{fsscan.ClassCloudPlaceholder: 2, fsscan.ClassNetworkFilesystem: 1}
 	if !reflect.DeepEqual(scan.StoredElsewhere, want) || len(scan.Folders) != 0 || scan.UnreadableRecords != 0 {
 		t.Errorf("scan = %+v, want both files counted as stored elsewhere and none read", scan)
 	}
 	sameAsHome := WorkspaceFolders(context.Background(), home, "", fsscan.ClassNetworkFilesystem,
 		time.Now().Add(time.Minute), fsscan.ReadOpts{MaxSize: 1 << 20})
-	if len(sameAsHome.Folders) != 1 || sameAsHome.StoredElsewhere[fsscan.ClassNetworkFilesystem] != 0 {
+	if len(sameAsHome.Folders) != 1 || sameAsHome.StoredElsewhere[fsscan.ClassNetworkFilesystem] != 0 ||
+		sameAsHome.StoredElsewhere[fsscan.ClassCloudPlaceholder] != 2 {
 		t.Errorf("with a home on a network filesystem: %+v, want the network file read", sameAsHome)
 	}
 }

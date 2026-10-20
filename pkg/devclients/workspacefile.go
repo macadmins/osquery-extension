@@ -35,6 +35,10 @@ var (
 	probeDir          = fsscan.ProbeProjectDir
 )
 
+// samePathKey keys the files read and passed on, a variable so a test on any host can give it
+// the case rule it has on Windows.
+var samePathKey = fsscan.SamePathKey
+
 // workspaceFiles reads the .code-workspace files that one WorkspaceFolders call's records name,
 // each once, within MaxWorkspaceFileFoldersTotal.
 type workspaceFiles struct {
@@ -89,7 +93,9 @@ func (w *workspaceFiles) add(workspace string, origin Origin, scan *ProjectListS
 			Recorded: boundedRecorded(workspace), Origin: origin, FileURL: true})
 		return true
 	}
-	if file, done := w.read[rel]; done {
+	// Keyed so that on Windows a file two records name in different case is read once.
+	key := samePathKey(rel)
+	if file, done := w.read[key]; done {
 		w.emit(rel, file, origin, scan)
 		return true
 	}
@@ -97,7 +103,7 @@ func (w *workspaceFiles) add(workspace string, origin Origin, scan *ProjectListS
 		w.totalReached(origin, scan)
 		return true
 	}
-	w.read[rel] = workspaceFile{}
+	w.read[key] = workspaceFile{}
 	if underCloudStorage(rel) {
 		scan.storedElsewhere(fsscan.ClassCloudPlaceholder)
 		return true
@@ -109,7 +115,10 @@ func (w *workspaceFiles) add(workspace string, origin Origin, scan *ProjectListS
 	probeErr := probeDir(w.home, dir)
 	switch storage := fsscan.ClassifyError(probeErr); {
 	case storage == fsscan.ClassNone, storage == w.homeStorage:
-	case storage == fsscan.ClassNetworkFilesystem, storage == fsscan.ClassUserspaceFilesystem:
+	// A directory a provider holds, which on Windows the probe reports from its reparse point, is
+	// stored elsewhere like a network or userspace one, not an unreadable record.
+	case storage == fsscan.ClassCloudPlaceholder, storage == fsscan.ClassNetworkFilesystem,
+		storage == fsscan.ClassUserspaceFilesystem:
 		scan.storedElsewhere(storage)
 		return true
 	case storage == fsscan.ClassAbsent, fsscan.IsNotDirectory(probeErr):
@@ -156,7 +165,7 @@ func (w *workspaceFiles) add(workspace string, origin Origin, scan *ProjectListS
 		read.folders = append(read.folders, workspaceFileFolder(w.home, dir, entry.Path,
 			entry.URI, ""))
 	}
-	w.read[rel] = read
+	w.read[key] = read
 	w.emit(rel, read, origin, scan)
 	return true
 }
@@ -167,7 +176,7 @@ func (w *workspaceFiles) add(workspace string, origin Origin, scan *ProjectListS
 // a per-file row would claim MaxWorkspaceFileFolders folders were taken from it.
 func (w *workspaceFiles) emit(rel string, file workspaceFile, origin Origin,
 	scan *ProjectListScan) {
-	key := workspaceEmission{rel, origin}
+	key := workspaceEmission{samePathKey(rel), origin}
 	if _, done := w.emitted[key]; done {
 		return
 	}

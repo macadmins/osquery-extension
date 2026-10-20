@@ -208,27 +208,28 @@ func TestContainProjectPath(t *testing.T) {
 	}
 }
 
-// TestSameDirectoryKey: on Windows and macOS two spellings ContainProjectPath admits for one
-// directory share a key, and the key matches strings.EqualFold, which relFor compares under, for
-// a rune strings.ToLower does not fold: the long s folds with s. On Linux case is significant.
-func TestSameDirectoryKey(t *testing.T) {
+// TestSamePathKey: on Windows two spellings of one directory share a key, which agrees with
+// strings.EqualFold even for a rune strings.ToLower does not fold: the long s folds with s. On
+// macOS and Linux case is significant, because a case-sensitive volume can hold both spellings
+// as two directories.
+func TestSamePathKey(t *testing.T) {
 	for _, tc := range []struct {
 		goos, left, right string
 		same              bool
 	}{
 		{"windows", `Code\Repo`, `code\repo`, true},
-		{"darwin", "Code/Repo", "code/repo", true},
-		{"darwin", "code/ba\u017fe", "code/BASE", true},
-		{"darwin", "code/repo", "code/repp", false},
+		{"windows", "code\\ba\u017fe", `code\BASE`, true},
+		{"windows", `code\repo`, `code\repp`, false},
+		{"darwin", "Code/Repo", "code/repo", false},
+		{"darwin", "code/repo", "code/repo", true},
 		{"linux", "Code/Repo", "code/repo", false},
-		{"linux", "code/repo", "code/repo", true},
 	} {
-		left, right := sameDirectoryKeyFor(tc.goos, tc.left), sameDirectoryKeyFor(tc.goos, tc.right)
+		left, right := samePathKeyFor(tc.goos, tc.left), samePathKeyFor(tc.goos, tc.right)
 		if (left == right) != tc.same {
 			t.Errorf("%s: keys for %q and %q are %q and %q, want same = %v",
 				tc.goos, tc.left, tc.right, left, right, tc.same)
 		}
-		if tc.goos != "linux" && (left == right) != strings.EqualFold(tc.left, tc.right) {
+		if tc.goos == "windows" && (left == right) != strings.EqualFold(tc.left, tc.right) {
 			t.Errorf("%s: keys for %q and %q disagree with strings.EqualFold", tc.goos, tc.left, tc.right)
 		}
 	}

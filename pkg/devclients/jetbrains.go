@@ -166,6 +166,8 @@ func JetBrainsProjects(ctx context.Context, home, appDataRoot string, deadline t
 		}
 		data, readErr := fsscan.ReadBoundedUnder(home,
 			filepath.Join(root, name, "options", "recentProjects.xml"), opts)
+		// A list whose content a cloud provider holds is counted as unreadable, as a
+		// workspace.json is: the projects it names may be on this disk.
 		if readErr != nil {
 			if fsscan.ClassifyError(readErr) != fsscan.ClassAbsent {
 				scan.UnreadableRecords++

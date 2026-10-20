@@ -8,6 +8,8 @@ package testutil
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,4 +53,22 @@ func AbsPath(parts ...string) string {
 func JSONString(s string) string {
 	encoded, _ := json.Marshal(s)
 	return string(encoded)
+}
+
+// SameFile reports whether a and b name one file, as two spellings that differ only in case do
+// on a case-insensitive volume. A b that does not exist names no file.
+func SameFile(t testing.TB, a, b string) bool {
+	t.Helper()
+	first, err := os.Stat(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.Stat(b)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return os.SameFile(first, second)
 }

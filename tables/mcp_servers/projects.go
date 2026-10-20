@@ -410,9 +410,13 @@ func (c *projectCollector) contain(recorded string, origin devclients.Origin, al
 		// Accepted anywhere is accepted: only Claude's list reports it, so a sighting from
 		// another lister has nothing to contribute and must not clear it.
 		existing.TrustDialogAccepted = existing.TrustDialogAccepted || trustDialogAccepted
+		// Codex trust is conjunctive too. Two keys in one Codex list can contain to one project
+		// -- containment ignores case in the home's components on macOS and Windows -- and the
+		// later key in sorted order replaced the earlier one's trust, so an untrusted entry
+		// beside a trusted one read as trusted.
 		if origin == devclients.OriginCodexTOML {
-			existing.TrustKnown = trustKnown
-			existing.Trusted = trusted
+			existing.TrustKnown = existing.TrustKnown && trustKnown
+			existing.Trusted = existing.Trusted && trusted
 		}
 		return
 	}
@@ -465,7 +469,7 @@ func mergeProjects(groups ...[]projectRef) ([]projectRef, []warning) {
 	truncated := 0
 	for _, group := range groups {
 		for _, ref := range group {
-			key := fsscan.SameDirectoryKey(ref.Rel)
+			key := fsscan.SamePathKey(ref.Rel)
 			if existing, seen := index[key]; seen {
 				for origin := range ref.Origins {
 					out[existing].Origins[origin] = struct{}{}
