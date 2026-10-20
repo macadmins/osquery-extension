@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -91,11 +92,21 @@ func recordCodexProject(t *testing.T, home, projectRel, trustLevel string) {
 	t.Helper()
 	path := filepath.Join(home, ".codex", "config.toml")
 	existing, _ := os.ReadFile(path)
-	entry := "[projects.\"" + filepath.Join(home, projectRel) + "\"]\n"
+	entry := codexProjectTable(filepath.Join(home, projectRel))
 	if trustLevel != "" {
 		entry += "trust_level = \"" + trustLevel + "\"\n"
 	}
 	testutil.WriteFile(t, path, string(existing)+entry)
+}
+
+// codexProjectTable is the table header recording path as a Codex project. The key is a TOML
+// literal string, so a Windows path's backslashes need no escaping, and on Windows it is
+// lowercased, as Codex's project_trust_key lowercases it there.
+func codexProjectTable(path string) string {
+	if runtime.GOOS == "windows" {
+		path = strings.ToLower(path)
+	}
+	return "[projects.'" + path + "']\n"
 }
 
 func buildFakeHome(t *testing.T, files map[string]string) string {
@@ -114,6 +125,9 @@ func buildFakeHome(t *testing.T, files map[string]string) string {
 }
 
 func TestDiscoverForHome_AllKnownClientsViaDirectPaths(t *testing.T) {
+	outside := t.TempDir()
+	foo := testutil.JSONString(filepath.Join(outside, "foo"))
+	bar := testutil.JSONString(filepath.Join(outside, "bar"))
 	home := buildFakeHome(t, map[string]string{
 		appSupport("Claude", "claude_desktop_config.json"): `{
 			// JSONC: top-of-file comment
@@ -122,8 +136,8 @@ func TestDiscoverForHome_AllKnownClientsViaDirectPaths(t *testing.T) {
 		".claude.json": `{
 			"mcpServers": {"global-claude": {"type": "http", "url": "https://global.example.com/mcp"}},
 			"projects": {
-				"/repo/foo": {"mcpServers": {"foo-local": {"command": "node", "args": ["foo.js"]}}},
-				"/repo/bar": {"mcpServers": {"bar-local": {"command": "uvx", "args": ["bar-mcp"]}}}
+				` + foo + `: {"mcpServers": {"foo-local": {"command": "node", "args": ["foo.js"]}}},
+				` + bar + `: {"mcpServers": {"bar-local": {"command": "uvx", "args": ["bar-mcp"]}}}
 			}
 		}`,
 		".cursor/mcp.json":                  `{"mcpServers": {"cursor-srv": {"command": "uvx", "args": ["cursor-mcp@2.0.0"]}}}`,
@@ -149,8 +163,8 @@ func TestDiscoverForHome_AllKnownClientsViaDirectPaths(t *testing.T) {
 	gotClient := map[string]string{}
 	for _, r := range rows {
 		if !r.Warning.empty() {
-			// The ~/.claude.json fixture records /repo/foo and /repo/bar as projects, which
-			// are absolute paths outside this temporary home. Reporting that is correct and
+			// The ~/.claude.json fixture records foo and bar as projects, at absolute paths
+			// outside this temporary home. Reporting that is correct and
 			// is new: the inline servers those entries declare are still listed -- they are
 			// read out of the file, not probed -- but the directories themselves are not
 			// inspected, and the row set says so with a count and no path.

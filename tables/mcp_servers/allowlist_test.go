@@ -300,7 +300,8 @@ func TestColumnAllowlists(t *testing.T) {
 	})
 
 	t.Run("source_context", func(t *testing.T) {
-		const home = "/Users/alice"
+		home := testutil.AbsPath("Users", "alice")
+		repo := filepath.Join("code", "repo")
 		for _, tc := range []struct{ context, want string }{
 			// The fixed tokens pass unchanged.
 			{"mcpServers", "mcpServers"},
@@ -309,11 +310,11 @@ func TestColumnAllowlists(t *testing.T) {
 			{"project.mcp_json", "project.mcp_json"},
 			// A contained project keeps its path, which is the only record of which project
 			// declared an inline server -- source_path names ~/.claude.json for all of them.
-			{"projects[/Users/alice/code/repo].mcpServers", "projects[code/repo].mcpServers"},
-			{"project.cursor_mcp_json[code/repo]", "project.cursor_mcp_json[code/repo]"},
+			{"projects[" + filepath.Join(home, repo) + "].mcpServers", "projects[" + repo + "].mcpServers"},
+			{"project.cursor_mcp_json[" + repo + "]", "project.cursor_mcp_json[" + repo + "]"},
 			// A path that fails containment loses the path and keeps the section.
-			{"projects[/Users/other/secret].mcpServers", "projects"},
-			{"projects[/tmp/--api-key=abc].mcpServers", "projects"},
+			{"projects[" + testutil.AbsPath("Users", "other", "secret") + "].mcpServers", "projects"},
+			{"projects[" + testutil.AbsPath("tmp", "--api-key=abc") + "].mcpServers", "projects"},
 			// Neither a token nor a path-bearing form.
 			{"something invented", ""},
 		} {
@@ -681,9 +682,9 @@ func TestOutOfScopeProjectsLeaveRowsComplete(t *testing.T) {
 	// Three recorded projects outside the home and one remote, which is roughly the shape of
 	// a real long-lived workstation.
 	recorded, err := json.Marshal(map[string]any{"projects": map[string]any{
-		"/tmp/scratch":         map[string]any{},
-		"/Volumes/share/repo":  map[string]any{},
-		"/Users/someoneelse/p": map[string]any{},
+		testutil.AbsPath("tmp", "scratch"):            map[string]any{},
+		testutil.AbsPath("Volumes", "share", "repo"):  map[string]any{},
+		testutil.AbsPath("Users", "someoneelse", "p"): map[string]any{},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -794,8 +795,8 @@ func TestEveryProducibleSourceContextIsAllowed(t *testing.T) {
 	}
 	// And the project-rooted forms, which carry a path, must survive their own pattern.
 	for _, token := range projectContextTokens {
-		context := token + "[code/repo]"
-		if got, dropped := allowedSourceContext(context, "/home/alice"); dropped {
+		context := token + "[" + filepath.Join("code", "repo") + "]"
+		if got, dropped := allowedSourceContext(context, testutil.AbsPath("home", "alice")); dropped {
 			t.Errorf("allowedSourceContext(%q) dropped the path, got %q", context, got)
 		}
 	}

@@ -229,7 +229,8 @@ func (c *Collector) Add(recorded string, origin Origin, allowFileURL bool) (int,
 		}
 		return -1, false
 	}
-	if existing, seen := c.index[rel]; seen {
+	key := fsscan.SameDirectoryKey(rel)
+	if existing, seen := c.index[key]; seen {
 		c.projects[existing].Origins[origin] = struct{}{}
 		return existing, true
 	}
@@ -237,7 +238,7 @@ func (c *Collector) Add(recorded string, origin Origin, allowFileURL bool) (int,
 		c.refusals.Truncated = true
 		return -1, false
 	}
-	c.index[rel] = len(c.projects)
+	c.index[key] = len(c.projects)
 	c.projects = append(c.projects, Project{
 		Rel:     rel,
 		Abs:     filepath.Join(c.home, rel),

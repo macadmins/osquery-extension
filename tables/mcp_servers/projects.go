@@ -465,7 +465,8 @@ func mergeProjects(groups ...[]projectRef) ([]projectRef, []warning) {
 	truncated := 0
 	for _, group := range groups {
 		for _, ref := range group {
-			if existing, seen := index[ref.Rel]; seen {
+			key := fsscan.SameDirectoryKey(ref.Rel)
+			if existing, seen := index[key]; seen {
 				for origin := range ref.Origins {
 					out[existing].Origins[origin] = struct{}{}
 				}
@@ -484,7 +485,7 @@ func mergeProjects(groups ...[]projectRef) ([]projectRef, []warning) {
 				truncated++
 				continue
 			}
-			index[ref.Rel] = len(out)
+			index[key] = len(out)
 			out = append(out, ref)
 		}
 	}

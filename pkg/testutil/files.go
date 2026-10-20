@@ -7,6 +7,7 @@
 package testutil
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,4 +35,20 @@ func FileURL(path string) string {
 		slashed = "/" + slashed
 	}
 	return "file://" + slashed
+}
+
+// AbsPath joins parts under the root of the volume the test runs on, so a fixture path is
+// absolute on every platform: `/Users/alice` has no drive letter, and Windows does not count it
+// as absolute.
+func AbsPath(parts ...string) string {
+	root := filepath.VolumeName(os.TempDir()) + string(filepath.Separator)
+	return filepath.Join(append([]string{root}, parts...)...)
+}
+
+// JSONString quotes s as a JSON string. A Windows path concatenated into a fixture unquoted is
+// not JSON: `C:\Users` holds the escape `\U`, which JSON does not define. Marshaling a string
+// cannot fail.
+func JSONString(s string) string {
+	encoded, _ := json.Marshal(s)
+	return string(encoded)
 }

@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Reading a file at a path a client's configuration recorded, rather than at a path this
@@ -336,6 +337,32 @@ func relFor(goos, base, target string) (string, error) {
 		return ".", nil
 	}
 	return strings.Join(targetParts[len(baseParts):], separator), nil
+}
+
+// SameDirectoryKey is the key under which two paths ContainProjectPath returned name the same
+// directory. relFor admits a project recorded in another case on Windows and macOS, so a
+// directory one client records as `Code/Repo` and another as `code/repo` is admitted twice --
+// Codex lowercases every project key on Windows -- and a caller that merged on the path itself
+// read it twice and published its rows twice.
+func SameDirectoryKey(rel string) string {
+	return sameDirectoryKeyFor(runtime.GOOS, rel)
+}
+
+// sameDirectoryKeyFor folds each rune to the smallest rune in its unicode.SimpleFold orbit,
+// which is the equivalence strings.EqualFold tests, so two keys are equal exactly when relFor
+// would match the paths component by component.
+func sameDirectoryKeyFor(goos, rel string) string {
+	if goos != "windows" && goos != "darwin" {
+		return rel
+	}
+	return strings.Map(func(original rune) rune {
+		smallest := original
+		// SimpleFold steps through the runes that fold together and returns to original.
+		for folded := unicode.SimpleFold(original); folded != original; folded = unicode.SimpleFold(folded) {
+			smallest = min(smallest, folded)
+		}
+		return smallest
+	}, rel)
 }
 
 // cloudStoragePrefixes are the home-relative directories under which macOS mounts a

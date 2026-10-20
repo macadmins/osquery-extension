@@ -75,7 +75,7 @@ func TestCodexOnlyProjectDoesNotActivateVSCodeConfig(t *testing.T) {
 	testutil.WriteFile(t, filepath.Join(home, "code", "repo", ".vscode", "mcp.json"),
 		`{"mcpServers":{"dormant_vscode":{"command":"npx","args":["x"]}}}`)
 	testutil.WriteFile(t, filepath.Join(home, ".codex", "config.toml"),
-		"[projects.\""+filepath.Join(home, "code", "repo")+"\"]\ntrust_level = \"trusted\"\n")
+		codexProjectTable(filepath.Join(home, "code", "repo"))+"trust_level = \"trusted\"\n")
 
 	var names []string
 	for _, row := range serversOnly(discoverForTest("alice", home)) {
@@ -139,7 +139,7 @@ func TestCodexTrustGatesProjectConfig(t *testing.T) {
 			testutil.WriteFile(t, filepath.Join(project, ".codex", "config.toml"),
 				"[mcp_servers.project_server]\ncommand = \"npx\"\n")
 			testutil.WriteFile(t, filepath.Join(home, ".codex", "config.toml"),
-				"[projects.\""+project+"\"]\n"+tc.trust)
+				codexProjectTable(project)+tc.trust)
 
 			var found bool
 			var codes []warnCode
@@ -448,7 +448,8 @@ func TestOutOfScopeProjectsDoNotReportTrustProblems(t *testing.T) {
 		`{"mcpServers":{"healthy":{"command":"npx","args":["x"]}}}`)
 	// Two Codex entries outside the home, neither carrying trust.
 	testutil.WriteFile(t, filepath.Join(home, ".codex", "config.toml"),
-		"[projects.\"/outside/no-trust\"]\n[projects.\"/elsewhere/also-none\"]\n")
+		codexProjectTable(testutil.AbsPath("outside", "no-trust"))+
+			codexProjectTable(testutil.AbsPath("elsewhere", "also-none")))
 
 	var sawOutside, sawTrust, checkedHealthy bool
 	for _, row := range withoutStandingNotes(discoverForTest("alice", home)) {

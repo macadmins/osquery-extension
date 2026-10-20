@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/macadmins/osquery-extension/pkg/devclients"
 	"github.com/macadmins/osquery-extension/pkg/fsscan"
 	"github.com/macadmins/osquery-extension/pkg/redact"
+	"github.com/macadmins/osquery-extension/pkg/testutil"
 	"github.com/macadmins/osquery-extension/pkg/utils"
 )
 
@@ -245,7 +247,7 @@ func TestRedactionRemovesKnownShapesButNotOpaqueOnes(t *testing.T) {
 	shaped := "ghp_" + strings.Repeat("B", 36)
 
 	shapedRow := serverToRow(Server{
-		Command: "/tmp/" + shaped, ServerName: shaped, SourcePath: "/Users/x/" + shaped + "/.mcp.json",
+		Command: "/tmp/" + shaped, ServerName: shaped, SourcePath: testutil.AbsPath("Users", "x", shaped, ".mcp.json"),
 		PackageName: shaped, EnvKeys: []string{shaped},
 	})
 	for _, column := range []string{"command_basename", "server_name", "source_path", "package_name", "env_keys"} {
@@ -254,7 +256,8 @@ func TestRedactionRemovesKnownShapesButNotOpaqueOnes(t *testing.T) {
 		}
 	}
 
-	opaqueRow := serverToRow(Server{Command: "/tmp/" + opaque, SourcePath: "/Users/x/" + opaque + "/.mcp.json"})
+	opaqueRow := serverToRow(Server{Command: "/tmp/" + opaque,
+		SourcePath: testutil.AbsPath("Users", "x", opaque, ".mcp.json")})
 	if opaqueRow["command_basename"] != opaque {
 		t.Errorf("command_basename = %q; the documented behaviour is that an opaque value "+
 			"passes through. If this changed deliberately, update the schema comment too.",
@@ -278,8 +281,8 @@ func TestRedactionRemovesKnownShapesButNotOpaqueOnes(t *testing.T) {
 func TestServerToRowRedactsDelimitedAssignmentsInEveryColumnAUserControls(t *testing.T) {
 	const secret = "opaqueSecretValue123"
 	row := serverToRow(Server{
-		SourcePath:    "/Users/alice/--token=" + secret + "/project/.mcp.json",
-		SourceContext: "projects[/tmp/--api-key=" + secret + "].mcpServers",
+		SourcePath:    testutil.AbsPath("Users", "alice", "--token="+secret, "project", ".mcp.json"),
+		SourceContext: "projects[" + testutil.AbsPath("tmp", "--api-key="+secret) + "].mcpServers",
 		ServerName:    "group/--api-key=" + secret,
 		Command:       "/opt/--dd-key=" + secret + "/bin/tool",
 		URL:           "https://host/--token=" + secret,
@@ -287,7 +290,7 @@ func TestServerToRowRedactsDelimitedAssignmentsInEveryColumnAUserControls(t *tes
 		RequestedSpec: "pkg@--token=" + secret,
 		PinnedVersion: "1.0.0-\u00a0--token=" + secret,
 		EnvKeys:       []string{"A=--token=" + secret},
-		Home:          "/Users/alice",
+		Home:          testutil.AbsPath("Users", "alice"),
 		Warning:       warning{Code: warnSourceUnreadable, Class: fsscan.ClassDenied},
 	})
 	for column, value := range row {
@@ -380,8 +383,8 @@ func TestServerToRowRedactsAnAssignmentCarryingANewline(t *testing.T) {
 	// sanitization reaches. Without the pass at publication these carry the credential
 	// even though the identically-shaped server name above does not.
 	built := serverToRow(Server{
-		SourcePath: "/Users/alice/--token=\n" + secret + "/.mcp.json",
-		Home:       "/Users/alice",
+		SourcePath: testutil.AbsPath("Users", "alice", "--token=\n"+secret, ".mcp.json"),
+		Home:       testutil.AbsPath("Users", "alice"),
 		Warning:    warning{Code: warnSourceUnreadable, Class: fsscan.ClassDenied},
 	})
 	if strings.Contains(built["source_path"], secret) {
@@ -852,6 +855,11 @@ func TestDeclaredUnknownTransportIsNotReplacedByAGuess(t *testing.T) {
 // full. The claim was false, and it cost that account every row the cache was already
 // holding. Restamping a cached result is not filesystem work and the budget has no say in it.
 func TestASharedHomeIsReportedForBothAccountsAfterTheBudgetIsGone(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("on Windows each account's scan is its own, keyed by SID as well as home, so " +
+			"the second account meeting the spent budget is correct there; see " +
+			"TestScanKeySeparatesAccountsThatShareAHomeOnWindows")
+	}
 	root := t.TempDir()
 	home := filepath.Join(root, "shared")
 	if err := os.MkdirAll(filepath.Join(home, ".cursor"), 0o755); err != nil {

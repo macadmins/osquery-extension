@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -651,7 +652,8 @@ func TestFileFindingsReachTheTable(t *testing.T) {
 // TestASharedHomeIsReusedAfterTheDeadline: when two accounts share a home and the deadline
 // passes after the first scan, the second account still gets the cached rows, because reusing
 // them is no filesystem work. A home not yet scanned is refused once the deadline has passed,
-// and a cancelled query gets nothing back even from the cache.
+// and a cancelled query gets nothing back even from the cache. On Windows the scan is keyed by
+// account as well as home, so the second account's scan is its own and the deadline refuses it.
 func TestASharedHomeIsReusedAfterTheDeadline(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "shared")
 	project := filepath.Join(home, "svc")
@@ -669,7 +671,11 @@ func TestASharedHomeIsReusedAfterTheDeadline(t *testing.T) {
 	}
 	expired := time.Now().Add(-time.Second)
 	second := rowsForHome(context.Background(), build, expired, limits, limits, nil, scanned)
-	if moduleRows(second) != 1 || second[0].User != "build" || second[0].UserID != "502" {
+	if runtime.GOOS == "windows" {
+		if len(second) != 1 || second[0].Warning.Code != warnBudgetExhaustedPreHome {
+			t.Errorf("second account rows = %+v, want its own scan refused by the deadline", second)
+		}
+	} else if moduleRows(second) != 1 || second[0].User != "build" || second[0].UserID != "502" {
 		t.Errorf("second account rows = %+v, want the cached row labeled for build", second)
 	}
 	if rows := rowsForHome(context.Background(), other, expired, limits, limits, nil, scanned); len(rows) != 1 ||
@@ -1144,7 +1150,9 @@ func TestJSONWidth(t *testing.T) {
 // A finished scan of that home is reused for the second account without consulting the caps or
 // the deadline, because reusing it is no filesystem work and the answer is complete: a shared
 // home with no Go projects gives the second account no rows and no warning, even after a cap is
-// spent, rather than a row saying modules went unlisted when there were none.
+// spent, rather than a row saying modules went unlisted when there were none. On Windows the
+// scan is keyed by account as well as home, so the second account's scan is its own and meets
+// the spent cap.
 func TestACompleteSharedHomeIsReusedAfterACap(t *testing.T) {
 	root := t.TempDir()
 	shared, other := filepath.Join(root, "shared"), filepath.Join(root, "bob")
@@ -1158,10 +1166,34 @@ func TestACompleteSharedHomeIsReusedAfterACap(t *testing.T) {
 	// and bob's project spends the one-row cap.
 	homes := map[string]string{"alice": shared, "bob": other, "carol": shared}
 	found := discoverWithin(context.Background(), roster(homes), nil, nil, outputLimits{rows: 1, bytes: maxOutputBytes})
+	var carol []row
 	for _, r := range found {
 		if r.User == "carol" {
-			t.Errorf("carol, whose shared home was scanned in full and holds nothing, got %+v", r)
+			carol = append(carol, r)
 		}
+	}
+	if runtime.GOOS == "windows" {
+		if len(carol) != 1 || carol[0].Warning.Code != warnRowLimitPreHome {
+			t.Errorf("carol got %+v, want her own scan refused by the spent cap", carol)
+		}
+	} else if len(carol) != 0 {
+		t.Errorf("carol, whose shared home was scanned in full and holds nothing, got %+v", carol)
+	}
+}
+
+// TestAProjectRecordedInTwoCasesIsListedOnce: on Windows and macOS a project recorded as
+// `Code/Repo` and as `code/repo` is one directory, so its modules are listed once. Codex
+// lowercases every project key on Windows, so a project it and another client both record
+// arrives in two spellings there. On Linux the second spelling names no directory.
+func TestAProjectRecordedInTwoCasesIsListedOnce(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "alice")
+	project := filepath.Join(home, "Code", "Repo")
+	claudeList(t, home, project, filepath.Join(home, "code", "repo"))
+	testutil.WriteFile(t, filepath.Join(project, "go.mod"), "module x\n\nrequire github.com/a/b v1.0.0\n")
+
+	rows := run(t, roster(map[string]string{"alice": home}), table.QueryContext{})
+	if got := modules(rows); len(got) != 1 {
+		t.Errorf("modules = %v, want the one requirement listed once", got)
 	}
 }
 

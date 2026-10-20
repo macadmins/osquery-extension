@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -204,6 +205,32 @@ func TestContainProjectPath(t *testing.T) {
 				t.Errorf("rel = %q, want %q", rel, tc.wantRel)
 			}
 		})
+	}
+}
+
+// TestSameDirectoryKey: on Windows and macOS two spellings ContainProjectPath admits for one
+// directory share a key, and the key matches strings.EqualFold, which relFor compares under, for
+// a rune strings.ToLower does not fold: the long s folds with s. On Linux case is significant.
+func TestSameDirectoryKey(t *testing.T) {
+	for _, tc := range []struct {
+		goos, left, right string
+		same              bool
+	}{
+		{"windows", `Code\Repo`, `code\repo`, true},
+		{"darwin", "Code/Repo", "code/repo", true},
+		{"darwin", "code/ba\u017fe", "code/BASE", true},
+		{"darwin", "code/repo", "code/repp", false},
+		{"linux", "Code/Repo", "code/repo", false},
+		{"linux", "code/repo", "code/repo", true},
+	} {
+		left, right := sameDirectoryKeyFor(tc.goos, tc.left), sameDirectoryKeyFor(tc.goos, tc.right)
+		if (left == right) != tc.same {
+			t.Errorf("%s: keys for %q and %q are %q and %q, want same = %v",
+				tc.goos, tc.left, tc.right, left, right, tc.same)
+		}
+		if tc.goos != "linux" && (left == right) != strings.EqualFold(tc.left, tc.right) {
+			t.Errorf("%s: keys for %q and %q disagree with strings.EqualFold", tc.goos, tc.left, tc.right)
+		}
 	}
 }
 

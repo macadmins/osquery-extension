@@ -242,13 +242,25 @@ func TestStorageRowsCountProjectsOnce(t *testing.T) {
 	home := t.TempDir()
 	server := `{"mcpServers":{"inside":{"command":"npx","args":["x"]}}}`
 	var recorded []string
+	var evicted []os.FileInfo
 	for _, rel := range []string{"cloud/p", "evicted/p"} {
 		project := filepath.Join(home, filepath.FromSlash(rel))
-		testutil.WriteFile(t, filepath.Join(project, ".mcp.json"), server)
-		testutil.WriteFile(t, filepath.Join(project, ".vscode", "mcp.json"), server)
+		for _, file := range []string{".mcp.json", filepath.Join(".vscode", "mcp.json")} {
+			testutil.WriteFile(t, filepath.Join(project, file), server)
+		}
 		testutil.WriteFile(t, filepath.Join(project, ".claude", "settings.json"),
 			`{"enabledMcpjsonServers":["inside"]}`)
-		recorded = append(recorded, `"`+project+`":{}`)
+		if rel == "evicted/p" {
+			for _, file := range []string{".mcp.json", filepath.Join(".vscode", "mcp.json"),
+				filepath.Join(".claude", "settings.json")} {
+				info, err := os.Stat(filepath.Join(project, file))
+				if err != nil {
+					t.Fatal(err)
+				}
+				evicted = append(evicted, info)
+			}
+		}
+		recorded = append(recorded, testutil.JSONString(project)+`:{}`)
 		storage := filepath.Join(home, devclients.AppSupportFork("Code", "User", "workspaceStorage")[0])
 		testutil.WriteFile(t, filepath.Join(storage, strings.ReplaceAll(rel, "/", "-"), "workspace.json"),
 			`{"folder":"`+testutil.FileURL(project)+`"}`)
@@ -257,8 +269,20 @@ func TestStorageRowsCountProjectsOnce(t *testing.T) {
 	savedCloud, savedPlaceholder := underCloudStorage, cloudPlaceholder
 	t.Cleanup(func() { underCloudStorage, cloudPlaceholder = savedCloud, savedPlaceholder })
 	underCloudStorage = func(rel string) bool { return strings.HasPrefix(filepath.ToSlash(rel), "cloud") }
+	// By identity rather than by file.Name(): Go 1.25's os.Root on Windows names a root opened
+	// inside another by the bare component, so a file opened beneath it is named `.vscode\mcp.json`
+	// and holds no trace of the project.
 	cloudPlaceholder = func(file *os.File) (bool, error) {
-		return strings.Contains(filepath.ToSlash(file.Name()), "/evicted/"), nil
+		info, err := file.Stat()
+		if err != nil {
+			return false, err
+		}
+		for _, held := range evicted {
+			if os.SameFile(info, held) {
+				return true, nil
+			}
+		}
+		return false, nil
 	}
 
 	cloudCount, settingsRows := 0, 0
@@ -292,7 +316,7 @@ func TestApprovalSettingsAreReadOnlyForAProjectThatDeclaresServers(t *testing.T)
 		if err := os.MkdirAll(filepath.Join(project, ".claude", "settings.json"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		recorded = append(recorded, `"`+project+`":{}`)
+		recorded = append(recorded, testutil.JSONString(project)+`:{}`)
 	}
 	testutil.WriteFile(t, filepath.Join(home, "none", ".mcp.json"), `{"mcpServers":{}}`)
 	testutil.WriteFile(t, filepath.Join(home, "declares", ".mcp.json"),
@@ -318,7 +342,7 @@ func TestANullClaudeProjectEntryLeavesApprovalUnknown(t *testing.T) {
 	project := filepath.Join(home, "p")
 	testutil.WriteFile(t, filepath.Join(project, ".mcp.json"),
 		`{"mcpServers":{"srv":{"command":"npx","args":["x"]}}}`)
-	testutil.WriteFile(t, filepath.Join(home, ".claude.json"), `{"projects":{"`+project+`":null}}`)
+	testutil.WriteFile(t, filepath.Join(home, ".claude.json"), `{"projects":{`+testutil.JSONString(project)+`:null}}`)
 	var found bool
 	for _, row := range discoverForTest("alice", home) {
 		if row.ServerName == "srv" {

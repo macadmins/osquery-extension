@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -181,12 +182,12 @@ func TestApprovalState(t *testing.T) {
 
 // A project outside the home is counted with no path, and a deleted one is silent.
 func TestProjectCollectorReportsWithoutPaths(t *testing.T) {
-	home := "/Users/alice"
+	home := testutil.AbsPath("Users", "alice")
 	collector := newProjectCollector(home)
-	collector.addClaude("/Users/alice/code/good", claudeApproval{Known: true}, false)
+	collector.addClaude(filepath.Join(home, "code", "good"), claudeApproval{Known: true}, false)
 	// Outside the home: a legitimate configuration this declines to follow.
-	collector.addClaude("/Users/other/secret-project-name", claudeApproval{Known: true}, false)
-	collector.addClaude("/Users/Shared/another-secret", claudeApproval{Known: true}, false)
+	collector.addClaude(testutil.AbsPath("Users", "other", "secret-project-name"), claudeApproval{Known: true}, false)
+	collector.addClaude(testutil.AbsPath("Users", "Shared", "another-secret"), claudeApproval{Known: true}, false)
 	// Not a usable absolute path.
 	collector.addClaude("relative/path", claudeApproval{Known: true}, false)
 	// A remote origin, which is a different fact from being outside the home.
@@ -194,7 +195,7 @@ func TestProjectCollectorReportsWithoutPaths(t *testing.T) {
 		devclients.OriginVSCodeWorkspace, true)
 
 	refs, warnings := collector.result()
-	if len(refs) != 1 || refs[0].Rel != "code/good" {
+	if len(refs) != 1 || refs[0].Rel != filepath.Join("code", "good") {
 		t.Fatalf("refs = %+v, want the one contained project", refs)
 	}
 
@@ -249,10 +250,41 @@ func TestMergeProjectsDedupsAndKeepsApprovals(t *testing.T) {
 	}
 }
 
+// TestAProjectRecordedInTwoCasesIsProbedOnce: on Windows and macOS a project one list records as
+// `Code/Repo` and another as `code/repo` is one directory and merges into one project, as it
+// does when one list records both spellings. On Linux they are two directories.
+func TestAProjectRecordedInTwoCasesIsProbedOnce(t *testing.T) {
+	fromClaude := []projectRef{{Rel: filepath.Join("Code", "Repo"),
+		Origins: map[devclients.Origin]struct{}{devclients.OriginClaudeJSON: {}}}}
+	fromCodex := []projectRef{{Rel: filepath.Join("code", "repo"),
+		Origins: map[devclients.Origin]struct{}{devclients.OriginCodexTOML: {}}}}
+	merged, _ := mergeProjects(fromClaude, fromCodex)
+	want := 1
+	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
+		want = 2
+	}
+	if len(merged) != want {
+		t.Errorf("merged = %+v, want %d on %s", merged, want, runtime.GOOS)
+	}
+
+	home := buildFakeHomeWithProjects(t,
+		map[string]string{"Code/Repo/.mcp.json": `{"mcpServers":{"srv":{"command":"npx","args":["x"]}}}`},
+		"Code/Repo", "code/repo")
+	listed := 0
+	for _, row := range serversOnly(discoverForTest("alice", home)) {
+		if row.ServerName == "srv" {
+			listed++
+		}
+	}
+	if listed != 1 {
+		t.Errorf("srv listed %d times, want once", listed)
+	}
+}
+
 // The project list is capped, and exceeding the cap is reported rather than silently
 // truncating -- which is the same shape of loss the walk's truncation was.
 func TestProjectListCapIsReported(t *testing.T) {
-	home := "/Users/alice"
+	home := testutil.AbsPath("Users", "alice")
 	collector := newProjectCollector(home)
 	for i := 0; i < devclients.MaxProjects+5; i++ {
 		collector.addClaude(filepath.Join(home, "p"+strconv.Itoa(i)), claudeApproval{Known: true}, false)
@@ -282,12 +314,17 @@ func TestProjectListCapIsReported(t *testing.T) {
 // so the truncation warning names the fork whose entry first found it full, and each project
 // keeps the origin of the fork that recorded it.
 func TestTheWorkspaceCapNamesTheForkThatReachedIt(t *testing.T) {
-	home := "/Users/alice"
+	home := testutil.AbsPath("Users", "alice")
 	collector := &projectCollector{set: devclients.NewCollector(home, 2)}
-	collector.addWorkspaceFolder("file:///Users/alice/a", devclients.OriginVSCodeWorkspace, true)
-	collector.addWorkspaceFolder("file:///Users/alice/b", devclients.OriginCursorWorkspace, true)
-	collector.addWorkspaceFolder("file:///Users/alice/c", devclients.OriginWindsurfWorkspace, true)
-	collector.addWorkspaceFolder("file:///Users/alice/d", devclients.OriginCursorWorkspace, true)
+	for _, folder := range []struct {
+		name   string
+		origin devclients.Origin
+	}{
+		{"a", devclients.OriginVSCodeWorkspace}, {"b", devclients.OriginCursorWorkspace},
+		{"c", devclients.OriginWindsurfWorkspace}, {"d", devclients.OriginCursorWorkspace},
+	} {
+		collector.addWorkspaceFolder(testutil.FileURL(filepath.Join(home, folder.name)), folder.origin, true)
+	}
 	refs, warnings := collector.result()
 	if len(refs) != 2 {
 		t.Fatalf("refs = %+v, want two", refs)
@@ -334,7 +371,7 @@ func TestProjectListersAreDeterministic(t *testing.T) {
 func TestCodexProjectsReadsKeysOnly(t *testing.T) {
 	home := t.TempDir()
 	const secret = "ghp_ZZZZopaquesecretvaluethatmustnotescapeZZZZ"
-	config := "[projects.\"" + filepath.Join(home, "code", "repo") + "\"]\n" +
+	config := codexProjectTable(filepath.Join(home, "code", "repo")) +
 		"trust_level = \"trusted\"\n" +
 		// A value this table has no field for and must not decode.
 		"notes = \"my token is " + secret + "\"\n"
