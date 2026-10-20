@@ -25,6 +25,7 @@ go_library(
 go_test(
     name = "go_modules_test",
     srcs = [
+        "bench_test.go",
         "go_modules_test.go",
         "parse_test.go",
         "refusal_unix_test.go",
@@ -34,6 +35,7 @@ go_test(
     deps = [
         "//pkg/devclients",
         "//pkg/fsscan",
+        "//pkg/testutil",
         "//pkg/utils",
         "@com_github_osquery_osquery_go//plugin/table",
     ],

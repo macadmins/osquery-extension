@@ -1,13 +1,12 @@
-package mcp_servers
+package devclients
 
-// stripJSONC removes // line comments and /* */ block comments from a JSON-with-comments
-// document. The stripper is string-aware: it does not touch sequences that appear inside
+// StripJSONC removes // line comments and /* */ block comments from a JSON-with-comments
+// document, the format the VS Code family writes mcp.json and .code-workspace files in. The stripper is string-aware: it does not touch sequences that appear inside
 // double-quoted strings, so values like "https://example.com" or "// note" survive.
 //
-// Trailing commas are removed too. They are not rare: the VS Code family documents its
-// mcp.json as JSON-with-comments and accepts them, so a config a user edited in the editor
-// that wrote it could be perfectly valid to that editor and rejected outright here --
-// encoding/json refuses a trailing comma, and the whole file became one parse-warning row.
+// Trailing commas are removed too. They are not rare: the VS Code family documents its files
+// as JSON-with-comments and accepts them, so a file a user edited in the editor that wrote it
+// can be valid to that editor, and encoding/json refuses a trailing comma.
 //
 // It does not support single-quoted strings, which JSONC does not either.
 //
@@ -18,7 +17,7 @@ package mcp_servers
 //
 // Two passes over the input, one allocation: comments are removed into a new buffer, then
 // trailing commas are compacted within that same buffer.
-func stripJSONC(in []byte) (out []byte, terminated bool) {
+func StripJSONC(in []byte) (out []byte, terminated bool) {
 	out = make([]byte, 0, len(in))
 	inString := false
 	escape := false
@@ -55,16 +54,11 @@ func stripJSONC(in []byte) (out []byte, terminated bool) {
 			}
 			if next == '*' {
 				// Leave a separator behind, the same way the // branch above preserves its
-				// newline. Valid JSON never places two value tokens adjacent with only a
-				// comment between them, so this is hardening rather than a fix, but the
-				// asymmetry with the line-comment branch is not worth keeping.
+				// newline, so two tokens either side of a comment cannot fuse into one.
 				out = append(out, ' ')
 				i += 2
 				closed := false
-				// Scan forward to the closing */. Written as a positive break
-				// rather than a negated conjunction: the condition is "have we
-				// reached the terminator", which this states directly rather than as
-				// either form of "not not at it".
+				// Scan forward to the closing */.
 				for i+1 < len(in) {
 					if in[i] == '*' && in[i+1] == '/' {
 						closed = true
@@ -90,11 +84,11 @@ func stripJSONC(in []byte) (out []byte, terminated bool) {
 //
 // Rewrites buf in place and returns the shortened slice. Removal only ever shrinks, so a
 // write index trailing the read index is safe, and it keeps the whole stripper to a single
-// allocation. Only ever called with the buffer stripJSONC just allocated, which nothing
+// allocation. Only ever called with the buffer StripJSONC just allocated, which nothing
 // else holds a reference to.
 //
 // String-aware for the same reason the comment stripper is: a comma inside a value such as
-// "a,}" is data, and dropping it would corrupt the very configuration this is rescuing.
+// "a,}" is data, and dropping it would corrupt the file.
 func compactTrailingCommas(buf []byte) []byte {
 	in := buf
 	out := buf[:0]

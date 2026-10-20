@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -41,6 +42,13 @@ func openBeneathComponents(baseDir, relPath string, components []string) (*os.Fi
 			flags = openBeneathFileFlags
 		}
 		nextFD, err := unix.Openat(currentFD, component, flags, 0)
+		// O_DIRECTORY|O_NOFOLLOW on a symlink fails with ENOTDIR on macOS, which IsNotDirectory
+		// reads as a path that cannot exist. A symlinked directory is a refusal, so it is
+		// reported as the ELOOP a symlinked final component gets.
+		middle := i < len(components)-1
+		if errors.Is(err, unix.ENOTDIR) && middle && isSymlinkAt(currentFD, component) {
+			err = unix.ELOOP
+		}
 		// Always close the previous fd, even on error.
 		_ = unix.Close(currentFD)
 		if err != nil {
@@ -50,6 +58,28 @@ func openBeneathComponents(baseDir, relPath string, components []string) (*os.Fi
 		currentFD = nextFD
 	}
 	return os.NewFile(uintptr(currentFD), filepath.Join(baseDir, relPath)), nil
+}
+
+// isSymlinkAt reports whether name inside the directory dirFD is a symlink, without following
+// it.
+func isSymlinkAt(dirFD int, name string) bool {
+	var stat unix.Stat_t
+	return unix.Fstatat(dirFD, name, &stat, unix.AT_SYMLINK_NOFOLLOW) == nil &&
+		stat.Mode&unix.S_IFMT == unix.S_IFLNK
+}
+
+// errNotDirectory is what a path that should be a directory and is not reports on this
+// platform; isRefusedOrNotDirectory classifies it as a refusal.
+var errNotDirectory error = syscall.ENOTDIR
+
+// openBaseDir opens baseDir itself as a directory, refusing a symlink, which is the first step
+// openBeneathComponents takes before it opens any component.
+func openBaseDir(baseDir string) (*os.File, error) {
+	fd, err := unix.Open(baseDir, openBeneathDirFlags, 0)
+	if err != nil {
+		return nil, fmt.Errorf("openbeneath: open base %q: %w", baseDir, err)
+	}
+	return os.NewFile(uintptr(fd), baseDir), nil
 }
 
 // isRefusedOrNotDirectory reports whether err is a symlink refusal or a traversal through a
@@ -109,10 +139,9 @@ func checkDescriptor(_ *os.File, info os.FileInfo, opts ReadOpts) error {
 // readLinkAt reads the target of the symlink name inside dir, without following any link.
 // name must be a single component. It fails with EINVAL when name is not a symlink.
 func readLinkAt(dir *os.File, name string) (string, error) {
-	// A target longer than the buffer is reported as an error rather than truncated: every
-	// caller compares the target against a narrow expected form, and a truncated target could
-	// match one the full target does not.
-	buf := make([]byte, 256)
+	// A target longer than the buffer is reported as an error rather than truncated, because a
+	// truncated target names a different file. 4096 is Linux's PATH_MAX; macOS's is 1024.
+	buf := make([]byte, 4096)
 	size, err := unix.Readlinkat(int(dir.Fd()), name, buf)
 	if err != nil {
 		return "", &os.PathError{Op: "readlinkat", Path: name, Err: err}
@@ -121,4 +150,34 @@ func readLinkAt(dir *os.File, name string) (string, error) {
 		return "", &os.PathError{Op: "readlinkat", Path: name, Err: syscall.ENAMETOOLONG}
 	}
 	return string(buf[:size]), nil
+}
+
+// entryStat reads the modification time and file type of entry inside the open directory dir,
+// with fstatat relative to the directory's descriptor and symlinks not followed. DirEntry.Info
+// would stat the entry by its joined path, which resolves every component again. The type is
+// the os.FileMode type bits os.Lstat would report. os.ModeIrregular is never one of them: on
+// Windows it marks a junction, which redirectsElsewhere refuses, and a FIFO, socket or device
+// here is none of that.
+func entryStat(dir *os.File, entry os.DirEntry) (time.Time, os.FileMode, bool) {
+	var stat unix.Stat_t
+	if unix.Fstatat(int(dir.Fd()), entry.Name(), &stat, unix.AT_SYMLINK_NOFOLLOW) != nil {
+		return time.Time{}, 0, false
+	}
+	seconds, nanoseconds := stat.Mtim.Unix()
+	var kind os.FileMode
+	switch stat.Mode & unix.S_IFMT {
+	case unix.S_IFDIR:
+		kind = os.ModeDir
+	case unix.S_IFLNK:
+		kind = os.ModeSymlink
+	case unix.S_IFIFO:
+		kind = os.ModeNamedPipe
+	case unix.S_IFSOCK:
+		kind = os.ModeSocket
+	case unix.S_IFCHR:
+		kind = os.ModeDevice | os.ModeCharDevice
+	case unix.S_IFBLK:
+		kind = os.ModeDevice
+	}
+	return time.Unix(seconds, nanoseconds), kind, true
 }

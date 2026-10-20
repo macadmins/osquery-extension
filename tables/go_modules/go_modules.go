@@ -15,22 +15,21 @@
 // embedded in installed binaries under ~/go/bin and reports each binary's main module; this
 // table reads project manifests.
 //
-// Credential handling. Every column holds either a value from a closed set, an integer, a
-// value checked against the Go module grammar, a go.sum hash in its fixed form, or the project
-// path. The project path is the
-// one free-text value, because a user names their directories; it is redacted for known token
-// formats and credential-named assignments and must be absolute, clean and inside the home it
-// was found in, or it is emptied. A directory a user names after an opaque secret still
-// reaches the column, which the table README states.
+// Credential handling. Every column holds a value from a closed set, an integer, a value checked
+// against the Go module grammar or, for go_directive and toolchain_directive, their own
+// grammars, a go.sum hash in its fixed form, the account's name and identifiers as osquery's
+// users table reports them, or the project path. The project path is the one value with no
+// grammar, because a user names their directories; it is redacted for known token formats and
+// credential-named assignments and must be absolute, clean and inside the home it was found in,
+// or it is emptied. A directory a user names after an opaque secret still reaches the column,
+// which the table README states. The warning rows about a path a project_path constraint names
+// carry that path as the query wrote it: the query writer's text, not a byte a scanned account
+// chose.
 package go_modules
 
 import (
 	"context"
-	"errors"
-	"log"
 	"path/filepath"
-	"regexp"
-	"runtime/debug"
 	"strings"
 	"time"
 
@@ -57,6 +56,10 @@ func GoModulesColumns() []table.ColumnDefinition {
 		table.IntegerColumn("replace_local"),
 		// The project's own module path, from the module line of its go.mod.
 		table.TextColumn("project_module"),
+		// The go and toolchain lines of the project's go.mod: what the project declares, not the
+		// compiler a build used, which GOTOOLCHAIN, an installed compiler or CI can change.
+		table.TextColumn("go_directive"),
+		table.TextColumn("toolchain_directive"),
 		table.TextColumn("project_path"),
 		table.TextColumn("user"),
 		// The uid column of osquery's users table, as core osquery's per-user tables publish it,
@@ -85,21 +88,19 @@ func GoModulesGenerate(ctx context.Context, queryContext table.QueryContext,
 		&utils.SocketOsqueryClienter{SocketPath: socketPath, Timeout: 10 * time.Second})
 }
 
-// generate recovers a panic into an error, so one malformed file cannot end the extension
-// process and with it every other table's rows.
+// generate is GoModulesGenerate with the osquery client injected, so tests drive it through a
+// mock. main.go registers the table through utils.RecoverPanics, so a panic here becomes an
+// error for the query rather than ending the extension process.
 func generate(ctx context.Context, queryContext table.QueryContext,
-	clienter utils.OsqueryClienter) (rows []map[string]string, err error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			// The panic value can quote a file the table was reading, so it is not logged and
-			// does not reach osquery. The stack names functions and offsets only.
-			log.Printf("go_modules: recovered from a panic\n%s", debug.Stack())
-			rows = nil
-			err = errors.New("go_modules: internal error; the extension log has the stack")
-		}
-	}()
-	found := discoverAll(ctx, clienter, utils.EqualityConstraints(queryContext, "user"))
-	rows = make([]map[string]string, 0, len(found))
+	clienter utils.OsqueryClienter) ([]map[string]string, error) {
+	userFilter := utils.EqualityConstraints(queryContext, "user")
+	pathFilter := utils.EqualityConstraints(queryContext, "project_path")
+	// `project_path = ''` selects the user rows, which only a full scan produces.
+	if _, wantsUserRows := pathFilter[""]; wantsUserRows {
+		pathFilter = nil
+	}
+	found := discoverAll(ctx, clienter, userFilter, pathFilter)
+	rows := make([]map[string]string, 0, len(found))
 	for _, r := range found {
 		rows = append(rows, publish(r))
 	}
@@ -114,27 +115,9 @@ var (
 	allowedModRelationships = map[string]struct{}{relationshipDirect: {}, relationshipIndirect: {}}
 )
 
-// userIDRe is the form osquery's users table gives an account identity: a uid, or a SID.
-var userIDRe = regexp.MustCompile(`^(S-1-[0-9-]+|[0-9]+)$`)
-
-// uidRe is the form of a uid: an integer. macOS reports some system accounts' uids as
-// negative numbers.
-var uidRe = regexp.MustCompile(`^-?[0-9]+$`)
-
-// publishedUID returns uid if it is an integer, and "" otherwise.
-func publishedUID(uid string) string {
-	if !uidRe.MatchString(uid) {
-		return ""
-	}
-	return uid
-}
-
 // publish converts a row to the strings osquery receives, applying each column's rule.
 func publish(r row) map[string]string {
-	userID := r.UserID
-	if !userIDRe.MatchString(userID) {
-		userID = ""
-	}
+	userID, _ := utils.PublishedUserID(r.UserID)
 	// The module columns are published as parsed. Every value passed the Go module grammar,
 	// which admits no space or `=`, and a value containing a known credential format was
 	// dropped at parse time (credentialFree in parse.go).
@@ -142,23 +125,43 @@ func publish(r row) map[string]string {
 		// `user` is not constrained. osquery supplies it, it is the join key, and a grammar
 		// here would break the column every realistic query filters on.
 		"user":                 r.User,
-		"uid":                  publishedUID(r.UID),
+		"uid":                  utils.PublishedUID(r.UID),
 		"user_id":              userID,
-		"project_path":         publishedPath(r.ProjectPath, r.Home),
+		"project_path":         publishedProjectPath(r),
 		"project_module":       r.ProjectModule,
+		"go_directive":         r.GoDirective,
+		"toolchain_directive":  r.Toolchain,
 		"module_path":          r.Entry.Path,
 		"version":              r.Entry.Version,
 		"mod_relationship":     closedValue(r.Entry.ModRelationship, allowedModRelationships),
-		"module_hash_recorded": boolToInt(r.Entry.ModuleHashRecorded),
+		"module_hash_recorded": utils.BoolToIntString(r.Entry.ModuleHashRecorded),
 		"module_hash":          publishedHash(r.Entry.ModuleHash),
-		"go_mod_hash_recorded": boolToInt(r.Entry.GoModHashRecorded),
+		"go_mod_hash_recorded": utils.BoolToIntString(r.Entry.GoModHashRecorded),
 		"go_mod_hash":          publishedHash(r.Entry.GoModHash),
 		"replace_module":       r.Entry.ReplaceModule,
 		"replace_version":      r.Entry.ReplaceVersion,
-		"replace_local":        boolToInt(r.Entry.ReplaceLocal),
-		"scan_complete":        boolToInt(r.ScanComplete),
+		"replace_local":        utils.BoolToIntString(r.Entry.ReplaceLocal),
+		"scan_complete":        utils.BoolToIntString(r.ScanComplete),
 		"warning":              publishedWarning(r),
 	}
+}
+
+// publishedProjectPath is the project_path column of a row: a path a project_path constraint
+// named, as the query wrote it, or a discovered path under publishedPath's rule. A named path is
+// the query writer's own text, not a byte any scanned account chose.
+func publishedProjectPath(r row) string {
+	if r.NamedPath {
+		return r.ProjectPath
+	}
+	return publishedPath(r.ProjectPath, r.Home)
+}
+
+// namedPathForm reports whether a path a project_path constraint names is in the form
+// project_path publishes -- absolute and clean -- and whether redaction would change it. A path
+// that fails either test cannot equal any published project_path.
+func namedPathForm(path string) (publishedForm, redacted bool) {
+	publishedForm = filepath.IsAbs(path) && filepath.Clean(path) == path
+	return publishedForm, redact.Secret(redact.Path(path)) != path
 }
 
 // publishedPath applies the project path's rule: redacted, and emptied unless it is absolute,
@@ -207,11 +210,4 @@ func closedValue(value string, allowed map[string]struct{}) string {
 		return value
 	}
 	return ""
-}
-
-func boolToInt(b bool) string {
-	if b {
-		return "1"
-	}
-	return "0"
 }

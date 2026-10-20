@@ -11,6 +11,7 @@ go_library(
         "cloudfile_darwin.go",
         "cloudfile_other.go",
         "doc.go",
+        "followlink.go",
         "networkfs_darwin.go",
         "networkfs_linux.go",
         "networkfs_other.go",
@@ -87,7 +88,9 @@ go_test(
         "userspacefs_test.go",
     ],
     embed = [":fsscan"],
-    deps = select({
+    deps = [
+        "//pkg/testutil",
+    ] + select({
         "@io_bazel_rules_go//go/platform:aix": [
             "@org_golang_x_sys//unix",
         ],

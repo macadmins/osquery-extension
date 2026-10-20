@@ -4,26 +4,14 @@ package go_modules
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/osquery/osquery-go/plugin/table"
-)
 
-// junction creates a directory junction at link that points at target. A junction needs no
-// privilege on Windows, unlike a symlink, so it is the reparse point an unprivileged account
-// can plant. The test is skipped if mklink is unavailable.
-func junction(t *testing.T, link, target string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if output, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput(); err != nil {
-		t.Skipf("mklink /J failed: %v: %s", err, output)
-	}
-}
+	"github.com/macadmins/osquery-extension/pkg/testutil"
+)
 
 // TestAJunctionedProjectIsNotReadOnWindows: a project recorded through a junction is not read,
 // even when the junction's target stays inside the same home. The read refuses the junction
@@ -31,8 +19,8 @@ func junction(t *testing.T, link, target string) {
 // project directory there.
 func TestAJunctionedProjectIsNotReadOnWindows(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "alice")
-	writeFile(t, filepath.Join(home, "real", "proj", "go.mod"), "module x\n\nrequire github.com/behind/junction v1.0.0\n")
-	junction(t, filepath.Join(home, "Developer"), filepath.Join(home, "real"))
+	testutil.WriteFile(t, filepath.Join(home, "real", "proj", "go.mod"), "module x\n\nrequire github.com/behind/junction v1.0.0\n")
+	testutil.Junction(t, filepath.Join(home, "Developer"), filepath.Join(home, "real"))
 	claudeList(t, home, filepath.Join(home, "Developer", "proj"))
 
 	rows := run(t, roster(map[string]string{"alice": home}), table.QueryContext{})
@@ -40,6 +28,31 @@ func TestAJunctionedProjectIsNotReadOnWindows(t *testing.T) {
 		if r["module_path"] != "" {
 			t.Errorf("a module was read through a junction: %v", r)
 		}
+	}
+}
+
+// TestAnInHomeSymlinkStaysRefusedOnWindows: a module file that is a symbolic link to a file in
+// the same home is followed on POSIX and refused here, because fsscan has no Windows link reader.
+// Beside a regular go.sum the refusal is a source_link_refused finding, as a link out of the
+// home is on POSIX. Creating a symlink needs a privilege or Developer Mode, so it can skip.
+func TestAnInHomeSymlinkStaysRefusedOnWindows(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "alice")
+	project := filepath.Join(home, "svc")
+	testutil.WriteFile(t, filepath.Join(home, "shared", "go.mod"), "module y\n\nrequire github.com/linked/dep v1.0.0\n")
+	testutil.WriteFile(t, filepath.Join(project, "go.sum"), "github.com/linked/dep v1.0.0 "+validHashField+"\n")
+	if err := os.Symlink(filepath.Join(home, "shared", "go.mod"), filepath.Join(project, "go.mod")); err != nil {
+		t.Skipf("creating a symlink needs a privilege here: %v", err)
+	}
+	claudeList(t, home, project)
+
+	rows := run(t, roster(map[string]string{"alice": home}), table.QueryContext{})
+	for _, r := range rows {
+		if r["mod_relationship"] != "" {
+			t.Errorf("go.mod was read through a symlink: %v", r)
+		}
+	}
+	if got := warnings(rows); len(got) != 1 || !strings.HasPrefix(got[0], "go.mod: "+warnSentences[warnSourceLinkRefused]) {
+		t.Errorf("warnings = %v, want one go.mod source_link_refused row", got)
 	}
 }
 
@@ -51,7 +64,7 @@ func TestAHardLinkedModuleFileIsRefusedOnWindows(t *testing.T) {
 	project := filepath.Join(home, "svc")
 	claudeList(t, home, project)
 	elsewhere := filepath.Join(root, "elsewhere.mod")
-	writeFile(t, elsewhere, "module x\n\nrequire github.com/linked/secret v1.0.0\n")
+	testutil.WriteFile(t, elsewhere, "module x\n\nrequire github.com/linked/secret v1.0.0\n")
 	if err := os.MkdirAll(project, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -73,8 +86,8 @@ func TestAHardLinkedModuleFileIsRefusedOnWindows(t *testing.T) {
 func TestAJunctionedListDirectoryIsReportedOnWindows(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, "alice")
-	writeFile(t, filepath.Join(root, "elsewhere", "config.toml"), "[projects.\"C:\\\\x\"]\n")
-	junction(t, filepath.Join(home, ".codex"), filepath.Join(root, "elsewhere"))
+	testutil.WriteFile(t, filepath.Join(root, "elsewhere", "config.toml"), "[projects.\"C:\\\\x\"]\n")
+	testutil.Junction(t, filepath.Join(home, ".codex"), filepath.Join(root, "elsewhere"))
 
 	rows := run(t, roster(map[string]string{"alice": home}), table.QueryContext{})
 	got := warnings(rows)

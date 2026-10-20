@@ -7,16 +7,18 @@ package fsscan
 // planted at a probed configuration path was refused rather than followed, producing no row
 // and no warning, which is the designed silent-absence result.
 //
-// KNOWN GAP: not continuously exercised. There is no Windows CI job, so `go vet` and
-// cross-compilation are the only automated checks that ever see this file, and the
-// coverage gate cannot measure it at all. Nothing has stress-tested the post-open identity
-// re-check against a path genuinely being replaced mid-traversal; that race is reasoned
-// about rather than demonstrated.
+// The windows-latest job in native-tests.yml runs the Windows-only tests against this file:
+// junctions at every component and as the base, a directory symlink, a path through a
+// regular file, hard links and the cloud attribute. The coverage gate, which runs on Ubuntu,
+// cannot measure it. KNOWN GAP: nothing has stress-tested the post-open identity re-check
+// against a path genuinely being replaced mid-traversal; that race is reasoned about rather
+// than demonstrated.
 
 import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -52,6 +54,37 @@ import (
 // symlink, a mount point) and was refused rather than followed. It is the Windows counterpart
 // of ELOOP from an O_NOFOLLOW open.
 var reparsePointRefused = errors.New("fsscan: path component is a reparse point")
+
+// errNotDirectory is what a path that should be a directory and is not reports on this
+// platform; isRefusedOrNotDirectory classifies it as a refusal.
+var errNotDirectory error = windows.ERROR_DIRECTORY
+
+// openBaseDir opens baseDir itself, with the checks openBeneathComponents applies to its base:
+// a base that is a reparse point is refused, and one replaced between the check and the open
+// is refused too.
+func openBaseDir(baseDir string) (*os.File, error) {
+	before, err := os.Lstat(baseDir)
+	if err != nil {
+		return nil, fmt.Errorf("openbeneath: stat base %q: %w", baseDir, err)
+	}
+	if redirectsElsewhere(before.Mode()) {
+		return nil, fmt.Errorf("openbeneath: %w: base %q", reparsePointRefused, baseDir)
+	}
+	dir, err := os.Open(baseDir)
+	if err != nil {
+		return nil, fmt.Errorf("openbeneath: open base %q: %w", baseDir, err)
+	}
+	after, err := dir.Stat()
+	if err != nil || !os.SameFile(before, after) {
+		_ = dir.Close()
+		if err != nil {
+			return nil, fmt.Errorf("openbeneath: stat base %q: %w", baseDir, err)
+		}
+		return nil, fmt.Errorf("openbeneath: %w: base %q changed between check and open",
+			reparsePointRefused, baseDir)
+	}
+	return dir, nil
+}
 
 // openBeneathComponents opens relPath under baseDir without letting any component escape
 // baseDir.
@@ -106,6 +139,14 @@ func openBeneathComponents(baseDir, relPath string, components []string) (*os.Fi
 		before, err := lstatNoReparse(current, component, i, relPath)
 		if err != nil {
 			return nil, err
+		}
+		// An intermediate component that is a file. Opening it as a root fails with
+		// ERROR_PATH_NOT_FOUND, which matches fs.ErrNotExist and would read as absence; the
+		// POSIX backend reports ENOTDIR here, which is a refusal. ERROR_DIRECTORY is the
+		// errno isRefusedOrNotDirectory recognizes, so both platforms report it the same way.
+		if !before.IsDir() {
+			return nil, fmt.Errorf("openbeneath: %q (component %d of %q) is not a directory: %w",
+				component, i, relPath, windows.ERROR_DIRECTORY)
 		}
 		next, err := current.OpenRoot(component)
 		if err != nil {
@@ -274,8 +315,24 @@ func IsCloudPlaceholder(file *os.File) (bool, error) {
 	return info.FileAttributes&cloudPlaceholderFlags != 0, nil
 }
 
-// readLinkAt is not implemented on Windows. Its one caller resolves snap's revision pointer,
-// which exists only on Linux.
+// readLinkAt is not implemented on Windows, so a symlinked module file stays refused there. Go
+// 1.25's os.Root.Readlink reads a link through a handle opened relative to its parent, which
+// would serve, but reaching it needs an os.Root for the link's directory rather than the
+// *os.File OpenBeneath returns, and containment rules for the target forms POSIX does not have:
+// a rooted "\shared\go.sum" or a drive-relative "D:go.sum" is not absolute to filepath.IsAbs,
+// so joining it to the link's directory would name the wrong file.
 func readLinkAt(*os.File, string) (string, error) {
 	return "", errUnsupported
+}
+
+// entryStat reads the modification time and file type of entry, which dir's ReadDir returned.
+// On Windows the directory listing carries each entry's times and attributes, so DirEntry.Info
+// answers from the handle os.Root opened rather than by a second lookup by path. Go reports a
+// junction as os.ModeIrregular without os.ModeDir, and a symlink as os.ModeSymlink.
+func entryStat(_ *os.File, entry os.DirEntry) (time.Time, os.FileMode, bool) {
+	info, err := entry.Info()
+	if err != nil {
+		return time.Time{}, 0, false
+	}
+	return info.ModTime(), info.Mode().Type(), true
 }

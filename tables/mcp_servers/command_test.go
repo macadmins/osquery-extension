@@ -322,8 +322,8 @@ func TestSpacedPathsAndLauncherCollisionsAreIndistinguishable(t *testing.T) {
 		"confidence":      {spacedDirectory.Confidence, collision.Confidence},
 	} {
 		if pair[0] != pair[1] {
-			t.Errorf("%s differs between the two readings (%q vs %q); if a rule now "+
-				"separates them, this trade-off no longer has to be made",
+			t.Errorf("%s differs between the two readings (%q vs %q): a rule separates "+
+				"them, so the trade-off this test documents does not apply",
 				column, pair[0], pair[1])
 		}
 	}
@@ -404,7 +404,7 @@ func TestEmbeddedArgumentsAreRedactedLikeDeclaredOnes(t *testing.T) {
 		{"declared", `{"mcpServers":{"a":{"command":"npx","args":["--token","` + secret + `","real-package"]}}}`},
 		{"embedded two-argument", `{"mcpServers":{"a":{"command":"npx --token ` + secret + ` real-package"}}}`},
 		{"embedded inline", `{"mcpServers":{"a":{"command":"npx --token=` + secret + ` real-package"}}}`},
-		{"embedded api-key", `{"mcpServers":{"a":{"command":"uvx --api-key ` + secret + ` real-package"}}}`},
+		{"embedded api-key", `{"mcpServers":{"a":{"command":"npx --api-key ` + secret + ` real-package"}}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rows := finishProcessing("", []byte(tc.body), nil, "/p/.mcp.json", "alice", "claude-code",
@@ -487,13 +487,12 @@ func TestNonASCIIWhitespaceSplitsLikeASpace(t *testing.T) {
 
 // A quoted argument embedded in `command` is one argument, not one per word.
 //
-// strings.Fields split it, and the pieces went two places that both matter. redactArgs
-// redacts a credential by looking back at the option before it, so it redacted only the
-// first fragment and left the rest standing: `--token "opaque superSecret value"` put
-// superSecret in the row as its own argument, where looksLikePackageSpec accepted it and
-// reported it as package_name. The same split reported `--out "a b c" real-package` as
-// package_name=b. Both are fixed by keeping the span together: redaction covers all of it,
-// and a value holding whitespace can no longer pass as a package.
+// Splitting on whitespace breaks two things. redactArgs redacts a credential by looking back
+// at the option before it, so it would redact only the first fragment, and
+// `--token "opaque superSecret value"` would put superSecret in the row as its own argument,
+// which looksLikePackageSpec accepts as package_name. The same split would report
+// `--out "a b c" real-package` as package_name=b. With the span kept together, redaction
+// covers all of it, and a value holding whitespace cannot pass as a package.
 func TestQuotedEmbeddedArgumentIsOneArgument(t *testing.T) {
 	const secret = "superSecretValue"
 	cases := []struct{ name, command, wantSpec string }{
@@ -501,18 +500,18 @@ func TestQuotedEmbeddedArgumentIsOneArgument(t *testing.T) {
 		{"single quotes too", `npx --token 'opaque ` + secret + ` value' real-package`, "real-package"},
 		// The span stays whole, which is this test's subject. Identity is empty because
 		// --out is not a known value option, so `a b c` reads as the first operand and an
-		// operand that is not package-shaped ends the scan. The arity gap used to be
-		// masked here by walking past it to real-package, which was right by luck and is
-		// the same walk that reported a script's argument as an installed package.
+		// operand that is not package-shaped ends the scan. Walking past it to real-package
+		// would be right here only by luck, and the same walk reports a script's argument
+		// as an installed package.
 		{"quoted value of an unknown option yields no identity",
 			`npx --out "a b c" real-package`, ""},
-		// The same shape with an option whose arity is known: the value is consumed and the
+		// The same shape with an option npx reads a value for: the value is consumed and the
 		// real package is still reported.
 		{"quoted value of a known value option", `npx --registry "a b c" real-package`, "real-package"},
 		{"quoted launcher and quoted credential",
 			`"/opt/my tool/npx" --token "opaque ` + secret + ` value" real-package`, "real-package"},
 		{"inline quoted value", `npx --flag="a b" real-package`, "real-package"},
-		// Where the argument ends is unknowable, so every boundary after it is a guess.
+		// Where the argument ends is unknowable, so every split after it is a guess.
 		// The launcher was settled before the quote and still stands.
 		{"unterminated quote yields no identity", `npx --token "opaque ` + secret + ` real-package`, ""},
 	}

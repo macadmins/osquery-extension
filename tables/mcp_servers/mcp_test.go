@@ -2,42 +2,16 @@ package mcp_servers
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
 
+	"github.com/macadmins/osquery-extension/pkg/devclients"
 	"github.com/macadmins/osquery-extension/pkg/redact"
 	"github.com/osquery/osquery-go/plugin/table"
 )
-
-func TestStripJSONC(t *testing.T) {
-	cases := []struct {
-		name, in, want string
-	}{
-		{"no comments", `{"a": 1}`, `{"a": 1}`},
-		{"line comment", "{\n// hi\n\"a\": 1\n}", "{\n\n\"a\": 1\n}"},
-		// Two spaces: the separator the stripper substitutes for the comment, then the
-		// space that followed it in the input. The line-comment case above substitutes a
-		// newline for the same reason.
-		{"block comment", `{/* hi */ "a": 1}`, `{  "a": 1}`},
-		{"slash inside string", `{"url": "https://example.com"}`, `{"url": "https://example.com"}`},
-		{"escaped quote in string", `{"a": "he said \"hi\" // joke"}`, `{"a": "he said \"hi\" // joke"}`},
-		{"line comment at EOF", `{"a": 1} // trailing`, `{"a": 1} `},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			stripped, terminated := stripJSONC([]byte(c.in))
-			if !terminated {
-				t.Fatalf("%s: unexpected unterminated block comment", c.name)
-			}
-			got := string(stripped)
-			if got != c.want {
-				t.Errorf("got %q, want %q", got, c.want)
-			}
-		})
-	}
-}
 
 func TestExtractEnvelope(t *testing.T) {
 	data := []byte(`{
@@ -154,27 +128,36 @@ func TestInferIdentity_RejectsCredentialBearingURL(t *testing.T) {
 	}
 }
 
-// The option-arity list cannot be complete, so the value of an option it has never heard of
+// The lists of options that take a value cannot be complete, so the value of an option they omit
 // is a package-shaped token sitting in package position. When the option's *name* says the
 // value is a credential, that is a leak and not merely a wrong answer: package_name is
 // emitted as-is, and an opaque secret matches none of the token shapes pkg/redact knows.
 //
-// The real package still has to be found afterwards. Refusing the token without continuing
-// the scan would trade a leak for an empty inventory row.
+// npx reads an option it does not list as taking the next token, so for npx the option's name
+// settles it and the real package is still found afterwards. uv refuses an option it does not
+// know, so no package runs and none is named, with unknown_launcher_option; either way the
+// value never becomes the package.
 func TestInferIdentity_SkipsTheValueOfACredentialNamedOption(t *testing.T) {
-	for _, args := range [][]string{
-		{"--auth-token", "opaquevalue123", "real-server"},
-		{"--api-key", "opaquevalue123", "real-server"},
-		{"--dd-key", "opaquevalue123", "real-server"},
-	} {
-		server := Server{Command: "uvx", Args: args}
-		inferIdentity(&server)
-		if strings.Contains(server.PackageName, "opaquevalue") ||
-			strings.Contains(server.RequestedSpec, "opaquevalue") {
-			t.Errorf("%v: option value reported as the package: %+v", args, server)
-		}
-		if server.PackageName != "real-server" {
-			t.Errorf("%v: package after the option was lost: %q", args, server.PackageName)
+	for _, launcher := range []string{"npx", "uvx"} {
+		for _, args := range [][]string{
+			{"--auth-token", "opaquevalue123", "real-server"},
+			{"--api-key", "opaquevalue123", "real-server"},
+			{"--dd-key", "opaquevalue123", "real-server"},
+		} {
+			server := Server{Command: launcher, Args: args}
+			inferIdentity(&server)
+			if strings.Contains(server.PackageName, "opaquevalue") ||
+				strings.Contains(server.RequestedSpec, "opaquevalue") {
+				t.Errorf("%s %v: option value reported as the package: %+v", launcher, args, server)
+			}
+			want, unknown := "real-server", false
+			if launcher == "uvx" {
+				want, unknown = "", true
+			}
+			if server.PackageName != want || (server.Warning.Code == warnUnknownLauncherOption) != unknown {
+				t.Errorf("%s %v: package %q, warning %q; want %q", launcher, args, server.PackageName,
+					server.Warning.Code, want)
+			}
 		}
 	}
 }
@@ -245,11 +228,18 @@ func TestInferIdentity_CommandWithSpacesEmptyArgs(t *testing.T) {
 	}
 }
 
+// uv's `run` takes no --from (uv 0.13.3's RunArgs has no such option), so uv refuses this
+// command line and nothing is identified; `uv tool run --from` is the form that names a package.
 func TestInferIdentity_UVRunFrom(t *testing.T) {
 	s := Server{Command: "uv", Args: []string{"run", "--from", "mcp-server-fetch", "mcp-server-fetch"}}
 	inferIdentity(&s)
-	if s.PackageManager != "uv" || s.PackageName != "mcp-server-fetch" {
-		t.Errorf("uv: %+v", s)
+	if s.PackageManager != "uv" || s.PackageName != "" || s.Warning.Code != warnUnknownLauncherOption {
+		t.Errorf("uv run --from: %+v", s)
+	}
+	s = Server{Command: "uv", Args: []string{"tool", "run", "--from", "mcp-server-fetch", "mcp-server-fetch"}}
+	inferIdentity(&s)
+	if s.PackageName != "mcp-server-fetch" {
+		t.Errorf("uv tool run --from: %+v", s)
 	}
 }
 
@@ -316,9 +306,9 @@ func TestSecretFlagNameDetection(t *testing.T) {
 		{"--no-save", false},
 	}
 	for _, c := range cases {
-		got := isSecretFlagName(c.flag)
+		got := redact.IsSecretFlagName(c.flag)
 		if got != c.want {
-			t.Errorf("isSecretFlagName(%q) = %v, want %v", c.flag, got, c.want)
+			t.Errorf("redact.IsSecretFlagName(%q) = %v, want %v", c.flag, got, c.want)
 		}
 	}
 }
@@ -337,7 +327,7 @@ func TestRedactArgs(t *testing.T) {
 			[]string{"--token", "[REDACTED]"}},
 		// Deliberately over-redacts. The exemption this replaces skipped any dash-prefixed
 		// token, which meant `--token -opaque-secret` left the secret in place. Telling that
-		// apart from a flag with no value needs per-flag arity, which this does not have, and
+		// apart from a flag with no value needs to know whether each option takes one, which this does not, and
 		// this file's stated preference is to over-redact rather than risk a leak. Nothing is
 		// lost: no column emits args, only their count.
 		{"two-arg secret flag consumes the next token even if it looks like a flag",
@@ -367,8 +357,8 @@ func TestRedactArgs(t *testing.T) {
 }
 
 func TestRedactSecret_Idempotent(t *testing.T) {
-	once := redactSecret("ghp_abcdefghijklmnopqrstuvwx12345")
-	twice := redactSecret(once)
+	once := redact.Secret("ghp_abcdefghijklmnopqrstuvwx12345")
+	twice := redact.Secret(once)
 	if once != twice {
 		t.Errorf("not idempotent: %q vs %q", once, twice)
 	}
@@ -453,11 +443,11 @@ func TestRedactSecretRedactsAnAssignmentInsideALongerValue(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			got := redactSecret(testCase.in)
+			got := redact.Secret(testCase.in)
 			if got != testCase.want {
-				t.Errorf("redactSecret(%q) = %q, want %q", testCase.in, got, testCase.want)
+				t.Errorf("redact.Secret(%q) = %q, want %q", testCase.in, got, testCase.want)
 			}
-			if again := redactSecret(got); again != got {
+			if again := redact.Secret(got); again != got {
 				t.Errorf("not idempotent: %q then %q", got, again)
 			}
 		})
@@ -475,8 +465,8 @@ func TestRedactSecretRedactsAnAssignmentInsideALongerValue(t *testing.T) {
 func TestNestedAssignmentsAreBoundedAndStillRedact(t *testing.T) {
 	const secret = "opaquevalue123"
 
-	atTheLimit := strings.Repeat("-a=", maxAssignmentDepth-1) + "--token=" + secret
-	if got := redactSecret(atTheLimit); strings.Contains(got, secret) {
+	atTheLimit := strings.Repeat("-a=", redact.MaxAssignmentDepth-1) + "--token=" + secret
+	if got := redact.Secret(atTheLimit); strings.Contains(got, secret) {
 		t.Errorf("a credential within the depth bound was not redacted: %q", got)
 	}
 
@@ -484,14 +474,14 @@ func TestNestedAssignmentsAreBoundedAndStillRedact(t *testing.T) {
 	// Enough nesting that an unbounded descent is measurably quadratic, without making the
 	// suite pay for proving it.
 	pathological := strings.Repeat("-a=", 20000) + "--token=" + secret
-	got := redactSecret(pathological)
+	got := redact.Secret(pathological)
 	if strings.Contains(got, secret) {
 		t.Error("deeply nested input leaked its credential")
 	}
 	if !strings.Contains(got, redact.RedactedMark) {
 		t.Errorf("deeply nested input produced no marker: %q", got)
 	}
-	if again := redactSecret(got); again != got {
+	if again := redact.Secret(got); again != got {
 		t.Errorf("not idempotent at the bound: %q then %q", got, again)
 	}
 }
@@ -598,8 +588,8 @@ func TestSecretInArgsRedacted_EndToEnd(t *testing.T) {
 
 // A flat .mcp.json carrying a non-object sibling, which "$schema" makes common. Decoding the
 // whole document into map[string]rawServerEntry fails on that string, and the caller reads a
-// failure here as "not MCP configuration", so every real server in the file used to disappear
-// with no warning row to show it had happened. Silent row loss, so it gets a named test.
+// failure here as "not MCP configuration", so every real server in the file would disappear
+// with no warning row to show it. Silent row loss, so it gets a named test.
 func TestExtractFlatKeepsServersAlongsideNonObjectSiblings(t *testing.T) {
 	rows, err := extractEnvelopeSimple([]byte(`{
 		"$schema": "https://modelcontextprotocol.io/schema.json",
@@ -619,8 +609,8 @@ func TestExtractFlatKeepsServersAlongsideNonObjectSiblings(t *testing.T) {
 }
 
 // One malformed entry must not take its healthy siblings with it, and its absence has to be
-// stated. Flat files used to skip silently while envelopes reported a count, so a short
-// listing from a flat .mcp.json was indistinguishable from a complete one.
+// stated. A silent skip would make a short listing from a flat .mcp.json indistinguishable
+// from a complete one.
 func TestExtractFlatKeepsHealthyEntriesAndReportsSkippedOnes(t *testing.T) {
 	rows, err := extractEnvelopeSimple([]byte(
 		`{"broken": {"command": 123}, "good": {"command": "uvx", "args": ["good-mcp"]}}`))
@@ -708,44 +698,12 @@ func TestNpxIdentityFindsInlinePackageInFinalPosition(t *testing.T) {
 	}
 }
 
-// Removing a block comment must not let its neighbours fuse into a single token.
-//
-// The separator itself is asserted byte-exactly by the "block comment" case in
-// TestStripJSONC above. What that cannot show is why it matters, which is this: the input
-// below is malformed, two numbers with only a comment between them. With a separator it stays
-// malformed and the file is reported with a parse warning. Without one it becomes {"a":12},
-// which parses cleanly to a value that was never in the file. A table that inventories
-// configuration must not invent data out of a corrupt one.
-//
-// An earlier version of this test used `{"a":1/*c*/,"b":2}`, which parses to the same thing
-// with or without a separator, so it passed either way and asserted nothing.
-func TestStripJSONCBlockCommentDoesNotFuseAdjacentTokens(t *testing.T) {
-	for _, malformed := range []string{`{"a":1/*c*/2}`, `{"a":[1/*c*/2]}`} {
-		stripped, _ := stripJSONC([]byte(malformed))
-		var parsed any
-		if err := json.Unmarshal(stripped, &parsed); err == nil {
-			t.Errorf("%s stripped to %q, which parsed to %v: malformed input must stay "+
-				"malformed rather than fusing into a different value", malformed, stripped, parsed)
-		}
-	}
-	// The well-formed case still has to survive the separator unharmed.
-	stripped, _ := stripJSONC([]byte(`{"a":1/*c*/,"b":2}`))
-	var parsed map[string]int
-	if err := json.Unmarshal(stripped, &parsed); err != nil {
-		t.Fatalf("valid JSONC broke: %v (%q)", err, stripped)
-	}
-	if parsed["a"] != 1 || parsed["b"] != 2 {
-		t.Errorf("values wrong: %v", parsed)
-	}
-}
-
 // A malformed entry inside an envelope must not take its healthy siblings with it, and its
 // absence must be stated rather than left to inference.
 //
-// An earlier version of this test asserted the opposite -- zero rows plus an error -- which
-// was the wrong target. Surfacing the whole file as unreadable because one of six entries has
-// a bad field type loses five servers that were perfectly legible, and a supply-chain
-// inventory should prefer partial-and-labelled over nothing.
+// Reporting the whole file as unreadable because one of six entries has a bad field type
+// would lose five legible servers, and a supply-chain inventory prefers partial, labeled
+// results over nothing.
 func TestEnvelopeKeepsHealthyEntriesAndReportsSkippedOnes(t *testing.T) {
 	rows, err := extractEnvelopeSimple([]byte(
 		`{"mcpServers":{"good":{"command":"npx","args":["x"]},"bad":{"command":123}}}`))
@@ -768,19 +726,6 @@ func TestEnvelopeKeepsHealthyEntriesAndReportsSkippedOnes(t *testing.T) {
 	}
 	if diagnostics != 1 {
 		t.Errorf("the skipped entry should be reported, got %d diagnostics: %+v", diagnostics, rows)
-	}
-}
-
-// An unterminated block comment makes a file malformed. The prefix before the opener can be
-// valid JSON on its own, so returning it silently would report a truncated file as clean.
-func TestStripJSONCReportsUnterminatedBlockComment(t *testing.T) {
-	stripped, terminated := stripJSONC([]byte(`{"mcpServers":{"a":{"command":"npx"}}} /* oops`))
-	if terminated {
-		t.Errorf("unterminated comment reported as terminated; stripped=%q", stripped)
-	}
-	// A properly closed comment still reports terminated.
-	if _, ok := stripJSONC([]byte(`{"a":1/*c*/}`)); !ok {
-		t.Error("a closed block comment must report terminated")
 	}
 }
 
@@ -854,7 +799,7 @@ func TestValueTakingOptionsDoNotBecomeThePackage(t *testing.T) {
 		{"pipx", []string{"run", "--python", "3.12", "actual-server"}, "actual-server"},
 		// uv indexed blindly to run+2 regardless of what sat there, returning --python.
 		{"uv", []string{"tool", "run", "--python", "3.12", "actual-server"}, "actual-server"},
-		{"uv", []string{"run", "--from", "real-pkg", "cmd"}, "real-pkg"},
+		{"uv", []string{"tool", "run", "--from", "real-pkg", "cmd"}, "real-pkg"},
 		{"docker", []string{"run", "--pull", "always", "myorg/real:1.0"}, "myorg/real"},
 		{"docker", []string{"run", "--rm", "-v", "/tmp:/tmp", "myorg/img:2"}, "myorg/img"},
 		{"npx", []string{"-y", "@scope/pkg@1.0.0"}, "@scope/pkg"},
@@ -905,14 +850,12 @@ func TestCollidingEnvelopeNamesYieldOneRow(t *testing.T) {
 	}
 }
 
-// dockerRunIdentity has been through several arity strategies and regressed on each, so the
-// cases that broke it are pinned here rather than left to ad-hoc checks.
-//
-// The strategy is to enumerate the boolean options and assume everything else consumes a
-// value. That is the inversion of listing value-bearing options, which grew three times during
-// review -- --pull, then --cap-add, then --publish -- each addition prompted by a wrong package
-// name rather than by reading the docs.
-func TestDockerRunIdentityArity(t *testing.T) {
+// dockerRunIdentity reads each `docker run` option from dockerRunGrammar, which lists both the
+// value-less options and the value-taking ones from `docker run --help`, and identifies nothing
+// at an option it does not list. Assuming an unlisted option takes a value published the
+// container's command as the image when the option was value-less: `--use-api-socket alpine:3
+// opaquesecret123`. The cases that broke earlier approaches are pinned here.
+func TestDockerRunIdentityOptions(t *testing.T) {
 	for _, testCase := range []struct {
 		name string
 		args []string
@@ -928,13 +871,16 @@ func TestDockerRunIdentityArity(t *testing.T) {
 		{"restart policy", []string{"run", "--restart", "no", "myorg/s:1"}, "myorg/s:1"},
 		// Values the grammar rejects on case or structure.
 		{"cap-add", []string{"run", "--cap-add", "NET_ADMIN", "myorg/s:1"}, "myorg/s:1"},
-		// Booleans, listed and unlisted.
+		// Value-less options, and options this table does not list, which identify nothing:
+		// whether one takes a value cannot be known, and either guess can cross from the image
+		// into the container's command.
 		{"known booleans", []string{"run", "--rm", "-i", "-t", "myorg/s"}, "myorg/s"},
 		{"boolean then option", []string{"run", "--sig-proxy", "--publish", "8080:80", "myorg/s:1"}, "myorg/s:1"},
-		{"unlisted boolean then option", []string{"run", "--made-up-bool", "--publish", "8080:80", "myorg/s:1"}, "myorg/s:1"},
-		// An unlisted boolean directly before the image swallows it. No image beats a wrong
-		// one, which is the intended direction of error.
-		{"unlisted boolean then image", []string{"run", "--made-up-bool", "myorg/s:1"}, ""},
+		{"api socket", []string{"run", "--use-api-socket", "alpine:3", "opaquesecret123"}, "alpine:3"},
+		{"unlisted option then option", []string{"run", "--made-up-bool", "--publish", "8080:80", "myorg/s:1"}, ""},
+		{"unlisted option then image", []string{"run", "--made-up-bool", "myorg/s:1", "opaquesecret123"}, ""},
+		// A lone dash is an operand, and not a reference.
+		{"lone dash", []string{"run", "-", "arg1", "opaquesecret123"}, ""},
 		// Structural forms.
 		{"inline value", []string{"run", "--env=FOO=bar", "myorg/s:1"}, "myorg/s:1"},
 		{"double dash", []string{"run", "--", "myorg/s:1"}, "myorg/s:1"},
@@ -968,8 +914,8 @@ func TestDockerRunIdentityArity(t *testing.T) {
 		// here would make -P consume the image.
 		{"capital P is publish-all", []string{"run", "-P", "myorg/s:1"}, "myorg/s:1"},
 		{"grouped with capital P", []string{"run", "-itP", "myorg/s:1"}, "myorg/s:1"},
-		// An unknown character in a cluster falls back to the conservative default rather
-		// than assuming the rest are booleans.
+		// An unknown character in a cluster identifies nothing rather than assuming the rest
+		// are booleans.
 		{"cluster with an unknown short", []string{"run", "-itZ", "myorg/s:1"}, ""},
 		// A negative number must not be mistaken for a cluster.
 		{"negative number is not a cluster", []string{"run", "--pids-limit", "-1", "myorg/s:1"}, "myorg/s:1"},
@@ -977,7 +923,7 @@ func TestDockerRunIdentityArity(t *testing.T) {
 		{"userinfo", []string{"run", "user:secret@reg/img"}, ""},
 		{"no run subcommand", []string{"pull", "myorg/s:1"}, ""},
 	} {
-		if got := dockerRunIdentity(testCase.args); got != testCase.want {
+		if got, _ := containerRunIdentity(testCase.args, dockerGlobalGrammar, dockerRunGrammar); got != testCase.want {
 			t.Errorf("%s: %v -> %q, want %q", testCase.name, testCase.args, got, testCase.want)
 		}
 	}
@@ -1311,11 +1257,10 @@ func TestClaudeCodeInvalidJSONStillErrors(t *testing.T) {
 	}
 }
 
-// TestEnvelopeCollisionUsesDeclaredNamesNotDecodedOnes pins the precedence contract against
-// the state where it used to invert: `mcpServers` wins on collision, but the suppression list
-// was built from the entries that *decoded*, so a malformed higher-priority entry dropped out
-// of the list and the lower-priority `servers` row survived under it. The file then reported
-// the shadowed configuration as though it were the effective one.
+// TestEnvelopeCollisionUsesDeclaredNamesNotDecodedOnes: `mcpServers` wins on collision, and
+// the suppression list holds the declared names, not only the entries that decoded. Otherwise
+// a malformed higher-priority entry would drop out of the list, and the lower-priority
+// `servers` row would survive under it and be reported as the effective configuration.
 func TestEnvelopeCollisionUsesDeclaredNamesNotDecodedOnes(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -1493,30 +1438,30 @@ func TestTrailingCommaStripIsStringAware(t *testing.T) {
 	}
 }
 
-// An option's value must not be reported as the package, and a boolean must not cost the
-// package its row. Both directions are pinned because the fix for one is the bug for the
-// other: listing a flag in runnerValueFlags skips the token after it, so listing a boolean
-// swallows the real package and omitting a value option donates its value to package_name.
-func TestRunnerValueFlagsSkipValuesWithoutSwallowingPackages(t *testing.T) {
+// An option's value must not be reported as the package, and a value-less option must not cost
+// the package its row. Both directions are pinned because the fix for one is the bug for the
+// other: a value-less option read as taking a value swallows the real package, and a
+// value-taking one read as value-less donates its value to package_name.
+func TestUvxValueOptionsSkipValuesWithoutSwallowingPackages(t *testing.T) {
 	cases := []struct {
 		name, want string
 		args       []string
 	}{
-		// The reported case: --color takes a separate value and was not listed, so the
-		// choice was reported as the package at medium confidence.
-		{"a listed value option", "real-server", []string{"--color", "always", "real-server"}},
-		{"another listed value option", "real-server", []string{"--python", "3.12", "real-server"}},
-		// --from is the option whose value IS the package, so it must stay unlisted.
+		// --color takes a separate value, and a scan that did not know it reported the choice
+		// as the package at medium confidence.
+		{"a value option", "real-server", []string{"--color", "always", "real-server"}},
+		{"another value option", "real-server", []string{"--python", "3.12", "real-server"}},
+		// --from takes a value, and the value is the package.
 		{"--from names the package", "httpx", []string{"--from", "httpx", "httpx-cli"}},
-		// Booleans: listing any of these would consume the package.
-		{"a boolean long flag", "real-server", []string{"--quiet", "real-server"}},
-		{"a boolean short flag", "real-server", []string{"-q", "real-server"}},
-		{"another boolean", "real-server", []string{"--no-cache", "real-server"}},
+		// Value-less: reading any of these as taking a value would consume the package.
+		{"a value-less long option", "real-server", []string{"--quiet", "real-server"}},
+		{"a value-less short option", "real-server", []string{"-q", "real-server"}},
+		{"another value-less option", "real-server", []string{"--no-cache", "real-server"}},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			if got, _ := firstPositional(testCase.args); got != testCase.want {
-				t.Errorf("firstPositional(%q) = %q, want %q", testCase.args, got, testCase.want)
+			if got, _ := uvxIdentity(testCase.args); got != testCase.want {
+				t.Errorf("uvxIdentity(%q) = %q, want %q", testCase.args, got, testCase.want)
 			}
 		})
 	}
@@ -1563,7 +1508,7 @@ func TestLauncherOptionScansStopAtTheFirstPositional(t *testing.T) {
 			t.Errorf("python = %q, want realmod", got)
 		}
 		for _, args := range [][]string{
-			{"run", "--from", "realpkg", "cmd"},
+			{"tool", "run", "--from", "realpkg", "cmd"},
 			{"tool", "run", "realpkg"},
 			{"tool", "run", "--python", "3.12", "realpkg"},
 		} {
@@ -1579,8 +1524,8 @@ func TestLauncherOptionScansStopAtTheFirstPositional(t *testing.T) {
 	})
 }
 
-// Four more ways a launcher's option list ends, each of which the first attempt at this
-// boundary walked straight through.
+// Four more ways a launcher's option list ends, each of which the first attempt at reading a
+// launcher's own options walked straight through.
 //
 // A returned index was not enough: the caller rescanned the prefix without knowing which
 // tokens had already been consumed as values, so `python -c -m evilmod` read -c's argument a
@@ -1615,7 +1560,7 @@ func TestLauncherOptionWalkRespectsTerminatorsAndValues(t *testing.T) {
 		if got, _ := uvRunIdentity([]string{"tool", "run", "realpkg"}); got != "realpkg" {
 			t.Errorf("uv tool run = %q, want realpkg", got)
 		}
-		if got, _ := uvRunIdentity([]string{"run", "--from=realpkg", "cmd"}); got != "realpkg" {
+		if got, _ := uvRunIdentity([]string{"tool", "run", "--from=realpkg", "cmd"}); got != "realpkg" {
 			t.Errorf("uv inline --from = %q, want realpkg", got)
 		}
 		if spec, _, _ := npxIdentity([]string{"-y", "--package", "realpkg", "cmd"}); spec != "realpkg" {
@@ -1682,18 +1627,20 @@ func TestUvSubcommandIsPositional(t *testing.T) {
 		{"a later tool run belongs to the launched command",
 			[]string{"run", "actual-command", "tool", "run", "fake-package"}, ""},
 		{"global options may precede the subcommand",
-			[]string{"--color", "always", "run", "--from", "real-package", "command"}, "real-package"},
+			[]string{"--color", "always", "tool", "run", "--from", "real-package", "command"}, "real-package"},
 		{"and before tool run as well",
 			[]string{"--color", "always", "tool", "run", "realpkg"}, "realpkg"},
-		{"plain run without --from names no package",
+		{"plain run names no package",
 			[]string{"run", "actual-command"}, ""},
 		{"tool is not a subcommand after run",
 			[]string{"run", "tool", "--from", "evilpkg"}, ""},
 		{"the launched server's own --from is not uv's",
 			[]string{"run", "server", "--from", "evil"}, ""},
 		{"ordinary forms still resolve",
-			[]string{"run", "--from", "realpkg", "cmd"}, "realpkg"},
-		{"inline from", []string{"run", "--from=realpkg", "cmd"}, "realpkg"},
+			[]string{"tool", "run", "--from", "realpkg", "cmd"}, "realpkg"},
+		{"inline from", []string{"tool", "run", "--from=realpkg", "cmd"}, "realpkg"},
+		// uv's run takes no --from, so uv refuses the command line and nothing is named.
+		{"run takes no --from", []string{"run", "--from", "realpkg", "cmd"}, ""},
 		{"tool run", []string{"tool", "run", "realpkg"}, "realpkg"},
 		{"tool run with a value option", []string{"tool", "run", "--python", "3.12", "realpkg"}, "realpkg"},
 	}
@@ -1768,39 +1715,38 @@ func TestPythonCompactOptionForms(t *testing.T) {
 	}
 }
 
-// A launcher's first operand is the package, or there is no package.
-//
-// The scan used to walk past an operand that failed the package grammar and report a later
-// one instead. That crossed the launcher boundary in the same way reading the launched
-// program's --package or --from did: `npx ./server.js real-package` reported real-package,
-// which is an argument to the script npx ran. The justification on record -- that a
-// credential URL before the package should not mask inference -- was already handled by
-// arity, since --registry consumes its own value.
+// The first operand decides identity, and walking past one that fails the package grammar would
+// read the launched program's arguments: `npx ./server.js real-package` would report
+// real-package, which is an argument to the script npx runs. A credential URL before the
+// package needs no such walk, because --registry takes a separate value and consumes it.
 func TestFirstOperandDecidesIdentity(t *testing.T) {
 	cases := []struct {
-		name string
-		args []string
-		want string
+		name     string
+		launcher string
+		args     []string
+		want     string
 	}{
-		{"a script path is not a package and ends the scan",
+		{"a script path is not a package and ends the scan", "npx",
 			[]string{"./server.js", "real-package"}, ""},
-		{"an absolute script path likewise",
+		{"an absolute script path likewise", "npx",
 			[]string{"/abs/path/server.js", "somepkg"}, ""},
-		{"a tarball URL is the operand and is not representable",
+		{"a tarball URL is the operand and is not representable", "npx",
 			[]string{"https://example.com/tarball.tgz", "pkg"}, ""},
-		// Arity, not walking past, is what protects these.
-		{"a known value option's value is consumed",
+		{"a known value option's value is consumed", "npx",
 			[]string{"--registry", "https://u:p@h", "pkg"}, "pkg"},
-		{"a credential-named option's value is skipped",
+		{"a credential-named option's value is skipped", "npx",
 			[]string{"--auth-token", "opaquevalue", "real-server"}, "real-server"},
-		{"an ordinary value option", []string{"--python", "3.12", "real-server"}, "real-server"},
-		{"a boolean flag", []string{"-y", "pkg"}, "pkg"},
-		{"the plain case", []string{"pkg"}, "pkg"},
+		{"an ordinary value option", "uvx", []string{"--python", "3.12", "real-server"}, "real-server"},
+		{"a value-less option", "npx", []string{"-y", "pkg"}, "pkg"},
+		{"the plain case", "npx", []string{"pkg"}, "pkg"},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			if got, _ := firstPositional(testCase.args); got != testCase.want {
-				t.Errorf("firstPositional(%q) = %q, want %q", testCase.args, got, testCase.want)
+			server := Server{Command: testCase.launcher, Args: testCase.args}
+			inferIdentity(&server)
+			if server.RequestedSpec != testCase.want {
+				t.Errorf("%s %q: requested_spec = %q, want %q", testCase.launcher, testCase.args,
+					server.RequestedSpec, testCase.want)
 			}
 		})
 	}
@@ -1860,21 +1806,28 @@ func TestPipxPipArgsConsumesItsValue(t *testing.T) {
 	})
 }
 
-// An option is either value-less or value-taking, and the two tables disagreeing about one is
-// not something the compiler can object to. --pip-args was in launcherBooleanFlags while pipx
-// documents a value, and every scanner shares both tables, so one wrong entry was wrong for
-// all four launchers at once.
-func TestBooleanAndValueFlagTablesAreDisjoint(t *testing.T) {
-	for name := range launcherBooleanFlags {
-		if _, alsoValue := runnerValueFlags[name]; alsoValue {
-			t.Errorf("%q is listed as both value-less and value-taking", name)
+// Each launcher reads its own options, and the launchers disagree about the same names. One table
+// shared between them took the one launcher's reading for all: -f is --force, value-less, to npx,
+// --find-links to uv and not an option of bunx's; -c is npx's --call and uv's --constraint; -p is
+// --package to npx and bunx and --python to uvx; and --pip-args takes a value in pipx.
+func TestLaunchersReadTheirOwnOptions(t *testing.T) {
+	for _, testCase := range []struct {
+		grammar string
+		name    string
+		want    optionKind
+	}{
+		{"npx", "-f", optionBoolean}, {"bunx", "-p", optionPackage}, {"npx", "-p", optionPackage},
+		{"npx", "-c", optionCommand}, {"npx", "--call", optionCommand}, {"uvx", "-f", optionValue},
+		{"uvx", "-c", optionValue}, {"uvx", "-p", optionValue}, {"uvx", "--from", optionPackage},
+		{"pipx run", "--pip-args", optionValue}, {"pipx run", "--spec", optionPackage},
+		{"docker run", "--use-api-socket", optionBoolean}, {"docker run", "-h", optionValue},
+	} {
+		grammar := map[string]launcherGrammar{"npx": npxGrammar, "bunx": bunxGrammar,
+			"uvx": uvToolRunGrammar, "pipx run": pipxRunGrammar, "docker run": dockerRunGrammar}[testCase.grammar]
+		if kind, known := grammar.kindOf(testCase.name); !known || kind != testCase.want {
+			t.Errorf("%s %s: kind %d, known %v; want %d", testCase.grammar, testCase.name, kind, known,
+				testCase.want)
 		}
-	}
-	if _, boolean := launcherBooleanFlags["--pip-args"]; boolean {
-		t.Error("--pip-args takes a value: pipx hands it to pip")
-	}
-	if _, value := runnerValueFlags["--pip-args"]; !value {
-		t.Error("--pip-args must be known to take a value, or its value is read as the package")
 	}
 }
 
@@ -1958,11 +1911,8 @@ func TestSplitPyPISpecOnlyPinsExactVersions(t *testing.T) {
 		{"pkg<2.0", "pkg", ""},
 		// `@` pins when its operand is one version.
 		{"pkg@1.2.3", "pkg", "1.2.3"},
-		// And does not when the operand selects a set. This assertion previously expected
-		// "latest", because the finding that introduced this test scoped itself to the
-		// comparison operators and said to leave `@` alone; a later finding reversed that,
-		// on the same reasoning the comparison operators were changed for -- a dist-tag
-		// names whatever was published most recently, so it is not a pin.
+		// And does not when the operand selects a set: a dist-tag names whatever was
+		// published most recently, so it is not a pin.
 		{"pkg@latest", "pkg", ""},
 		{"pkg@next", "pkg", ""},
 		// Wildcard equality is PEP 440-legal and selects a range.
@@ -2013,18 +1963,15 @@ func TestRangeSpecsReportMediumConfidence(t *testing.T) {
 	}
 }
 
-// A credential-named option consumes its value in launcherOptionValue too, so one appearing
-// before `--package` no longer hides it.
+// A credential-named option consumes its value, so one appearing before `--package` does not
+// hide it.
 //
-// The option was treated as value-less, so its value landed on the scan's default branch as a
-// bare positional -- which ends the walk, because a positional is where the launched program
-// begins. Any credential-named option before the wanted one therefore hid it completely, and
-// the operand fallback skipped the real package as a consumed value, so the row came back with
-// no identity at all. knownLauncherOption already documented the arity as known from the name;
-// this scanner was the one not honouring it.
+// Treated as value-less, the option's value would end the walk as a bare positional, because a
+// positional is where the launched program begins, and the row would come back with no identity.
+// The option's name says it takes a value, and the scan reads it so.
 //
-// Not a leak in either direction: a value is not an option name, so it could never have been
-// returned as one. The cost was a missing identity.
+// Not a leak in either direction: a value is not an option name, so it cannot be returned as
+// one. Getting this wrong costs a missing identity.
 func TestSecretNamedOptionsConsumeTheirValueInOptionScan(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -2049,12 +1996,9 @@ func TestSecretNamedOptionsConsumeTheirValueInOptionScan(t *testing.T) {
 			[]string{"--token=s3cret", "--package", "real-pkg"}, "real-pkg", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			value, found := launcherOptionValue(tc.args, npxGrammar, npxPackageFlags)
-			if !found {
-				t.Fatalf("launcherOptionValue found nothing; --package was hidden")
-			}
-			if value != tc.wantSpec {
-				t.Errorf("value = %q, want %q", value, tc.wantSpec)
+			spec, _, code := npxIdentity(tc.args)
+			if code != "" || spec != tc.wantSpec {
+				t.Errorf("npxIdentity = %q, warning %q; want %q", spec, code, tc.wantSpec)
 			}
 			// And the whole way through to the row.
 			server := Server{Command: "npx", Args: tc.args, Transport: "stdio"}
@@ -2117,5 +2061,199 @@ func TestNPMPartialVersionsAreNotPinsButPythonExactIs(t *testing.T) {
 				t.Errorf("requested_spec = %q, want %q", server.RequestedSpec, tc.spec)
 			}
 		})
+	}
+}
+
+// A configuration file that is null is a parse failure whose shape is top_level_is_not_an_object,
+// in every JSON extractor, as a top-level array or string is. encoding/json decodes null into a
+// map or struct without an error, so it read as a file declaring no servers. An empty object is
+// still an ordinary file with none.
+func TestANullConfigurationIsAParseFailure(t *testing.T) {
+	for name, extract := range map[string]func([]byte) ([]Server, error){
+		"envelope": extractEnvelopeSimple, "claude_code": extractClaudeCode, "gemini": extractGeminiSettings,
+	} {
+		for _, document := range []string{"null", " null\n"} {
+			rows, err := extract([]byte(document))
+			if !errors.Is(err, devclients.ErrNullDocument) || rows != nil {
+				t.Errorf("%s %q: rows = %v, err = %v", name, document, rows, err)
+			}
+			if shape := parseWarning(err).Shape; shape != shapeNotAnObject {
+				t.Errorf("%s %q: shape = %q, want %q", name, document, shape, shapeNotAnObject)
+			}
+		}
+		if rows, err := extract([]byte("{}")); err != nil || len(rows) != 0 {
+			t.Errorf("%s {}: rows = %v, err = %v", name, rows, err)
+		}
+	}
+}
+
+// TestOptionScanningStopsAtTheFirstOperand: the launched server's arguments never become
+// package_name. `--` makes the next token the only candidate; a value flag consumes the token
+// after it, failing closed when that token begins with a dash; `run` counts only in the
+// subcommand's own position; and a credential-named global option consumes its value, so the
+// identity after it is kept.
+func TestOptionScanningStopsAtTheFirstOperand(t *testing.T) {
+	// Lowercase, so the image grammar does not reject it for its case and hide the leak.
+	const secret = "opaquesecretvalue"
+	for name, testCase := range map[string]struct {
+		command string
+		args    []string
+		want    string
+	}{
+		"npx --":                {"npx", []string{"--", "-y", secret}, ""},
+		"npx -- package":        {"npx", []string{"--", "real-pkg"}, "real-pkg"},
+		"pipx value flag, dash": {"pipx", []string{"run", "--pip-args", "-i", "real-pkg", secret}, ""},
+		"uvx value flag, dash":  {"uvx", []string{"-c", "-i", "real-pkg", secret}, ""},
+		"docker exec":           {"docker", []string{"exec", "c", "run", secret}, ""},
+		"docker global option":  {"docker", []string{"--context", "remote", "run", "myorg/s:1"}, "myorg/s"},
+		"docker container run":  {"docker", []string{"container", "run", "myorg/s:1"}, "myorg/s"},
+		"pipx install":          {"pipx", []string{"install", "foo", "run", secret}, ""},
+		"pipx unknown global":   {"pipx", []string{"--unknown", "run", secret}, ""},
+		// uv refuses an option it does not know and bunx ignores one, taking no value, so neither
+		// names a package here, and neither publishes the token.
+		"uv unknown credential option":   {"uv", []string{"--auth-token", secret, "tool", "run", "real-pkg"}, ""},
+		"bunx unknown credential option": {"bunx", []string{"--auth-token", secret, "real-pkg"}, ""},
+	} {
+		s := Server{Command: testCase.command, Args: testCase.args}
+		inferIdentity(&s)
+		if s.PackageName != testCase.want {
+			t.Errorf("%s: package_name = %q, want %q", name, s.PackageName, testCase.want)
+		}
+		if strings.Contains(s.PackageName+s.RequestedSpec, secret) {
+			t.Errorf("%s: the server's argument was published: %q %q", name, s.PackageName, s.RequestedSpec)
+		}
+	}
+}
+
+// TestEachLauncherReadsItsOwnOptions: the launched server's argument never becomes the package
+// when two launchers disagree about an option, and options real configurations use keep their
+// identity. bunx's --package names the package and the operand is the binary; npx's --call runs
+// a command and names no package; -f is --force, value-less, to npx; a value beginning with a
+// dash after an option uv reads as taking one fails closed; and a lone dash is an operand.
+func TestEachLauncherReadsItsOwnOptions(t *testing.T) {
+	const secret = "opaquesecret123"
+	for name, testCase := range map[string]struct {
+		command string
+		args    []string
+		want    string
+		unknown bool
+	}{
+		"bunx --package":         {"bunx", []string{"-p", "@scope/pkg", "cmd", secret}, "@scope/pkg", false},
+		"bunx --package long":    {"bunx", []string{"--package", "pkg", "bin", secret}, "pkg", false},
+		"bunx --silent":          {"bunx", []string{"--silent", "real-pkg"}, "real-pkg", false},
+		"bunx -f is unknown":     {"bunx", []string{"-f", "real-pkg", secret}, "", true},
+		"npx --call":             {"npx", []string{"-c", "echo hi", secret}, "", false},
+		"npx --call inline":      {"npx", []string{"--call=echo hi", secret}, "", false},
+		"npx --call and package": {"npx", []string{"-p", "real-pkg", "-c", "cmd", secret}, "real-pkg", false},
+		"npx -f is --force":      {"npx", []string{"-f", "real-pkg", secret}, "real-pkg", false},
+		"npx package value dash": {"npx", []string{"-p", "-y", "real-pkg"}, "", true},
+		"npx lone dash":          {"npx", []string{"-", "x"}, "", false},
+		"uvx value then dash":    {"uvx", []string{"--python", "-q", "--from", secret}, "", true},
+		"uvx -f is find-links":   {"uvx", []string{"-f", "https://wheels.example", "real-pkg"}, "real-pkg", false},
+		"uvx --env-file":         {"uvx", []string{"--env-file", ".env", "real-pkg"}, "real-pkg", false},
+		"uvx --managed-python":   {"uvx", []string{"--managed-python", "real-pkg"}, "real-pkg", false},
+		"uvx --no-index":         {"uvx", []string{"--no-index", "real-pkg"}, "real-pkg", false},
+		"uvx --overrides":        {"uvx", []string{"--overrides", "o.txt", "real-pkg"}, "real-pkg", false},
+		"uvx --torch-backend":    {"uvx", []string{"--torch-backend", "auto", "real-pkg"}, "real-pkg", false},
+		"docker api socket":      {"docker", []string{"run", "--use-api-socket", "alpine:3", secret}, "alpine", false},
+		"docker unknown option":  {"docker", []string{"run", "--made-up-bool", "alpine:3", secret}, "", true},
+	} {
+		server := Server{Command: testCase.command, Args: testCase.args}
+		inferIdentity(&server)
+		if server.PackageName != testCase.want {
+			t.Errorf("%s: package_name = %q, want %q", name, server.PackageName, testCase.want)
+		}
+		if unknown := server.Warning.Code == warnUnknownLauncherOption; unknown != testCase.unknown {
+			t.Errorf("%s: unknown_launcher_option = %v, want %v", name, unknown, testCase.unknown)
+		}
+		row := serverToRow(server)
+		if strings.Contains(row["package_name"]+row["requested_spec"], secret) {
+			t.Errorf("%s: the server's argument was published: %q %q", name, row["package_name"],
+				row["requested_spec"])
+		}
+	}
+}
+
+// TestPodmanReadsItsOwnOptions: podman's --passwd takes no value, so in `podman run --passwd
+// alpine:3 opaquesecret123` the image is alpine:3. Read by Docker's table, as an unlisted
+// credential-named option taking a value, --passwd took the image and the container's command
+// was published as the image in package_name and requested_spec. Docker has no --passwd and
+// refuses the command line, so it names nothing. Checked through the whole path to the row.
+func TestPodmanReadsItsOwnOptions(t *testing.T) {
+	const secret = "opaquesecret123"
+	for _, testCase := range []struct {
+		command, args, wantName, wantSpec string
+		unknown                           bool
+	}{
+		{"podman", `["run","--passwd","alpine:3","` + secret + `"]`, "alpine", "alpine:3", false},
+		{"podman", `["run","-it","alpine:3","` + secret + `"]`, "alpine", "alpine:3", false},
+		{"podman", `["--log-level","debug","run","--rm","alpine:3"]`, "alpine", "alpine:3", false},
+		{"docker", `["run","--passwd","alpine:3","` + secret + `"]`, "", "", true},
+	} {
+		body := `{"mcpServers":{"s":{"command":"` + testCase.command + `","args":` + testCase.args + `}}}`
+		rows := finishProcessing("", []byte(body), nil, "/p/.mcp.json", "alice", "claude_code", true,
+			MaxFileSize, extractEnvelopeSimple)
+		if len(rows) != 1 {
+			t.Fatalf("%s %s: %d rows", testCase.command, testCase.args, len(rows))
+		}
+		row := serverToRow(rows[0])
+		if row["package_name"] != testCase.wantName || row["requested_spec"] != testCase.wantSpec {
+			t.Errorf("%s %s: package_name %q, requested_spec %q; want %q, %q", testCase.command,
+				testCase.args, row["package_name"], row["requested_spec"], testCase.wantName, testCase.wantSpec)
+		}
+		if unknown := rows[0].Warning.Code == warnUnknownLauncherOption; unknown != testCase.unknown {
+			t.Errorf("%s %s: unknown_launcher_option %v, want %v", testCase.command, testCase.args,
+				unknown, testCase.unknown)
+		}
+		for column, value := range row {
+			if strings.Contains(value, secret) {
+				t.Errorf("%s %s: %s = %q carries the container's command", testCase.command,
+					testCase.args, column, value)
+			}
+		}
+	}
+}
+
+// TestIdentityThroughParsing: identity is read from what parsing hands it, through
+// finishProcessing to the published row. Parsing blanked the argument after a credential-named
+// option before the scan read it, so a `--` or a dash-led argument there read as an ordinary
+// value: `npx --key -c sh` named sh, the command npx's --call runs, and `npx --key -- -y <secret>`
+// named the secret. Also an inline value on a value-less option, which npx puts back as an
+// operand, and a repeated package option, which each launcher treats its own way.
+func TestIdentityThroughParsing(t *testing.T) {
+	const secret = "opaquesecret123"
+	for _, testCase := range []struct {
+		command, args, want string
+		code                warnCode
+	}{
+		{"npx", `["--key","-c","sh"]`, "", warnUnknownLauncherOption},
+		{"npx", `["--key","--","-y","` + secret + `"]`, "", warnUnknownLauncherOption},
+		{"npx", `["--cache","--","-y","` + secret + `"]`, "", warnUnknownLauncherOption},
+		{"npx", `["-y=./script.js","` + secret + `"]`, "", warnUnknownLauncherOption},
+		{"npx", `["--registry","https://registry.example","real-pkg"]`, "real-pkg", ""},
+		{"npx", `["-p","a-pkg","-p","b-pkg","cmd"]`, "", warnIdentityDropped},
+		{"npx", `["-p","a-pkg","-p","a-pkg","cmd"]`, "a-pkg", ""},
+		{"bunx", `["-p","old-pkg","-p","new-pkg","cmd"]`, "new-pkg", ""},
+		{"pipx", `["run","--spec","old-pkg","--spec","new-pkg","app"]`, "new-pkg", ""},
+		{"uvx", `["--from","a-pkg","--from","b-pkg","cmd"]`, "", warnIdentityDropped},
+		{"uvx", `["--token","-q","--from","` + secret + `"]`, "", warnUnknownLauncherOption},
+		{"uvx", `["--quiet=true","real-pkg"]`, "", warnUnknownLauncherOption},
+	} {
+		body := `{"mcpServers":{"s":{"command":"` + testCase.command + `","args":` + testCase.args + `}}}`
+		rows := finishProcessing("", []byte(body), nil, "/p/.mcp.json", "alice", "claude_code", true,
+			MaxFileSize, extractEnvelopeSimple)
+		if len(rows) != 1 {
+			t.Fatalf("%s %s: %d rows", testCase.command, testCase.args, len(rows))
+		}
+		row := serverToRow(rows[0])
+		if row["package_name"] != testCase.want || rows[0].Warning.Code != testCase.code {
+			t.Errorf("%s %s: package_name %q, warning %q; want %q, %q", testCase.command,
+				testCase.args, row["package_name"], rows[0].Warning.Code, testCase.want, testCase.code)
+		}
+		for column, value := range row {
+			if strings.Contains(value, secret) {
+				t.Errorf("%s %s: %s = %q carries the argument", testCase.command, testCase.args, column, value)
+			}
+		}
 	}
 }

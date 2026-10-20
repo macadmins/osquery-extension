@@ -1,6 +1,7 @@
 package fsscan
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -26,6 +27,27 @@ func TestWalkTimeoutHonoursEnvOverride(t *testing.T) {
 		t.Setenv(WalkTimeoutEnv, bad)
 		if got := WalkTimeout(); got != DefaultWalkTimeout {
 			t.Errorf("%q = %v, want the default", bad, got)
+		}
+	}
+}
+
+// TestBudgetRemains: a scan stops when its query is cancelled or its deadline has passed.
+func TestBudgetRemains(t *testing.T) {
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	future, past := time.Now().Add(time.Hour), time.Now().Add(-time.Second)
+	for _, tc := range []struct {
+		name     string
+		ctx      context.Context
+		deadline time.Time
+		want     bool
+	}{
+		{"wanted, in time", context.Background(), future, true},
+		{"cancelled", cancelled, future, false},
+		{"past the deadline", context.Background(), past, false},
+	} {
+		if got := BudgetRemains(tc.ctx, tc.deadline); got != tc.want {
+			t.Errorf("%s: BudgetRemains = %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }

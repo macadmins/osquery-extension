@@ -42,14 +42,14 @@ import (
 // Desktop and the Cline extension all write user configuration to Roaming, reserving Local
 // for caches and machine-specific state.
 func AppSupportDir() string {
-	return AppSupportDirFor(runtime.GOOS)
+	return appSupportDirFor(runtime.GOOS)
 }
 
-// AppSupportDirFor takes the OS as a parameter so every platform's answer is reachable from
+// appSupportDirFor takes the OS as a parameter so every platform's answer is reachable from
 // a test on any host. The test, lint and coverage workflows run on ubuntu-latest and only the
 // build workflow runs on macOS, so no job executes the Darwin branch and none executes the
 // Windows one; parameterising the OS is what gets all three spellings asserted anywhere.
-func AppSupportDirFor(goos string) string {
+func appSupportDirFor(goos string) string {
 	switch goos {
 	case "windows":
 		return filepath.Join("AppData", "Roaming")
@@ -101,13 +101,13 @@ var linuxSandboxRoots = map[string][]string{
 // editor reports both rather than whichever the default root happens to hit. Probing a root
 // that does not exist costs one failed open and produces no row.
 func AppSupportFork(fork string, parts ...string) []string {
-	return AppSupportForkFor(runtime.GOOS, fork, parts...)
+	return appSupportForkFor(runtime.GOOS, fork, parts...)
 }
 
-// AppSupportForkFor is AppSupportFork with the OS supplied, for the same reason
-// AppSupportDirFor exists.
-func AppSupportForkFor(goos, fork string, parts ...string) []string {
-	joined := append([]string{AppSupportDirFor(goos), fork}, parts...)
+// appSupportForkFor is AppSupportFork with the OS supplied, for the same reason
+// appSupportDirFor exists.
+func appSupportForkFor(goos, fork string, parts ...string) []string {
+	joined := append([]string{appSupportDirFor(goos), fork}, parts...)
 	out := []string{filepath.Join(joined...)}
 	if goos != "linux" {
 		return out

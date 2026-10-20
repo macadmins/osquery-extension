@@ -4,31 +4,22 @@ package fsscan
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"golang.org/x/sys/windows"
-)
 
-// junction creates a directory junction at link that points at target. A junction needs no
-// privilege, unlike a symlink, so it is the reparse point an unprivileged account can plant and
-// the one these tests use. The test is skipped if mklink is unavailable.
-func junction(t *testing.T, link, target string) {
-	t.Helper()
-	if output, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput(); err != nil {
-		t.Skipf("mklink /J failed: %v: %s", err, output)
-	}
-}
+	"github.com/macadmins/osquery-extension/pkg/testutil"
+)
 
 // TestOpenBeneathRefusesAJunctionAtAnyComponent: a junction is refused wherever it sits in the
 // path, including one whose target stays inside the base, which os.Root on its own would
 // follow. The refusal classifies as refused_path, the Windows counterpart of ELOOP.
 func TestOpenBeneathRefusesAJunctionAtAnyComponent(t *testing.T) {
 	home := t.TempDir()
-	writeFile(t, filepath.Join(home, "real", "proj", "go.mod"), "module x\n")
-	junction(t, filepath.Join(home, "linked"), filepath.Join(home, "real"))
+	testutil.WriteFile(t, filepath.Join(home, "real", "proj", "go.mod"), "module x\n")
+	testutil.Junction(t, filepath.Join(home, "linked"), filepath.Join(home, "real"))
 
 	for _, rel := range []string{
 		filepath.Join("linked", "proj", "go.mod"), // the junction is an intermediate component
@@ -53,8 +44,8 @@ func TestOpenBeneathRefusesAJunctionAtAnyComponent(t *testing.T) {
 // so a profile swapped for a junction cannot root every read at the junction's target.
 func TestOpenBeneathRefusesAJunctionedBase(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "elsewhere", "file"), "x")
-	junction(t, filepath.Join(root, "home"), filepath.Join(root, "elsewhere"))
+	testutil.WriteFile(t, filepath.Join(root, "elsewhere", "file"), "x")
+	testutil.Junction(t, filepath.Join(root, "home"), filepath.Join(root, "elsewhere"))
 	file, err := OpenBeneath(filepath.Join(root, "home"), "file")
 	if err == nil {
 		_ = file.Close()
@@ -69,7 +60,7 @@ func TestOpenBeneathRefusesAJunctionedBase(t *testing.T) {
 // SeCreateSymbolicLinkPrivilege or Developer Mode, so the test is skipped without it.
 func TestOpenBeneathRefusesASymlink(t *testing.T) {
 	home := t.TempDir()
-	writeFile(t, filepath.Join(home, "real", "go.mod"), "module x\n")
+	testutil.WriteFile(t, filepath.Join(home, "real", "go.mod"), "module x\n")
 	if err := os.Symlink(filepath.Join(home, "real"), filepath.Join(home, "linked")); err != nil {
 		t.Skipf("creating a symlink needs a privilege this account lacks: %v", err)
 	}
@@ -82,7 +73,7 @@ func TestOpenBeneathRefusesASymlink(t *testing.T) {
 // from GetFileInformationByHandle, and RefuseHardLinks refuses it.
 func TestReadProjectFileRefusesAHardLinkOnWindows(t *testing.T) {
 	home := t.TempDir()
-	writeFile(t, filepath.Join(home, "elsewhere.mod"), "module x\n")
+	testutil.WriteFile(t, filepath.Join(home, "elsewhere.mod"), "module x\n")
 	if err := os.MkdirAll(filepath.Join(home, "proj"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +89,7 @@ func TestReadProjectFileRefusesAHardLinkOnWindows(t *testing.T) {
 // TestAnOrdinaryFileIsNotACloudPlaceholder runs the real attribute check on a local file.
 func TestAnOrdinaryFileIsNotACloudPlaceholder(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "go.mod")
-	writeFile(t, path, "module x\n")
+	testutil.WriteFile(t, path, "module x\n")
 	file, err := os.Open(path)
 	if err != nil {
 		t.Fatal(err)
@@ -129,8 +120,10 @@ func TestRoamingAppDataForTheCurrentAccount(t *testing.T) {
 	}
 }
 
-// TestReadLinkBeneathIsUnsupportedOnWindows: the snap resolution it serves is Linux only, so
-// with its directory present it reports unsupported rather than an error about the path.
+// TestReadLinkBeneathIsUnsupportedOnWindows: Windows has no link reader here, so snap
+// resolution, which is Linux only, and go_modules' one-hop follow of a symlinked module file
+// both decline there. With its directory present it reports unsupported rather than an error
+// about the path.
 func TestReadLinkBeneathIsUnsupportedOnWindows(t *testing.T) {
 	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(home, "snap"), 0o755); err != nil {
@@ -138,5 +131,16 @@ func TestReadLinkBeneathIsUnsupportedOnWindows(t *testing.T) {
 	}
 	if _, err := ReadLinkBeneath(home, "snap", "current"); ClassifyError(err) != ClassUnsupported {
 		t.Errorf("ReadLinkBeneath on Windows = %v (%s), want unsupported", err, ClassifyError(err))
+	}
+}
+
+// TestAFileAsAnIntermediateComponentIsRefused: a path through a regular file is refused, as
+// ENOTDIR is on POSIX, rather than read as absence, so a ~/.codex that is a file is reported.
+func TestAFileAsAnIntermediateComponentIsRefused(t *testing.T) {
+	home := t.TempDir()
+	testutil.WriteFile(t, filepath.Join(home, "codex"), "not a directory")
+	_, err := OpenBeneath(home, filepath.Join("codex", "config.toml"))
+	if got := ClassifyError(err); got != ClassRefusedPath {
+		t.Errorf("a path through a file = %v (%s), want refused_path", err, got)
 	}
 }

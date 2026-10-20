@@ -31,12 +31,10 @@ var (
 	// Does not match: --monkey, --keyword, --keystroke.
 	secretFlagKeyRe = regexp.MustCompile(`(?i)^--?(?:[a-z0-9_-]+[_-])?key(?:[_-][a-z0-9_-]+)?$`)
 
-	// The inline form as an entire value -- --token=VALUE -- is no longer a regexp. It was
-	// `^(--?[A-Za-z0-9_-]+)=(.+)$`, and Go's `.` does not match a newline without dot-all,
-	// so a value carrying one did not match here and did not match the embedded pattern
-	// either, whose value begins at a non-space character. `{"x": "--token=\nsecret"}` is
-	// valid JSON and reached the row intact. Splitting at the first `=` has no such gap:
-	// see wholeValueAssignment.
+	// The inline form as an entire value -- --token=VALUE -- is split at the first `=` by
+	// wholeValueAssignment rather than matched by a regexp: Go's `.` does not match a newline
+	// without dot-all, so a pattern such as `^(--?[A-Za-z0-9_-]+)=(.+)$` would miss
+	// `{"x": "--token=\nsecret"}`, which is valid JSON.
 
 	// The same assignment embedded in a longer string: a server name, a project path, or a
 	// command line that reached this table as one field rather than as argv. Anchoring the

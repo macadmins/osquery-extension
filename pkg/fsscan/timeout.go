@@ -1,6 +1,7 @@
 package fsscan
 
 import (
+	"context"
 	"os"
 	"strings"
 	"time"
@@ -8,11 +9,9 @@ import (
 
 // WalkTimeoutEnv overrides DefaultWalkTimeout with a Go duration string.
 //
-// The name is inherited rather than chosen: this was the budget for a filesystem traversal
-// that no longer exists, and it survives as the budget for a whole query's discovery. The
-// variable is kept spelled as it is because it is operator-facing -- renaming it would
-// silently stop honouring the override on every host where one has already been set, which
-// is the single property an escape hatch has to keep.
+// It bounds a whole query's discovery, and nothing walks; "walk" is in the name because the
+// variable is operator-facing, and renaming it would silently stop honoring the override on
+// every host where one has been set.
 const WalkTimeoutEnv = "MACADMINS_EXTENSION_WALK_TIMEOUT"
 
 // DefaultWalkTimeout bounds one query's discovery in wall-clock time.
@@ -43,4 +42,12 @@ func WalkTimeout() time.Duration {
 		}
 	}
 	return DefaultWalkTimeout
+}
+
+// BudgetRemains reports whether a scan may take its next step: the query is still wanted and
+// its deadline has not passed. It is checked between completed operations, which is the
+// granularity available: a read already blocked cannot be interrupted, so the budget is
+// cooperative.
+func BudgetRemains(ctx context.Context, deadline time.Time) bool {
+	return ctx.Err() == nil && time.Now().Before(deadline)
 }

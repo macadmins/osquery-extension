@@ -1,11 +1,13 @@
 package mcp_servers
 
 import (
+	"fmt"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 
+	"github.com/macadmins/osquery-extension/pkg/devclients"
 	"github.com/macadmins/osquery-extension/pkg/fsscan"
 	"github.com/macadmins/osquery-extension/pkg/redact"
 )
@@ -125,7 +127,7 @@ func filterEnvKeys(keys []string) ([]string, int) {
 // fragment and userinfo where tokens are common. What it could not do is constrain what is
 // left: a host is user-controlled through DNS, so `https://aws.AKIAIOSFODNN7EXAMPLE.evil.test`
 // survived it intact and the schema comment named exactly this case as relying on
-// redactSecret to recognise the embedded shape. A grammar closes it structurally instead --
+// redact.Secret to recognise the embedded shape. A grammar closes it structurally instead --
 // the token is admissible as a DNS label, so recognition was always the wrong instrument.
 var endpointHostRe = regexp.MustCompile(`^[A-Za-z0-9._-]+(:[0-9]{1,5})?$`)
 
@@ -185,8 +187,8 @@ var packageNameRe = regexp.MustCompile(
 // A colon is admitted for exactly one reason, as a closed alternative rather than as a
 // character in the general pattern: a Docker digest reference is `sha256:` followed by
 // sixty-four hex digits, and that is the one version-shaped value containing a colon. Left in
-// the general pattern a colon would readmit `user:password`, which is the shape packageSpecRe
-// was changed from a blacklist to a grammar to reject.
+// the general pattern a colon would readmit `user:password`, which packageSpecRe is a grammar
+// rather than a blocklist in order to reject.
 var pinnedVersionRe = regexp.MustCompile(
 	`^([A-Za-z0-9][A-Za-z0-9.+_~*-]*|sha256:[a-f0-9]{64})$`)
 
@@ -214,36 +216,6 @@ func allowedIdentity(name, spec, version string) (outName, outSpec, outVersion s
 	return "", "", "", true
 }
 
-// userIDRe is the format of the two identities osquery reports: a POSIX uid or a Windows SID.
-//
-// A cheap gate rather than a thorough one. The value comes from osquery's own users table, so
-// it is not a config file's bytes and the risk is low -- but the column is published and the
-// format is completely known, so there is no reason to publish anything else.
-var userIDRe = regexp.MustCompile(`^(S-1-[0-9-]+|[0-9]+)$`)
-
-// uidRe is the form of a uid: an integer. macOS reports some system accounts' uids as negative
-// numbers.
-var uidRe = regexp.MustCompile(`^-?[0-9]+$`)
-
-// allowedUID returns candidate if it is an integer, and "" otherwise. Like the user_id gate,
-// cheap and complete: the value comes from osquery's users table and its format is known.
-func allowedUID(candidate string) string {
-	if !uidRe.MatchString(candidate) {
-		return ""
-	}
-	return candidate
-}
-
-func allowedUserID(candidate string) (string, bool) {
-	if candidate == "" {
-		return "", false
-	}
-	if !userIDRe.MatchString(candidate) {
-		return "", true
-	}
-	return candidate, false
-}
-
 // sourceContextTokens is the closed set of section names a source_context may report on its
 // own, with no path attached.
 //
@@ -266,7 +238,7 @@ var sourceContextTokens = map[string]struct{}{
 	"project.cursor_mcp_json":   {},
 	"project.codex_config_toml": {},
 	// Plugin-declared servers. Omitting this was not a near-miss: the token is fixed and
-	// carries no path, so every healthy plugin row reached the boundary, failed the token
+	// carries no path, so every healthy plugin row reached publication, failed the token
 	// lookup, failed the path-bearing patterns too, and was emitted with an empty
 	// source_context plus a warning saying its project path could not be published -- about
 	// a row that has no project path. A set that must agree with its producers and does not
@@ -292,7 +264,7 @@ var (
 // Containment is not redaction, and conflating them cost a credential. A project directory
 // named `repo --token=opaqueSecret` is perfectly well contained -- inside the home, no
 // traversal -- so it passed this check and was emitted verbatim, while the same bytes inside
-// source_path were redacted because that column runs redactSecret. The caller redacts what
+// source_path were redacted because that column runs redact.Secret. The caller redacts what
 // this returns; the two gates are independent and both are required.
 //
 // home is needed because validating the path means asking the same question a read asks: is
@@ -307,10 +279,10 @@ func allowedSourceContext(context, home string) (string, bool) {
 		return context, false
 	}
 	groups := claudeProjectContextRe.FindStringSubmatch(context)
-	suffix := "].mcpServers"
+	suffix, absolute := "].mcpServers", true
 	if groups == nil {
 		groups = probeProjectContextRe.FindStringSubmatch(context)
-		suffix = "]"
+		suffix, absolute = "]", false
 	}
 	if groups == nil {
 		// Neither a known token nor a path-bearing form. There is nothing to reduce it to,
@@ -318,41 +290,41 @@ func allowedSourceContext(context, home string) (string, bool) {
 		return "", true
 	}
 	token, path := groups[1], groups[2]
-	// The path is already relative to the home for a project-rooted probe and absolute for
-	// a ~/.claude.json key, so both forms are offered to the containment check. Dropping to
-	// the bare token keeps which *section* declared the server, which is the half that is
-	// never user-controlled.
-	if home != "" && path != "" {
-		if rel, err := contained(home, path); err == nil {
+	// The path is relative to the home for a project-rooted probe and absolute for a
+	// ~/.claude.json key, and each form is held to its own. Dropping to the bare token keeps
+	// which *section* declared the server, which is the half that is never user-controlled. A
+	// path longer than any recorded project the collector admits is dropped the same way, so a
+	// key of any length in ~/.claude.json does not reach the column.
+	if home != "" && path != "" && len(path) <= devclients.MaxProjectPathLen {
+		if rel, err := contained(home, path, absolute); err == nil {
 			return token + "[" + rel + suffix, false
 		}
 	}
 	return token, true
 }
 
-// contained accepts either an absolute recorded path or one already relative to the home.
+// contained holds a source_context path to the form its section writes and to the home, by the
+// containment check every read uses, so a path the column publishes is one the table would
+// have opened. ~/.claude.json's keys are absolute, and projectSourceContext writes the relative
+// form a probe already validated.
 //
-// Both forms occur: ~/.claude.json's keys are absolute, and projectSourceContext writes the
-// relative form a probe already validated. Which it is decides which check runs, and that
-// branch is load-bearing rather than tidiness.
-//
-// Trying the absolute check and then falling back to rejoining was the first attempt and it
-// was wrong in the one way that matters: filepath.Join("/Users/alice", "/tmp/evil") is
-// "/Users/alice/tmp/evil", so an absolute path that had just been refused for lying outside
-// the home came back contained, under a home it was never in. A path published as contained
-// has to have been contained as written.
-func contained(home, path string) (string, error) {
-	if filepath.IsAbs(path) {
+// A ~/.claude.json key that is not absolute names no project the collector admits, so it is
+// refused: the collector counts `opaquesecret123` or `../alice/x` as malformed and never reads
+// it, and publishing it anyway put a key the table refused into the column. A probe's relative
+// path is joined to the home with a separator and not cleaned, so a `..` in it reaches the
+// check that refuses one: filepath.Join cleans it away first, and `code/../x` came back
+// contained. An absolute path in a probe's form is refused for the same reason the absolute
+// check never falls back to joining: filepath.Join("/Users/alice", "/tmp/evil") is
+// "/Users/alice/tmp/evil", contained under a home it was never in.
+func contained(home, path string, absolute bool) (string, error) {
+	if filepath.IsAbs(path) != absolute {
+		return "", fmt.Errorf("%w: not in the form its section writes", fsscan.ErrMalformedPath)
+	}
+	if absolute {
 		return fsscan.ContainProjectPath(home, path, false)
 	}
-	// A relative path is re-validated by rejoining rather than trusted for having come from
-	// a probe, so one carrying `..` is refused by the same code that refuses an absolute one.
-	return fsscan.ContainProjectPath(home, filepath.Join(home, path), false)
+	return fsscan.ContainProjectPath(home, home+string(filepath.Separator)+path, false)
 }
-
-// maxServerNamePlaceholderIndex bounds the `#2`, `#3` suffixes, so a file full of
-// unrepresentable names cannot make the column unbounded.
-const maxServerNamePlaceholderIndex = 999
 
 // serverNamePlaceholder names an unrepresentable server by the file it came from.
 //
@@ -366,6 +338,10 @@ const maxServerNamePlaceholderIndex = 999
 // look", and it deliberately does not answer "is this the same server as last week". Durable
 // correlation across a fleet needs a stable pseudonym, and a stable pseudonym is the
 // attackable thing. Recorded as a follow-up rather than split half-way.
+//
+// The index is not capped. A cap published every name past it as one value, so distinct servers
+// became identical rows, and the file's size cap already bounds how many entries one file holds,
+// which keeps the suffix to a few digits.
 func serverNamePlaceholder(relSourcePath string, index int) string {
 	// No source means no position to name, and `[redacted:]` names a file that was never
 	// read -- a value this table emitted once already, for a different cause, and which is
@@ -374,9 +350,6 @@ func serverNamePlaceholder(relSourcePath string, index int) string {
 	// through the discovery pass that assigns ordinals.
 	if relSourcePath == "" {
 		return redact.RedactedMark
-	}
-	if index > maxServerNamePlaceholderIndex {
-		index = maxServerNamePlaceholderIndex
 	}
 	suffix := ""
 	if index > 1 {
@@ -494,15 +467,22 @@ var (
 // outside the home, which are the three ways the column could become wrong rather than merely
 // unpleasant.
 //
+// A row about the roster has no home, so only the first two apply to it: the directory the roster
+// declares for an account it skipped is published only when it is absolute and clean. Every row
+// a home produces carries that home.
+//
 // The residual risk is documented rather than closed: a user who names a directory after a
-// secret puts it in this column, and redactSecret will catch it only if it has a recognisable
+// secret puts it in this column, and redact.Secret will catch it only if it has a recognisable
 // shape. That is stated in the table README under the redaction contract.
 func structurallySoundPath(path, home string) bool {
-	if path == "" || home == "" {
-		return true // nothing to check against; the roster diagnostics have no home
+	if path == "" {
+		return true
 	}
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return false
+	}
+	if home == "" {
+		return true
 	}
 	rel, err := filepath.Rel(home, path)
 	return err == nil && rel != ".." &&

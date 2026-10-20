@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/macadmins/osquery-extension/pkg/utils"
@@ -23,22 +25,18 @@ import (
 // osquery makes it opt-in, and doing it unasked on every scheduled query is not a trade this
 // table should make silently, so the local roster is used.
 //
-// That limit is documented rather than emitted. It used to produce a warning row on every
-// Linux run, which made the warning column non-empty on every Linux host whether or not
-// anything was wrong -- so the one predicate an operator would write to find real problems
-// matched every host in the fleet, and the note itself became the thing they filtered out.
-// A condition that is true of every run unconditionally is a property of the table, and the
-// place to state a property of the table is its documentation. What survives is the
-// per-account reporting: a name the roster never mentioned still gets a row saying so, which
-// is what actually distinguishes a directory-served account from an absent one.
+// That limit is documented rather than emitted. A warning row on every Linux run would make
+// the warning column non-empty on every Linux host whether or not anything was wrong, so the
+// one predicate an operator writes to find real problems would match every host in the
+// fleet. A condition true of every run is a property of the table, and the table's
+// documentation states it. Per-account reporting is unaffected: a name the roster never
+// mentioned still gets a row saying so, which is what distinguishes a directory-served account
+// from an absent one.
 //
-// An earlier version of this file enumerated /Users and /home directly and grew a parser
-// for /etc/passwd, a reader for /etc/shells, an nsswitch.conf policy check, a uid heuristic,
-// and a Windows ProfileList reader with SID resolution and ownership arbitration. All of it
-// re-derived, less well, something the process on the other end of the socket already knew.
-// Every account-roster defect found in review came from that code: compat treated as files,
-// a uid floor that dropped real accounts, a partial /etc/shells read accepted as an
-// allowlist, hundreds of serial domain SID lookups against the watchdog.
+// Enumerating /Users and /home directly would re-derive, less well, what the process on the
+// other end of the socket already knows: it would need a parser for /etc/passwd, a reader for
+// /etc/shells, an nsswitch.conf policy check, a uid heuristic, and a Windows ProfileList
+// reader with SID resolution, each a place to drop a real account or stall on domain lookups.
 //
 // There is no filesystem fallback when the query fails, and that is deliberate rather than
 // an omission. The socket is how this extension returns rows at all: if it cannot be
@@ -54,9 +52,8 @@ const UsersQuery = `SELECT uid, uuid, username, directory, shell FROM users`
 
 // UsersRoot is the platform root under which user homes conventionally live.
 //
-// No longer the source of the roster; it survives as the path reported on a diagnostic that
-// concerns the roster as a whole rather than one account, where there is no home directory
-// to name.
+// It is the path reported on a diagnostic that concerns the roster as a whole rather than one
+// account, where there is no home directory to name. The roster itself comes from osquery.
 var UsersRoot = defaultUsersRoot()
 
 func defaultUsersRoot() string {
@@ -114,18 +111,24 @@ const (
 	OmittedHomeRedirected OmissionReason = "home_redirected"
 	// OmittedHomeNotDirectory is a declared home that exists and is not a directory.
 	OmittedHomeNotDirectory OmissionReason = "home_not_directory"
+	// OmittedHomeNotAbsolute is a declared home that is relative, which a stat resolves against
+	// the daemon's working directory, or that has a ".." component, which filepath.Clean would
+	// resolve as text where the kernel resolves it through whatever the component before names.
+	OmittedHomeNotAbsolute OmissionReason = "home_not_absolute"
 )
 
 // Omission is one account that exists on the host but whose home was not inspected.
 //
 // Structured rather than a bare name because the fields answer different questions. Name is
 // what a `WHERE user = ...` constraint matches, so without it the diagnostic is invisible to
-// the query that asked for it. ID is what survives a rename and what a join uses. Path is
-// the home the roster actually reported, which is not derivable from the name. Reason
-// separates the failures an administrator would act on differently.
+// the query that asked for it. ID is what survives a rename and what a join uses, and UID is
+// the users table's uid column, which `JOIN users USING (uid)` uses. Path is the home the
+// roster actually reported, which is not derivable from the name. Reason separates the
+// failures an administrator would act on differently.
 type Omission struct {
 	Name   string
 	ID     string
+	UID    string
 	Path   string
 	Reason string
 	Code   OmissionReason
@@ -195,6 +198,18 @@ var nonLoginShells = map[string]struct{}{
 var errEmptyRoster = errors.New("the osquery users table returned no accounts, so the " +
 	"roster is unavailable rather than empty")
 
+// identityLess orders two account identities: numerically when both are uids, so the console
+// user at 501 on macOS comes before a service account at 1000 rather than after it as text,
+// and as text otherwise, for SIDs.
+func identityLess(left, right string) bool {
+	leftUID, leftErr := strconv.ParseInt(left, 10, 64)
+	rightUID, rightErr := strconv.ParseInt(right, 10, 64)
+	if leftErr == nil && rightErr == nil {
+		return leftUID < rightUID
+	}
+	return left < right
+}
+
 // accountID picks the identity that actually identifies the account on this host.
 //
 // osquery reports both a uid and a uuid, and which one is the identity depends on the
@@ -258,10 +273,18 @@ func homesFromUsers(rows []map[string]string, filter map[string]struct{},
 	// so without this the account reported for a shared home could differ between two runs
 	// over an unchanged host, which differential logging reports as a row removed and
 	// re-added. Sorted by identity rather than name because that is what stays stable when
-	// an account is renamed.
+	// an account is renamed, then by name and home, because POSIX lets several accounts share
+	// a uid, and the order decides which account a shared deadline or output cap reaches first.
 	ordered := append([]map[string]string(nil), rows...)
 	sort.SliceStable(ordered, func(i, j int) bool {
-		return accountID(ordered[i]) < accountID(ordered[j])
+		left, right := ordered[i], ordered[j]
+		if leftID, rightID := accountID(left), accountID(right); leftID != rightID {
+			return identityLess(leftID, rightID)
+		}
+		if left["username"] != right["username"] {
+			return left["username"] < right["username"]
+		}
+		return left["directory"] < right["directory"]
 	})
 
 	for _, row := range ordered {
@@ -274,7 +297,7 @@ func homesFromUsers(rows []map[string]string, filter map[string]struct{},
 			// aggregating it for an unconstrained query and repeating it under each
 			// requested username for a constrained one, so SQLite cannot discard it.
 			result.Skipped = append(result.Skipped, Omission{
-				ID: accountID(row), Path: home, Code: OmittedNoUsername,
+				ID: accountID(row), UID: row["uid"], Path: home, Code: OmittedNoUsername,
 				Reason: "the roster returned an account with no username, so it could not " +
 					"be attributed or inspected"})
 			continue
@@ -292,7 +315,7 @@ func homesFromUsers(rows []map[string]string, filter map[string]struct{},
 		}
 		if _, nonLogin := nonLoginShells[row["shell"]]; nonLogin {
 			result.NonLogin = append(result.NonLogin, Omission{
-				Name: name, ID: accountID(row), Path: home, Code: OmittedNonLoginShell,
+				Name: name, ID: accountID(row), UID: row["uid"], Path: home, Code: OmittedNonLoginShell,
 				Reason: "this account cannot log in, its shell being " + row["shell"] +
 					", so it keeps no editor or agent configuration"})
 			continue
@@ -302,7 +325,7 @@ func homesFromUsers(rows []map[string]string, filter map[string]struct{},
 			// configuration. On Windows and on directory-managed hosts an account record
 			// routinely exists before a profile has been created.
 			result.Skipped = append(result.Skipped, Omission{
-				Name: name, ID: accountID(row), Code: OmittedNoHomeDeclared,
+				Name: name, ID: accountID(row), UID: row["uid"], Code: OmittedNoHomeDeclared,
 				Reason:       "this account declares no home directory, so there was nowhere to look",
 				HomeUnusable: true})
 			continue
@@ -313,6 +336,23 @@ func homesFromUsers(rows []map[string]string, filter map[string]struct{},
 		// and the result was indistinguishable from Bob having no configuration. Avoiding
 		// the duplicate filesystem work is the caller's job, and it can do it after
 		// filtering; see the scan cache in DiscoverAll.
+		// Refused before it is cleaned. The rest of the tree refuses ".." before cleaning a
+		// path, and a home is the base every read is anchored to, so a home the users table
+		// spells as /var/empty/../root is not quietly turned into /var/root, another account's
+		// home and its scan, or a relative one into a directory under osqueryd's own.
+		if !filepath.IsAbs(home) || hasDotDot(home) {
+			result.Skipped = append(result.Skipped, Omission{
+				Name: name, ID: accountID(row), UID: row["uid"], Path: home, Code: OmittedHomeNotAbsolute,
+				Reason: "the home directory this account declares is not an absolute path free of " +
+					"'..', so it was not resolved",
+				HomeUnusable: true})
+			continue
+		}
+		// Cleaned once here, so every later comparison against the home, containment and
+		// publication alike, sees one spelling of it rather than a trailing separator or a
+		// redundant segment the users table happened to carry. With ".." refused above, this
+		// never moves the path to a different directory.
+		home = filepath.Clean(home)
 		info, err := stat(home)
 		if err != nil {
 			// Reported either way, including ENOENT. An absent home is indistinguishable
@@ -328,7 +368,7 @@ func homesFromUsers(rows []map[string]string, filter map[string]struct{},
 				code = OmittedHomeMissing
 			}
 			result.Skipped = append(result.Skipped, Omission{
-				Name: name, ID: accountID(row), Path: home, Code: code,
+				Name: name, ID: accountID(row), UID: row["uid"], Path: home, Code: code,
 				Reason: reason, HomeUnusable: unusable})
 			continue
 		}
@@ -336,7 +376,7 @@ func homesFromUsers(rows []map[string]string, filter map[string]struct{},
 			// Refusing to follow is deliberate -- never traverse out of the home reported
 			// for an account -- but the account behind it still goes unrepresented.
 			result.Skipped = append(result.Skipped, Omission{
-				Name: name, ID: accountID(row), Path: home, Code: OmittedHomeRedirected,
+				Name: name, ID: accountID(row), UID: row["uid"], Path: home, Code: OmittedHomeRedirected,
 				Reason: "home directory is a symlink or reparse point, which is not followed"})
 			continue
 		}
@@ -345,7 +385,7 @@ func homesFromUsers(rows []map[string]string, filter map[string]struct{},
 			// can be read from it, and silently dropping the account reported it as having
 			// none rather than as never having been looked at.
 			result.Skipped = append(result.Skipped, Omission{
-				Name: name, ID: accountID(row), Path: home, Code: OmittedHomeNotDirectory,
+				Name: name, ID: accountID(row), UID: row["uid"], Path: home, Code: OmittedHomeNotDirectory,
 				Reason:       "the home directory this account declares is not a directory",
 				HomeUnusable: true})
 			continue
@@ -353,6 +393,16 @@ func homesFromUsers(rows []map[string]string, filter map[string]struct{},
 		result.Homes = append(result.Homes, UserHome{Name: name, ID: accountID(row), UID: row["uid"], Path: home})
 	}
 	return result
+}
+
+// hasDotDot reports whether a path has a ".." component, with either separator on Windows.
+func hasDotDot(path string) bool {
+	for _, part := range strings.FieldsFunc(path, isPathSeparator) {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // redirectsElsewhere reports whether a directory entry is a link to somewhere else rather

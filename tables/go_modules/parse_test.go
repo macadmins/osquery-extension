@@ -60,8 +60,8 @@ replace example/local => ../local
 	if !reflect.DeepEqual(result.Entries, want) {
 		t.Errorf("entries =\n%+v\nwant\n%+v", result.Entries, want)
 	}
-	if result.Dropped != 0 || result.PartialLine != 0 {
-		t.Errorf("dropped %d, partial line %d", result.Dropped, result.PartialLine)
+	if result.Dropped != 0 || result.DroppedValues != 0 || result.PartialLine != 0 {
+		t.Errorf("dropped %d, dropped values %d, partial line %d", result.Dropped, result.DroppedValues, result.PartialLine)
 	}
 	if result.ProjectModule != "example.com/project" {
 		t.Errorf("project module = %q", result.ProjectModule)
@@ -76,8 +76,9 @@ func TestParseGoModProjectModule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ProjectModule != "" || result.Dropped != 1 {
-		t.Errorf("project module %q dropped %d, want empty and 1", result.ProjectModule, result.Dropped)
+	if result.ProjectModule != "" || result.DroppedValues != 1 || result.Dropped != 0 {
+		t.Errorf("project module %q dropped values %d entries %d, want empty, 1 and 0",
+			result.ProjectModule, result.DroppedValues, result.Dropped)
 	}
 	want := []moduleEntry{{Path: "example.com/dep", Version: "v1.0.0", ModRelationship: relationshipDirect}}
 	if !reflect.DeepEqual(result.Entries, want) {
@@ -138,8 +139,9 @@ replace github.com/good/one => "--token=` + opaque + `" v1.0.0
 	if !reflect.DeepEqual(result.Entries, want) {
 		t.Fatalf("entries = %+v, want only the valid requirement, with no replacement", result.Entries)
 	}
-	if result.Dropped != 4 {
-		t.Errorf("dropped = %d, want 4: three requirements and one replacement", result.Dropped)
+	if result.Dropped != 3 || result.DroppedValues != 1 {
+		t.Errorf("dropped = %d and %d values, want three requirements and one replacement",
+			result.Dropped, result.DroppedValues)
 	}
 }
 
@@ -314,9 +316,10 @@ func TestDownloadedModulesUseTheStricterRule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(mod.Entries) != 2 || !mod.Entries[0].ReplaceLocal || mod.Entries[1].ReplaceModule != "" || mod.Dropped != 1 {
-		t.Errorf("go.mod entries %+v dropped %d, want the local requirement kept and the dot-less target dropped",
-			mod.Entries, mod.Dropped)
+	if len(mod.Entries) != 2 || !mod.Entries[0].ReplaceLocal || mod.Entries[1].ReplaceModule != "" ||
+		mod.DroppedValues != 1 || mod.Dropped != 0 {
+		t.Errorf("go.mod entries %+v dropped values %d, want the local requirement kept and the dot-less target dropped",
+			mod.Entries, mod.DroppedValues)
 	}
 }
 
@@ -422,9 +425,10 @@ func TestModulePathsWithACredentialFormatAreDropped(t *testing.T) {
 	for _, entry := range mod.Entries {
 		paths = append(paths, entry.Path)
 	}
-	if mod.ProjectModule != "" || mod.Dropped != 3 || strings.Join(paths, " ") != ordinarySK+" "+ordinaryGitLab {
-		t.Errorf("go.mod: project module %q dropped %d entries %v, want empty, 3 and the two ordinary names",
-			mod.ProjectModule, mod.Dropped, paths)
+	if mod.ProjectModule != "" || mod.Dropped != 2 || mod.DroppedValues != 1 ||
+		strings.Join(paths, " ") != ordinarySK+" "+ordinaryGitLab {
+		t.Errorf("go.mod: project module %q dropped %d values %d entries %v, want empty, 2, 1 and the two ordinary names",
+			mod.ProjectModule, mod.Dropped, mod.DroppedValues, paths)
 	}
 	sum := parseGoSum([]byte(githubToken + " v1.0.0 " + validHashField + "\n" + ordinarySK + " v1.0.0 " + validHashField + "\n"))
 	if len(sum.Entries) != 1 || sum.Entries[0].Path != ordinarySK || sum.Dropped != 1 {
@@ -472,4 +476,122 @@ func recordedKinds(entry moduleEntry) string {
 		kinds = append(kinds, "go.mod")
 	}
 	return strings.Join(kinds, "+")
+}
+
+// TestOverlongModuleValuesAreDropped: the Go grammar sets no length limit, and project_module is
+// repeated on every row of its project, so a module path or version over its cap is dropped and
+// counted, in go.mod, in go.sum and on the module line, never truncated.
+func TestOverlongModuleValuesAreDropped(t *testing.T) {
+	longPath := "example.com/" + strings.Repeat("a", maxModulePathLen)
+	longVersion := "v1.0.0-" + strings.Repeat("a", maxVersionLen)
+	result, err := parseGoMod([]byte("module " + longPath + "\n\nrequire (\n\t" + longPath +
+		" v1.0.0\n\texample.com/ok " + longVersion + "\n\texample.com/kept v1.0.0\n)\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ProjectModule != "" || result.Dropped != 2 || result.DroppedValues != 1 || len(result.Entries) != 1 ||
+		result.Entries[0].Path != "example.com/kept" {
+		t.Errorf("go.mod result = %+v, want the overlong module line and both overlong requirements dropped", result)
+	}
+	sum := parseGoSum([]byte(longPath + " v1.0.0 " + validHashField + "\nexample.com/kept v1.0.0 " +
+		validHashField + "\n"))
+	if sum.Dropped != 1 || len(sum.Entries) != 1 {
+		t.Errorf("go.sum result = %+v, want the overlong path dropped", sum)
+	}
+}
+
+// TestNonCanonicalVersionsAreDropped: semver accepts build metadata and shortened versions, which
+// the go command never writes, so "+opaqueSecret123" cannot carry text a user chose into the
+// version column and "v1.2" cannot sit beside go.mod's "v1.2.0" as a different version.
+// +incompatible is canonical and is kept.
+func TestNonCanonicalVersionsAreDropped(t *testing.T) {
+	sum := parseGoSum([]byte("example.com/a v1.0.0+opaqueSecret123 " + validHashField + "\n" +
+		"example.com/b v1.2 " + validHashField + "\n" +
+		"example.com/c v2.0.0+incompatible " + validHashField + "\n"))
+	if sum.Dropped != 2 || len(sum.Entries) != 1 || sum.Entries[0].Version != "v2.0.0+incompatible" {
+		t.Errorf("go.sum result = %+v, want the two non-canonical versions dropped", sum)
+	}
+}
+
+// TestTruncationNeedsAnEntryCut: a go.mod with exactly maxEntriesPerFile requirements is not
+// truncated when the line after them is a duplicate or is dropped, only when it would have been
+// listed.
+func TestTruncationNeedsAnEntryCut(t *testing.T) {
+	var lines strings.Builder
+	lines.WriteString("module x\n\nrequire (\n")
+	for index := range maxEntriesPerFile {
+		lines.WriteString("\texample.com/m" + strconv.Itoa(index) + " v1.0.0\n")
+	}
+	full := lines.String()
+	for extra, want := range map[string]bool{
+		"\texample.com/m0 v1.0.0\n":                                      false, // a duplicate
+		"\t\"example.com/ghp_" + strings.Repeat("a", 36) + "\" v1.0.0\n": false, // dropped
+		"\texample.com/another v1.0.0\n":                                 true,
+	} {
+		result, err := parseGoMod([]byte(full + extra + ")\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Truncated != want || len(result.Entries) != maxEntriesPerFile {
+			t.Errorf("after %q: truncated = %v with %d entries, want %v with %d", extra, result.Truncated,
+				len(result.Entries), want, maxEntriesPerFile)
+		}
+	}
+}
+
+// TestGoAndToolchainDirectives: the go and toolchain lines are recorded as declared; a toolchain
+// outside the narrower grammar, or holding a credential format, is dropped and counted, never
+// published. So is a go line the lenient parser rewrote: modfile.ParseLax cuts
+// "1.24+--token=..." to "1.24" in both Version and Syntax.Token, so only the file's own bytes
+// show the line said something else.
+func TestGoAndToolchainDirectives(t *testing.T) {
+	result, err := parseGoMod([]byte("module x\n\ngo 1.24.1\n\ntoolchain go1.24.2\n\nrequire example.com/a v1.0.0\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.GoDirective != "1.24.1" || result.ToolchainDirective != "go1.24.2" || result.DroppedValues != 0 {
+		t.Errorf("result = %+v, want go 1.24.1 and toolchain go1.24.2", result)
+	}
+	for _, toolchain := range []string{"go1.21.0-ghp_" + strings.Repeat("a", 36), "go1.21.0-" + strings.Repeat("b", maxVersionLen)} {
+		result, err := parseGoMod([]byte("module x\n\ngo 1.21\n\ntoolchain " + toolchain + "\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.ToolchainDirective != "" || result.DroppedValues != 1 || result.GoDirective != "1.21" {
+			t.Errorf("toolchain %.20s...: result = %+v, want the toolchain dropped and counted", toolchain, result)
+		}
+	}
+	rewritten, err := parseGoMod([]byte("module x\n\ngo 1.24+--token=opaqueSecret\n\nrequire example.com/a v1.0.0\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rewritten.GoDirective != "" || rewritten.DroppedValues != 1 || rewritten.PartialLine != 3 ||
+		len(rewritten.Entries) != 1 {
+		t.Errorf("rewritten go line: result = %+v, want it dropped and counted, the requirement listed", rewritten)
+	}
+	commented, err := parseGoMod([]byte("module x\n\ngo 1.24 // pinned for CI\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if commented.GoDirective != "1.24" || commented.DroppedValues != 0 {
+		t.Errorf("go line with a comment: result = %+v, want 1.24 kept", commented)
+	}
+	for _, name := range []string{"default", "go1.21rc1", "go1.21.0-bigcorp"} {
+		if !validToolchain(name) {
+			t.Errorf("validToolchain(%q) = false", name)
+		}
+	}
+}
+
+// TestAHashMustBeCanonicalBase64: a digest whose padding bits are not zero decodes to the same
+// bytes under the lenient decoder but is not what the go command writes, so it is malformed.
+func TestAHashMustBeCanonicalBase64(t *testing.T) {
+	canonical := "h1:" + strings.Repeat("A", 42) + "A="
+	if !validHash([]byte(canonical)) {
+		t.Errorf("%s is the canonical encoding of a zero digest", canonical)
+	}
+	// "B" sets the lowest of the last character's padding bits.
+	if loose := "h1:" + strings.Repeat("A", 42) + "B="; validHash([]byte(loose)) {
+		t.Errorf("%s has a padding bit set and is not a hash the go command writes", loose)
+	}
 }

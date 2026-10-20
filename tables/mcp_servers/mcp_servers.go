@@ -3,9 +3,6 @@ package mcp_servers
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"log"
-	"runtime/debug"
 	"sort"
 	"strconv"
 	"time"
@@ -67,17 +64,14 @@ import (
 //
 //   - `source_path` is a filesystem path whose directory names the user chooses, and an
 //     allowlist of directory names is not a thing that can exist. It keeps
-//     `redactSecret(redact.Path(...))` plus a structural assertion -- absolute, clean, under
+//     `redact.Secret(redact.Path(...))` plus a structural assertion -- absolute, clean, under
 //     the home -- so a user who names a directory after an opaque secret still puts it here.
 //   - `user` is the join key osquery supplies. Constraining it would break
 //     `WHERE user = '<name>'`, which is the query this table exists to answer.
 //
-// An earlier version of this comment argued that narrowing the free-text columns was
-// unsound applied to one while five others kept the property, and that applied to all of
-// them it would remove the table's purpose -- citing `terraform-mcp-server` and
-// `computer-use-client-launcher` as basenames no allowlist would contain. The first half was
-// right and is why all of them were narrowed together. The second half confused an allowlist
-// of *names* with an allowlist of the *format* a name has: both of those basenames match
+// Narrowing one free-text column while others keep the property would be unsound, which is why
+// all of them are narrowed together. The grammars constrain the format of a name, not a list
+// of names: `terraform-mcp-server` and `computer-use-client-launcher` match
 // `^[A-Za-z0-9][A-Za-z0-9._+-]*$` and are published unchanged, while `API_KEY=xyz npx -y pkg`
 // does not, because a filename cannot contain an equals sign.
 //
@@ -92,11 +86,10 @@ func MCPServersColumns() []table.ColumnDefinition {
 		table.TextColumn("package_manager"),
 		table.TextColumn("package_name"),
 		table.TextColumn("requested_spec"),
-		// Renamed from `version`, which invited the wrong reading: it is the version the
-		// configuration pins, never the version installed. `npx` resolves `@1.2.3` itself
-		// and may resolve it to something else, and an absent pin means unpinned rather
-		// than unknown -- a distinction an operator correlating against a vulnerability
-		// feed needs and the old name hid.
+		// The version the configuration pins, never the version installed: `npx` resolves
+		// `@1.2.3` itself and may resolve it to something else, and an absent pin means
+		// unpinned rather than unknown -- a distinction an operator correlating against a
+		// vulnerability feed needs, and which `version` would hide.
 		table.TextColumn("pinned_version"),
 		table.TextColumn("confidence"),
 		// Replaces the previous `command` column. Just the executable name,
@@ -134,8 +127,9 @@ func MCPServersColumns() []table.ColumnDefinition {
 	}
 }
 
-// MCPServersGenerate is the table plugin callback. Panic-safe, any internal
-// bug yields an error to the operator without taking down the extension process.
+// MCPServersGenerate is the table plugin callback. main.go registers it through
+// utils.RecoverPanics, so an internal bug yields an error to the operator without taking down
+// the extension process.
 // KNOWN GAP: no test in this repository executes SQL
 // against a registered table, for this table or any other. The tests below call generate
 // directly with a hand-built QueryContext, which proves the generator honours a constraint
@@ -150,23 +144,13 @@ func MCPServersGenerate(ctx context.Context, queryContext table.QueryContext, so
 // generate is MCPServersGenerate with the osquery client injected, so tests drive it through
 // utils.MockOsqueryClienter instead of needing a live socket. This is the shape sofa,
 // wifi_network and alt_system_info already use.
-func generate(ctx context.Context, queryContext table.QueryContext, clienter utils.OsqueryClienter) (rows []map[string]string, err error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			// The panic value can quote a file the table was reading, so it is not logged and
-			// does not reach osquery. The stack names functions and offsets only.
-			log.Printf("mcp_servers: recovered from a panic\n%s", debug.Stack())
-			rows = nil
-			err = errors.New("mcp_servers: internal error; the extension log has the stack")
-		}
-	}()
-
+func generate(ctx context.Context, queryContext table.QueryContext, clienter utils.OsqueryClienter) ([]map[string]string, error) {
 	userFilter := userConstraint(queryContext)
 	// ctx is osquery's, so a cancelled or abandoned query stops the walk rather than running
 	// it out against the watchdog.
 	servers := DiscoverAll(ctx, clienter, userFilter)
 
-	rows = make([]map[string]string, 0, len(servers))
+	rows := make([]map[string]string, 0, len(servers))
 	for _, s := range servers {
 		rows = append(rows, serverToRow(s))
 	}
@@ -182,7 +166,7 @@ func userConstraint(qc table.QueryContext) map[string]struct{} {
 // serverToRow builds the emitted row, applying each column's allowlist.
 //
 // Every gate lives here rather than at the point the value was derived, for the same reason
-// envKeyAllowed is called from three places and once more at the boundary: this is the last
+// envKeyAllowed is called from three places and once more at publication: this is the last
 // code a value passes through before it becomes a column, so a check here cannot be bypassed
 // by a new producer. The derivation sites keep their own checks as well -- two gates in
 // series, where the first one gives the warning somewhere specific to point at.
@@ -204,7 +188,7 @@ func serverToRow(s Server) map[string]string {
 	}
 
 	basename, basenameDropped := allowedCommandBasename(
-		redactSecret(commandBasename(s.Command, len(s.Args) > 0)))
+		redact.Secret(commandBasename(s.Command, len(s.Args) > 0)))
 	if basenameDropped {
 		recordDrop(warnCommandBasenameDropped)
 	}
@@ -219,7 +203,7 @@ func serverToRow(s Server) map[string]string {
 		confidence = "low"
 	}
 	packageName, requestedSpec, pinnedVersion, identityDropped := allowedIdentity(
-		redactSecret(packageName), redactSecret(requestedSpec), redactSecret(pinnedVersion))
+		redact.Secret(packageName), redact.Secret(requestedSpec), redact.Secret(pinnedVersion))
 	if identityDropped {
 		confidence = "low"
 		recordDrop(warnIdentityDropped)
@@ -228,14 +212,14 @@ func serverToRow(s Server) map[string]string {
 	// A row that never named a server keeps an empty column.
 	//
 	// The guard is on the raw name, before redaction, and it is load-bearing: every
-	// diagnostic row has no server name, redactSecret("") is "", and "" is one of the
+	// diagnostic row has no server name, redact.Secret("") is "", and "" is one of the
 	// conditions serverNameUnrepresentable reports -- so without this every diagnostic row
 	// was emitted with `server_name = "[redacted:]"`, a placeholder for a name that never
 	// existed, naming a file that was never read. Found by running the table rather than by
 	// a test, because every unit test asserting on a placeholder supplied a real name.
 	serverName := ""
 	if s.ServerName != "" {
-		serverName = redactSecret(s.ServerName)
+		serverName = redact.Secret(s.ServerName)
 		if serverNameUnrepresentable(serverName) {
 			// The placeholder is positional: it names the file the server came from,
 			// relative to the home, plus an index when one file yields more than one. Not a
@@ -249,7 +233,7 @@ func serverToRow(s Server) map[string]string {
 			// straight into the replacement for a name that had just been redacted for
 			// carrying one. Replacing an unpublishable value with a different
 			// unpublishable value is not a fix.
-			serverName = redactSecret(serverNamePlaceholder(s.PlaceholderSource,
+			serverName = redact.Secret(serverNamePlaceholder(s.PlaceholderSource,
 				s.PlaceholderIndex))
 			recordDrop(warnServerNameUnrepresentable)
 		}
@@ -258,12 +242,12 @@ func serverToRow(s Server) map[string]string {
 	// Redacted after validation, not instead of it. Containment proves the path is one this
 	// table would have opened; it says nothing about what the user named the directory.
 	sourceContext, contextDropped := allowedSourceContext(s.SourceContext, s.Home)
-	sourceContext = redactSecret(sourceContext)
+	sourceContext = redact.Secret(sourceContext)
 	if contextDropped {
 		recordDrop(warnSourceContextPathDropped)
 	}
 
-	endpoint := validatedEndpoint(redactSecret(s.URL))
+	endpoint := validatedEndpoint(redact.Secret(s.URL))
 	if endpoint == "" && s.URL != "" {
 		recordDrop(warnURLEndpointDropped)
 	}
@@ -273,7 +257,7 @@ func serverToRow(s Server) map[string]string {
 		recordDrop(warnEnvKeyDropped)
 	}
 
-	userID, userIDDropped := allowedUserID(s.UserID)
+	userID, userIDDropped := utils.PublishedUserID(s.UserID)
 	if userIDDropped {
 		recordDrop(warnUserIDDropped)
 	}
@@ -282,7 +266,7 @@ func serverToRow(s Server) map[string]string {
 	// available for a path whose directory names a user chooses, so this rules out the three
 	// ways the column could be wrong rather than merely unpleasant: not absolute, not
 	// already clean, or not under the home it was discovered in.
-	sourcePath := redactSecret(redact.Path(s.SourcePath))
+	sourcePath := redact.Secret(redact.Path(s.SourcePath))
 	if !structurallySoundPath(s.SourcePath, s.Home) {
 		sourcePath = ""
 	}
@@ -292,9 +276,9 @@ func serverToRow(s Server) map[string]string {
 		// every realistic query filters on, so a grammar here would break the table's
 		// purpose to protect a value this package did not choose and cannot improve.
 		"user":    s.User,
-		"uid":     allowedUID(s.UID),
+		"uid":     utils.PublishedUID(s.UID),
 		"user_id": userID,
-		// redactSecret, not redact.String, on every column a user's file can reach. It runs
+		// redact.Secret, not redact.String, on every column a user's file can reach. It runs
 		// redact.String first and then catches the one opaque case the token shapes cannot:
 		// a flag assignment whose option name announces a credential. It is idempotent, so
 		// the columns already sanitized during discovery are unaffected.
@@ -318,10 +302,10 @@ func serverToRow(s Server) map[string]string {
 		// whitespace and this column deliberately does not. Reporting the raw array length
 		// keeps the column a faithful description of the file.
 		"args_count": strconv.Itoa(len(s.Args)),
-		// Scheme and host only, and now only if the scheme is one of the four MCP uses and
-		// the host is hostname-shaped. A host is user-controlled through DNS, so
-		// `aws.AKIA...example.com` satisfied the old reduction and relied on redaction
-		// recognising the embedded shape; a grammar closes it structurally instead.
+		// Scheme and host only, and only if the scheme is one of the four MCP uses and the
+		// host is hostname-shaped. A host is user-controlled through DNS, so a reduction to
+		// the host alone would publish `aws.AKIA...example.com` unless redaction recognized
+		// the embedded key; a grammar closes it structurally instead.
 		"url_endpoint": endpoint,
 		// env_keys: JSON-encoded variable NAMES, values never extracted, each name required
 		// to be a C identifier. Per-element redaction happens before the marshal so the
@@ -334,22 +318,22 @@ func serverToRow(s Server) map[string]string {
 		// pinned_version: the version the config pins, never the version installed.
 		"pinned_version": pinnedVersion,
 		"confidence":     validateEnum(confidence, allowedConfidences, "low"),
-		"disabled":       boolToStr(s.Disabled),
+		"disabled":       utils.BoolToIntString(s.Disabled),
 		"approval_state": validateEnum(string(s.Approval), allowedApprovalStates,
 			string(approvalNotApplicable)),
-		"scan_complete": boolToStr(s.ScanComplete),
+		"scan_complete": utils.BoolToIntString(s.ScanComplete),
 		// Built from the warning catalogue, so every byte is one this package chose: a
 		// sentence keyed by a code, decimal integers, closed-enum spellings, and one key
-		// that passed a bare-identifier grammar. redact.ErrorText and redactSecret still
+		// that passed a bare-identifier grammar. redact.ErrorText and redact.Secret still
 		// run over the result, which is now defence in depth rather than the only defence.
 		//
-		// redactSecret before ErrorText, not after: ErrorText truncates at 500 bytes, and a
+		// redact.Secret before ErrorText, not after: ErrorText truncates at 500 bytes, and a
 		// flag assignment cut in half by that bound is harder to recognise than a whole one.
-		"warning": redact.ErrorText(redactSecret(note.render())),
+		"warning": redact.ErrorText(redact.Secret(note.render())),
 	}
 }
 
-// redactedJSONStringArray applies redactSecret to each element of ss, sorts
+// redactedJSONStringArray applies redact.Secret to each element of ss, sorts
 // deterministically, and JSON-marshals the result. Used for any column whose value is a
 // JSON array of user-controlled strings. Per element rather than over the marshalled blob,
 // so the marker lands inside the array instead of the raw value surviving inside a quoted
@@ -371,7 +355,7 @@ func redactedJSONStringArray(ss []string) string {
 	}
 	cleaned := make([]string, len(ss))
 	for i, s := range ss {
-		cleaned[i] = redactSecret(s)
+		cleaned[i] = redact.Secret(s)
 	}
 	sort.Strings(cleaned)
 	b, err := json.Marshal(cleaned)
@@ -379,11 +363,4 @@ func redactedJSONStringArray(ss []string) string {
 		return ""
 	}
 	return string(b)
-}
-
-func boolToStr(b bool) string {
-	if b {
-		return "1"
-	}
-	return "0"
 }

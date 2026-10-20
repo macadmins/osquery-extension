@@ -51,11 +51,10 @@ func OpenBeneath(baseDir, relPath string) (*os.File, error) {
 
 // The refusals a read can report, as sentinels rather than as prose.
 //
-// Every one of these used to be an errors.New or an fmt.Errorf, so the only way to tell them
-// apart was to match the sentence. A caller that wants to classify a failure -- to say which
-// refusal happened, on a row that must not carry a byte the user chose -- cannot do that by
-// reading text: the text is the thing it is trying not to emit. Sentinels make the
-// classification structural, and ClassifyError below closes it into an enum.
+// A caller that wants to classify a failure -- to say which refusal happened, on a row that
+// must not carry a byte the user chose -- cannot do that by reading an error's text: the text
+// is the thing it is trying not to emit. Sentinels make the classification structural, and
+// ClassifyError below closes it into an enum.
 var (
 	// ErrTooLarge means the file was bigger than the cap. Refused rather than truncated: a
 	// truncated config parses as a different config, which is worse than no answer.
@@ -184,6 +183,14 @@ func ClassifyError(err error) ErrClass {
 	}
 }
 
+// IsNotDirectory reports whether err is a path that had to be a directory and was not: a
+// component of the path is a file, so nothing beneath it can exist. ClassifyError reports it as
+// ClassRefusedPath together with a refused symlink, and a caller that has to tell "cannot exist"
+// from "would not follow" asks this.
+func IsNotDirectory(err error) bool {
+	return errors.Is(err, errNotDirectory)
+}
+
 // IsExpectedAbsent reports whether err from a read represents a benign "the file isn't there
 // or shouldn't be read" case that the caller should silently skip:
 //   - ENOENT: the file genuinely does not exist
@@ -240,8 +247,8 @@ type ReadOpts struct {
 	// enough to be worth refusing on, which is why the caller chooses.
 	RefuseHardLinks bool
 
-	// CloudPlaceholder overrides the platform's cloud-placeholder detection, which
-	// ReadProjectFile consults on the descriptor it opened, before reading any of it.
+	// CloudPlaceholder overrides the platform's cloud-placeholder detection, which every read
+	// consults on the descriptor it opened, before reading any of it.
 	//
 	// It takes the open file rather than a path, and that is the whole reason it reads the
 	// way it does. The only path available here is the home joined to a relative path, and
@@ -274,10 +281,23 @@ func ReadBoundedUnder(baseDir, relPath string, opts ReadOpts) ([]byte, error) {
 // readGuarded applies every check that can be made against an already-open descriptor, then
 // reads.
 //
-// Shared by ReadBoundedUnder and ReadBounded so the two cannot drift. A refusal that applied
-// to one path and not the other would make the weaker one the path worth aiming at, and the
-// weaker one here is the path a caller reaches for when it has no base to contain to.
+// Shared by ReadBoundedUnder and ReadProjectFile so the two cannot drift. A refusal that
+// applied to one and not the other would make the weaker one the path worth aiming at.
+//
+// The cloud-placeholder check comes first, so a file whose content a provider holds is refused
+// before anything asks for its bytes, wherever it is: a project file, a file at a fixed path in
+// the home, or a followed link's target, which can sit in an evicted ~/Documents outside every
+// cloud-folder prefix. A failure to read the attribute is not evidence of a placeholder, so it
+// does not refuse; the read below produces the real diagnosis, and refusing would relabel some
+// other failure as the one refusal that tells an operator their provider is involved.
 func readGuarded(f *os.File, opts ReadOpts) ([]byte, error) {
+	placeholder := opts.CloudPlaceholder
+	if placeholder == nil {
+		placeholder = IsCloudPlaceholder
+	}
+	if evicted, attrErr := placeholder(f); attrErr == nil && evicted {
+		return nil, fmt.Errorf("%w: content is not local", ErrCloudPlaceholder)
+	}
 	info, err := f.Stat()
 	if err != nil {
 		return nil, err
@@ -364,10 +384,79 @@ func ReadLinkBeneath(base, relDir, name string) (string, error) {
 	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
 		return "", fmt.Errorf("%w: %q is not a single path component", ErrMalformedPath, name)
 	}
-	dir, err := OpenBeneath(base, relDir)
+	// The base itself, when the link sits directly in it, is opened the way ProbeProjectDir
+	// opens a home recorded as a project, because OpenBeneath needs at least one component.
+	var dir *os.File
+	var err error
+	if components, splitErr := splitSafeComponents(relDir); splitErr == nil && len(components) == 0 {
+		dir, err = openBaseDir(base)
+	} else {
+		dir, err = OpenBeneath(base, relDir)
+	}
 	if err != nil {
 		return "", err
 	}
 	defer func() { _ = dir.Close() }()
 	return readLinkAt(dir, name)
+}
+
+// LinkTargetBeneath resolves the symlink name inside relDir by one hop and returns the
+// base-relative path it names, or ErrNotContained when that path is not beneath base. The link
+// is read by ReadLinkBeneath, not followed. A caller opens the result with OpenBeneath, which
+// refuses a symlink at every component, so a link to another link fails that open and a chain is
+// never walked. Where readLinkAt is unsupported, Windows included, this returns that error.
+//
+// The target is resolved as text against relDir, which names the same file the kernel would only
+// because relDir and the result are both opened with no symlink on the way. A ".." after a named
+// component breaks that: the kernel resolves "vendor/../go.sum" from wherever vendor points,
+// and filepath.Clean deletes vendor. Such a target, and any ".." in an absolute one, is refused
+// rather than read as a different file. Leading ".." components are resolved from relDir, and
+// only as far as base: base's own path was never opened component by component, so above it the
+// text and the kernel can disagree, and a target that climbs above base is refused even when it
+// would come back down into it.
+func LinkTargetBeneath(base, relDir, name string) (string, error) {
+	target, err := ReadLinkBeneath(base, relDir, name)
+	if err != nil {
+		return "", err
+	}
+	rel, err := ResolveBeneath(base, relDir, target)
+	if err == nil && rel == "." {
+		return "", fmt.Errorf("%w: link target %q is the base", ErrNotContained, target)
+	}
+	return rel, err
+}
+
+// ResolveBeneath resolves target, a path written as absolute or relative to relDir, which is
+// relative to base, and returns the base-relative path it names, or "." for base itself. It
+// applies LinkTargetBeneath's rules as text, without touching the filesystem: a ".." after a
+// named component, and any ".." in an absolute target, is ErrMalformedPath, and a target outside
+// base, or one whose leading ".." components climb above it, is ErrNotContained. A caller opens
+// the result with OpenBeneath, which refuses a symlink at every component.
+func ResolveBeneath(base, relDir, target string) (string, error) {
+	components, err := splitSafeComponents(relDir)
+	if err != nil {
+		return "", err
+	}
+	named, climbs := filepath.IsAbs(target), 0
+	for _, part := range strings.FieldsFunc(target, isPathSeparator) {
+		if part == ".." && named {
+			return "", fmt.Errorf("%w: target %q steps back after a named directory",
+				ErrMalformedPath, target)
+		}
+		if part == ".." {
+			if climbs++; climbs > len(components) {
+				return "", fmt.Errorf("%w: target %q climbs above the base", ErrNotContained, target)
+			}
+		}
+		named = named || (part != "." && part != "..")
+	}
+	resolved := target
+	if !filepath.IsAbs(target) {
+		resolved = filepath.Join(base, relDir, target)
+	}
+	rel, err := filepath.Rel(base, filepath.Clean(resolved))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("%w: target %q", ErrNotContained, target)
+	}
+	return rel, nil
 }

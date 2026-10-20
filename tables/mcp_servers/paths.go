@@ -5,21 +5,10 @@ import (
 	"path/filepath"
 )
 
-// Client application-data locations are shared with every table that reads a client's own
-// files. These names keep this package's call sites and tests unchanged.
-var (
-	appSupportDir     = devclients.AppSupportDir
-	appSupportDirFor  = devclients.AppSupportDirFor
-	appSupportFork    = devclients.AppSupportFork
-	appSupportForkFor = devclients.AppSupportForkFor
-	resolveSnapPath   = devclients.ResolveSnapPath
-	vscodeFamily      = devclients.VSCodeFamily
-)
-
 // appSupport joins parts beneath the per-OS application-support root, producing a path
 // relative to a user home with native separators.
 func appSupport(parts ...string) string {
-	return filepath.Join(append([]string{appSupportDir()}, parts...)...)
+	return filepath.Join(append([]string{devclients.AppSupportDir()}, parts...)...)
 }
 
 // clineHostDirs are the forks whose extension storage Cline writes into. Insiders is absent
@@ -45,8 +34,8 @@ var clineSettingsParts = []string{
 // Each is a fixed path, so each is probed directly.
 func vscodeFamilySources() []probe {
 	var out []probe
-	for _, fork := range vscodeFamily {
-		for _, relPath := range appSupportFork(fork.Dir, "User", "mcp.json") {
+	for _, fork := range devclients.VSCodeFamily {
+		for _, relPath := range devclients.AppSupportFork(fork.Dir, "User", "mcp.json") {
 			out = append(out, probe{
 				relPath: relPath,
 				client:  fork.Client,
@@ -56,7 +45,7 @@ func vscodeFamilySources() []probe {
 		}
 	}
 	for _, dir := range clineHostDirs {
-		for _, relPath := range appSupportFork(dir, clineSettingsParts...) {
+		for _, relPath := range devclients.AppSupportFork(dir, clineSettingsParts...) {
 			out = append(out, probe{
 				relPath: relPath,
 				client:  "cline",
@@ -83,8 +72,8 @@ func vscodeFamilySources() []probe {
 // neither of them.
 func vscodeProfileDirs() []profileRoot {
 	var out []profileRoot
-	for _, fork := range vscodeFamily {
-		for _, relPath := range appSupportFork(fork.Dir, "User", "profiles") {
+	for _, fork := range devclients.VSCodeFamily {
+		for _, relPath := range devclients.AppSupportFork(fork.Dir, "User", "profiles") {
 			out = append(out, profileRoot{relPath: relPath, client: fork.Client})
 		}
 	}
@@ -104,14 +93,3 @@ type profileRoot struct {
 	relPath string
 	client  string
 }
-
-// The flatpak and snap sandbox locations are reached as explicit probe paths rather than
-// recognised from a path after the fact.
-//
-// A path-shaped recogniser lived here -- isAppSupportPath, matching the platform's
-// application-support root plus a flatpak `/.var/app/.../config/` marker -- because the walk
-// found files first and had to work out afterwards which client owned them. appSupportForkFor
-// already generates the sandbox roots per fork, so the probe list names those locations
-// directly and there is nothing left to recognise. That also removes the case-sensitivity
-// problem the deleted classifier documented: a generated path is compared by the filesystem,
-// not by this package.

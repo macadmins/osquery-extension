@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"regexp"
 
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/module"
@@ -61,14 +62,22 @@ type parseResult struct {
 	Entries []moduleEntry
 
 	// ProjectModule is the module path on a go.mod's `module` line: what the project calls
-	// itself. A path outside the Go module grammar is counted in Dropped and left empty.
+	// itself. A path outside the Go module grammar is counted in DroppedValues and left empty.
 	ProjectModule string
+	// GoDirective and ToolchainDirective are the go.mod go and toolchain lines, as the project
+	// declares them. They are not the compiler a build used.
+	GoDirective        string
+	ToolchainDirective string
 
-	// Dropped counts entries whose module path or version is not in the Go module grammar.
-	// They are not published, because a value outside the grammar is not something the go
-	// command would accept as a dependency, and the column contract is that every value
-	// matches a known format.
+	// Dropped counts entries, requirements and go.sum records, whose module path or version
+	// fails validModule or validDownloadedModule. They are not listed, because a value outside
+	// the grammar is not something the go command would accept as a dependency, and the column
+	// contract is that every value matches a known format.
 	Dropped int
+	// DroppedValues counts values that fail their check where the row is still listed: a
+	// replacement target, which leaves its requirement listed without the replacement, and the
+	// module, go and toolchain lines, which leave their column empty on every row.
+	DroppedValues int
 
 	// MalformedLines counts go.sum lines that are not three fields.
 	MalformedLines int
@@ -104,6 +113,24 @@ var errGoModUnparsable = errors.New("go.mod could not be parsed")
 // cap is eight times that.
 const maxEntriesPerFile = 5000
 
+// maxModulePathLen and maxVersionLen bound a module path and a version. The Go module grammar
+// sets no length limit, and project_module is repeated on every row of its project, so without a
+// bound a 1 MiB module line in a go.mod under the size cap becomes gigabytes of output. The
+// longest of the 376 module paths in the development machine's module cache is 65 bytes, and the
+// longest version, a pseudo-version, 37; each cap is several times that. A value over a cap is
+// dropped and counted like one outside the grammar, never truncated, so nothing published
+// differs from what the file states.
+const (
+	maxModulePathLen = 512
+	maxVersionLen    = 128
+)
+
+// withinLength reports whether a module path and a version fit their caps. It runs before the
+// grammar and credential checks, which then never scan an oversized value.
+func withinLength(path, version string) bool {
+	return len(path) <= maxModulePathLen && len(version) <= maxVersionLen
+}
+
 // validModule reports whether path and version are in the Go module grammar.
 //
 // The grammars are the Go team's, from golang.org/x/mod, rather than patterns written here:
@@ -114,7 +141,26 @@ const maxEntriesPerFile = 5000
 // Both grammars admit only letters, digits and a few punctuation characters, so neither a
 // space nor an `=` can reach a module column.
 func validModule(path, version string) bool {
-	return module.CheckImportPath(path) == nil && semver.IsValid(version) && credentialFree(path, version)
+	return withinLength(path, version) && module.CheckImportPath(path) == nil &&
+		semver.IsValid(version) && canonical(version) && credentialFree(path, version)
+}
+
+// canonical reports whether version is in the canonical form the go command writes. semver
+// accepts build metadata and shortened forms, so "v1.0.0+opaqueSecret123" and "v1.2" pass
+// semver.IsValid and would otherwise publish text a user chose, or fail to match go.mod's
+// "v1.2.0". +incompatible is canonical, so it is kept.
+func canonical(version string) bool {
+	return version == module.CanonicalVersion(version)
+}
+
+// toolchainRe is the toolchain line's grammar: default, or go followed by a Go version and an
+// optional custom suffix such as go1.21.0-bigcorp. modfile accepts any value starting go1., so
+// this is what keeps free text out of the column.
+var toolchainRe = regexp.MustCompile(`^(default|go[1-9][0-9]*\.(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*))?([a-z]+[0-9]+)?(-[A-Za-z0-9._-]+)?)$`)
+
+// validToolchain reports whether a toolchain line can be published.
+func validToolchain(name string) bool {
+	return len(name) <= maxVersionLen && toolchainRe.MatchString(name) && credentialFree(name)
 }
 
 // credentialFree reports whether no value contains a known credential format. The module
@@ -140,7 +186,8 @@ func credentialFree(values ...string) bool {
 // module a replace points at a local directory, and modfile already enforces the major-version
 // pairing for requirements when it parses them.
 func validDownloadedModule(path, version string) bool {
-	return module.Check(path, version) == nil && credentialFree(path, version)
+	return withinLength(path, version) && module.Check(path, version) == nil &&
+		canonical(version) && credentialFree(path, version)
 }
 
 // parseGoMod reads the requirements and replacements from a go.mod.
@@ -162,10 +209,33 @@ func parseGoMod(data []byte) (parseResult, error) {
 	}
 
 	if file.Module != nil {
-		if module.CheckImportPath(file.Module.Mod.Path) == nil && credentialFree(file.Module.Mod.Path) {
+		if withinLength(file.Module.Mod.Path, "") && module.CheckImportPath(file.Module.Mod.Path) == nil &&
+			credentialFree(file.Module.Mod.Path) {
 			result.ProjectModule = file.Module.Mod.Path
 		} else {
-			result.Dropped++
+			result.DroppedValues++
+		}
+	}
+	// The go and toolchain lines are checked against their own grammars: modfile.GoVersionRE for
+	// go, and toolchainRe, narrower than modfile's prefix-only check, for toolchain. A value that
+	// fails is dropped and counted, never published altered. The lenient parser rewrites a go
+	// line it can salvage, "1.24+anything" to "1.24", in both Version and Syntax.Token, so the
+	// version must also be the last word of the line as the file spells it. The lenient parser
+	// does not read toolchain, so a partially recovered go.mod has none, and the strict parser
+	// rejects a toolchain rather than rewriting it.
+	if file.Go != nil {
+		if goVersion := file.Go.Version; len(goVersion) <= maxVersionLen &&
+			modfile.GoVersionRE.MatchString(goVersion) && spelledAs(data, file.Go.Syntax, goVersion) {
+			result.GoDirective = goVersion
+		} else {
+			result.DroppedValues++
+		}
+	}
+	if file.Toolchain != nil {
+		if name := file.Toolchain.Name; validToolchain(name) {
+			result.ToolchainDirective = name
+		} else {
+			result.DroppedValues++
 		}
 	}
 	replaces := indexReplaces(file.Replace)
@@ -174,16 +244,19 @@ func parseGoMod(data []byte) (parseResult, error) {
 	// entry, keeping the first.
 	required := make(map[module.Version]struct{}, len(file.Require))
 	for _, require := range file.Require {
-		if len(result.Entries) >= maxEntriesPerFile {
-			result.Truncated = true
-			break
-		}
 		if !validModule(require.Mod.Path, require.Mod.Version) {
 			result.Dropped++
 			continue
 		}
 		if _, repeated := required[require.Mod]; repeated {
 			continue
+		}
+		// Checked after validity and repetition, so the cap reports truncation only when an
+		// entry that would have been listed is cut, not when the line past the cap is a
+		// duplicate or is dropped anyway.
+		if len(result.Entries) >= maxEntriesPerFile {
+			result.Truncated = true
+			break
 		}
 		required[require.Mod] = struct{}{}
 		entry := moduleEntry{
@@ -238,8 +311,8 @@ func indexReplaces(replaces []*modfile.Replace) replaceIndex {
 // The version-specific key takes precedence over the wildcard key. A conflicted key governs the
 // requirement and supplies no target, so the wildcard is not consulted in its place. A
 // replacement with no version on its right is a directory. A module replacement that fails the
-// rule for a downloaded module is counted as dropped and the requirement is still published,
-// because the requirement itself is valid.
+// rule for a downloaded module is counted in DroppedValues and the requirement is still
+// published, because the requirement itself is valid.
 func applyReplace(entry *moduleEntry, replaces replaceIndex, result *parseResult) {
 	for _, key := range []module.Version{{Path: entry.Path, Version: entry.Version}, {Path: entry.Path}} {
 		target, ok := replaces.targets[key]
@@ -254,13 +327,25 @@ func applyReplace(entry *moduleEntry, replaces replaceIndex, result *parseResult
 			return
 		}
 		if !validDownloadedModule(target.Path, target.Version) {
-			result.Dropped++
+			result.DroppedValues++
 			return
 		}
 		entry.ReplaceModule = target.Path
 		entry.ReplaceVersion = target.Version
 		return
 	}
+}
+
+// spelledAs reports whether the last word of a go.mod line, as the file's bytes spell it before
+// any comment, is value.
+func spelledAs(data []byte, line *modfile.Line, value string) bool {
+	start, end := line.Start.Byte, line.End.Byte
+	if start < 0 || end > len(data) || start >= end {
+		return false
+	}
+	text, _, _ := bytes.Cut(data[start:end], []byte("//"))
+	words := bytes.Fields(text)
+	return len(words) > 0 && string(words[len(words)-1]) == value
 }
 
 // errorLine returns the line number a modfile error reports, or 1 when it reports none.
@@ -392,15 +477,21 @@ func mergeEntries(requirements, records []moduleEntry) []moduleEntry {
 	return merged
 }
 
-// validHash reports whether a go.sum hash field is one the go command accepts: the algorithm
-// name h1, a colon, and a base64-encoded SHA-256 digest. h1 is the only algorithm the go
-// command supports; a line using another is counted as malformed rather than trusted.
+// validHash reports whether a go.sum hash field is one the go command writes: the algorithm name
+// h1, a colon, and the canonical base64 encoding of a SHA-256 digest. h1 is the only algorithm
+// the go command supports; a line using another is counted as malformed rather than trusted.
+// The decoding is strict, because the lenient one also accepts a digest whose padding bits are
+// not zero: a second spelling of the same bytes, which the go command never writes and which
+// would never equal the hash it computes.
 func validHash(field []byte) bool {
 	digest, ok := bytes.CutPrefix(field, []byte("h1:"))
 	if !ok {
 		return false
 	}
-	decoded := make([]byte, base64.StdEncoding.DecodedLen(len(digest)))
-	size, err := base64.StdEncoding.Decode(decoded, digest)
+	decoded := make([]byte, strictBase64.DecodedLen(len(digest)))
+	size, err := strictBase64.Decode(decoded, digest)
 	return err == nil && size == sha256.Size
 }
+
+// strictBase64 is the standard encoding with nonzero padding bits refused.
+var strictBase64 = base64.StdEncoding.Strict()

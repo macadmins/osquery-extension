@@ -65,6 +65,64 @@ func TestOpenBeneath_RefusesIntermediateSymlink(t *testing.T) {
 	}
 }
 
+// TestASymlinkedIntermediateDirectoryIsRefusedNotAbsent: a symlinked directory partway down the
+// path is a refusal, which IsNotDirectory does not report, while a regular file partway down is
+// a path that cannot exist, which it does. go_modules' linkTarget and ListDirNamesCapped both
+// tell the two apart with IsNotDirectory.
+func TestASymlinkedIntermediateDirectoryIsRefusedNotAbsent(t *testing.T) {
+	base := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(base, "real", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "real", "sub", "f"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real", filepath.Join(base, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "plain"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"link/sub/f", "link/sub"} {
+		_, err := OpenBeneath(base, rel)
+		if ClassifyError(err) != ClassRefusedPath || IsNotDirectory(err) {
+			t.Errorf("%s: class %q, IsNotDirectory %v; want a refusal that is not a "+
+				"non-directory: %v", rel, ClassifyError(err), IsNotDirectory(err), err)
+		}
+	}
+	_, err := OpenBeneath(base, "plain/f")
+	if ClassifyError(err) != ClassRefusedPath || !IsNotDirectory(err) {
+		t.Errorf("a regular file partway down: class %q, IsNotDirectory %v; want a "+
+			"non-directory: %v", ClassifyError(err), IsNotDirectory(err), err)
+	}
+}
+
+// TestListDirNamesCappedReportsARefusedDirectory: a symlink anywhere on the path to a listed
+// directory is an error the caller reports, while absence and a regular file partway down are
+// silent, because nothing beneath them can exist.
+func TestListDirNamesCappedReportsARefusedDirectory(t *testing.T) {
+	base := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(base, "real", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real", filepath.Join(base, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "plain"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"link", "link/sub"} {
+		if _, _, err := ListDirNamesCapped(base, rel, 5); ClassifyError(err) != ClassRefusedPath {
+			t.Errorf("%s: err = %v, want a refusal", rel, err)
+		}
+	}
+	for _, rel := range []string{"missing", "plain/sub"} {
+		if names, truncated, err := ListDirNamesCapped(base, rel, 5); err != nil || truncated || names != nil {
+			t.Errorf("%s: %v %v %v, want silence", rel, names, truncated, err)
+		}
+	}
+}
+
 func TestOpenBeneath_RefusesFinalSymlink(t *testing.T) {
 	base := t.TempDir()
 	if err := os.WriteFile(filepath.Join(base, "target.json"), []byte(`x`), 0o644); err != nil {
@@ -122,6 +180,26 @@ func TestReadBoundedUnder_HappyPath(t *testing.T) {
 	}
 	if string(got) != "hello" {
 		t.Errorf("%q", got)
+	}
+}
+
+// TestReadBoundedUnderRefusesAPlaceholder: a file at a fixed path in the home that the platform
+// reports as evicted is refused before it is read, as a project file is. Only ReadProjectFile
+// consulted the attribute, so every home configuration file and followed link was read.
+func TestReadBoundedUnderRefusesAPlaceholder(t *testing.T) {
+	base := t.TempDir()
+	if err := os.WriteFile(filepath.Join(base, "f.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	evicted := ReadOpts{MaxSize: 1024, CloudPlaceholder: func(*os.File) (bool, error) { return true, nil }}
+	if _, err := ReadBoundedUnder(base, "f.json", evicted); ClassifyError(err) != ClassCloudPlaceholder {
+		t.Errorf("an evicted file: %v, want cloud_placeholder", err)
+	}
+	broken := ReadOpts{MaxSize: 1024, CloudPlaceholder: func(*os.File) (bool, error) {
+		return false, os.ErrPermission
+	}}
+	if data, err := ReadBoundedUnder(base, "f.json", broken); err != nil || string(data) != "{}" {
+		t.Errorf("a failing attribute check: %q %v, want the file read", data, err)
 	}
 }
 

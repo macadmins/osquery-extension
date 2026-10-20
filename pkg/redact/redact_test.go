@@ -120,20 +120,20 @@ func TestStringStillRedactsRealSkTokens(t *testing.T) {
 	}
 }
 
-// TestSecretAfterASeparatorIsRedacted pins the boundary fix.
+// TestSecretAfterASeparatorIsRedacted: a key written after a separator is redacted.
 //
 // The sk- alternative carries a left boundary because "sk" is a common letter pair: without
-// one it mangled task-management-service-client and any path containing it. But the boundary
-// excluded "-" and "_" as well as alphanumerics, which was too wide in the dangerous
-// direction -- a real key written after an ordinary separator was returned in the clear,
-// which is the single outcome this package exists to prevent.
+// one it mangles task-management-service-client and any path containing it. The boundary
+// excludes only alphanumerics. If it also excluded "-" and "_", a real key written after an
+// ordinary separator would be returned in the clear, which is the one outcome this package
+// exists to prevent.
 func TestSecretAfterASeparatorIsRedacted(t *testing.T) {
 	key := "sk-" + strings.Repeat("a", 24)
 
 	for _, in := range []string{
 		key,             // bare
-		"server-" + key, // after a hyphen: previously escaped
-		"MY_" + key,     // after an underscore: previously escaped
+		"server-" + key, // after a hyphen
+		"MY_" + key,     // after an underscore
 		"/opt/" + key,   // after a slash
 		"env=" + key,    // after an equals
 	} {
@@ -143,7 +143,7 @@ func TestSecretAfterASeparatorIsRedacted(t *testing.T) {
 	}
 
 	// And the false positives the boundary exists for must stay untouched. In each the
-	// character before "sk" is a letter, which is what the boundary now tests.
+	// character before "sk" is a letter, which is what the boundary tests.
 	for _, in := range []string{
 		"task-management-service-client",
 		"task-tracker-frontend-app",

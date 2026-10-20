@@ -1,9 +1,9 @@
 package mcp_servers
 
 import (
-	"fmt"
-
 	"github.com/BurntSushi/toml"
+
+	"github.com/macadmins/osquery-extension/pkg/redact"
 )
 
 // Codex stores its MCP configuration in ~/.codex/config.toml under [mcp_servers.<name>]
@@ -27,18 +27,16 @@ type tomlServerEntry struct {
 	Type      string            `toml:"type"`
 	Transport string            `toml:"transport"`
 
-	// Codex spells this `enabled`, not `disabled`, and the two mean opposite things. A
-	// config carrying `enabled = false` previously read as an enabled server, because the
-	// key matched nothing. Measured against a real config.toml: 11 `enabled` keys, zero
-	// `disabled`. Both are accepted, with `enabled` taking precedence when present, so a
-	// file written by either convention is read correctly.
+	// Codex spells this `enabled`, not `disabled`, and the two mean opposite things; a real
+	// config.toml held 11 `enabled` keys and no `disabled`. Both are accepted, with `enabled`
+	// taking precedence when present, so a file written by either convention is read
+	// correctly.
 	Enabled  *bool `toml:"enabled"`
 	Disabled *bool `toml:"disabled"`
 
 	// Other places Codex names an environment variable rather than holding a value. These
 	// are the useful half of a credential inventory: they identify what a server depends on
-	// without exposing it. A remote server authenticated through bearer_token_env_var
-	// previously reported an empty env_keys.
+	// without exposing it, as bearer_token_env_var does for a remote server.
 	EnvVars           []tomlEnvVar      `toml:"env_vars"`
 	BearerTokenEnvVar string            `toml:"bearer_token_env_var"`
 	EnvHTTPHeaders    map[string]string `toml:"env_http_headers"`
@@ -89,8 +87,11 @@ func extractCodexTOML(data []byte) ([]Server, error) {
 		}
 		entries[name] = entry
 	}
+	// The JSON envelope's sentinel, so the row reports the same shape,
+	// envelope_present_but_undecodable, for the same failure in either format; a fresh error
+	// read as shape=unrecognised.
 	if len(entries) == 0 {
-		return nil, fmt.Errorf("mcp_servers present but no decodable entries (%d skipped)", skipped)
+		return nil, errNoDecodableEntries
 	}
 	return append(materializeTOML(entries), skippedEntryWarning(skipped)...), nil
 }
@@ -107,9 +108,10 @@ func materializeTOML(in map[string]tomlServerEntry) []Server {
 			SourceContext: "mcp_servers",
 			rawName:       name,
 			rawContext:    "mcp_servers",
-			ServerName:    redactSecret(name),
-			Command:       redactSecret(entry.Command),
+			ServerName:    redact.Secret(name),
+			Command:       redact.Secret(entry.Command),
 			Args:          redactArgs(entry.Args),
+			identityArgs:  secretEach(entry.Args),
 			URL:           sanitizeRemoteURL(rawURL),
 			Transport: firstNonEmpty(normalizeTransport(entry.Type, entry.Transport),
 				transportFromRawURL(rawURL, entry.Args)),
@@ -175,12 +177,11 @@ func (v *tomlEnvVar) UnmarshalTOML(data any) error {
 // consulted for its keys only, while the other three name variables by design.
 //
 // droppedKeys counts the names envKeyAllowed refused, and literalHeaders the env_http_headers
-// values that were not variable names at all. Counting them is the whole point of gating here
-// rather than only at the row boundary: the add closure used to discard a rejected name
-// silently, so an invalid key in env, in env_vars or in bearer_token_env_var left no trace in
-// the row while the JSON path reported the identical configuration as a real drop count. A
-// name this table refuses to publish is still evidence of how the server is configured, and a
-// column that goes quiet is indistinguishable from a server that references nothing.
+// values that were not variable names at all. Counting them is the point of gating here rather
+// than only at publication: an invalid key in env, in env_vars or in bearer_token_env_var
+// is reported as the JSON path reports the same configuration. A name this table refuses to
+// publish is still evidence of how the server is configured, and a column that goes quiet is
+// indistinguishable from a server that references nothing.
 //
 // A name that is absent rather than rejected is not counted, which is why the two reference
 // sources test for it first: UnmarshalTOML deliberately yields an empty name for an env_vars
@@ -198,8 +199,8 @@ func tomlEnvKeys(entry tomlServerEntry) (keys []string, droppedKeys, literalHead
 	}
 	seen := make(map[string]struct{}, total)
 	out := make([]string, 0, total)
-	// Gated here as well as at the row boundary. Two gates in series, and this is the one
-	// that can say *which* source the rejected name came from -- the boundary gate sees a
+	// Gated here as well as at publication. Two gates in series, and this is the one that
+	// can say *which* source the rejected name came from -- the gate at publication sees a
 	// flat list and can only report a count.
 	//
 	// Rejections are counted per occurrence rather than per distinct name, so two sources

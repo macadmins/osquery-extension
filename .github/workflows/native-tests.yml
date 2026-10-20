@@ -23,6 +23,8 @@ jobs:
         if: runner.os != 'Windows'
         run: go test -race ./pkg/... ./tables/go_modules/... ./tables/mcp_servers/...
 
+      # pkg/utils' command-runner tests call sh, echo, cat and sleep, which a Windows runner
+      # need not have, and they test a runner only the macOS tables use.
       - name: Test
         if: runner.os == 'Windows'
-        run: go test ./pkg/... ./tables/go_modules/... ./tables/mcp_servers/...
+        run: go test -skip '^Test(RunCmd|ExecCmd)' ./pkg/... ./tables/go_modules/... ./tables/mcp_servers/...

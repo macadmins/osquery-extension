@@ -10,29 +10,24 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/macadmins/osquery-extension/pkg/devclients"
 	"github.com/macadmins/osquery-extension/pkg/fsscan"
 )
 
 // The warning column, as a closed catalogue rather than as assembled prose.
 //
 // The rule this file exists to enforce: no byte the scanned user chose can reach the
-// `warning` column. Redaction cannot deliver that, and the review was right about why.
-// pkg/redact recognises *known* secret shapes -- issuer-prefixed tokens, credential-named
-// flag assignments -- so an opaque string with no recognisable structure passes through it
-// untouched. Every column built by concatenating an error message was therefore one
-// unrecognisable secret away from publishing it.
-//
-// The four worst offenders were all error text. `"parse: " + err.Error()` on a TOML document
-// emitted BurntSushi's message, which quotes the token it failed on: a malformed
-// `env = { TOKEN = abc123 }` put `abc123` in the column verbatim. The JSON path did the same
-// through encoding/json's messages, the read path through the operating system's, and the
-// skipped-entry notice was the only one of the four that was already safe.
+// `warning` column. Redaction cannot deliver that: pkg/redact recognizes *known* secret
+// shapes -- issuer-prefixed tokens, credential-named assignments -- so an opaque string with
+// no recognizable structure passes through it untouched. Error text is the risk: BurntSushi's
+// TOML message quotes the token it failed on, so a malformed `env = { TOKEN = abc123 }` would
+// put `abc123` in the column, and encoding/json and the operating system quote values and
+// paths the same way.
 //
 // So the column is built from a sentence table keyed by a code this package declares, plus
 // decimal integers, plus closed-enum spellings, plus -- in exactly one case -- a key that has
 // already passed a bare-identifier grammar. There is no fifth source. redact.ErrorText and
-// redactSecret still run over the result at the row boundary, which is now defence in depth
-// rather than the only defence.
+// redact.Secret still run over the result when the row is published, as defense in depth.
 
 // warnCode names one thing that can go wrong. The set is closed: render refuses a code it
 // has no sentence for, and a test enumerates every declared code to prove each has both a
@@ -51,6 +46,7 @@ const (
 	warnAccountHomeUnstattable  warnCode = "account_home_unstattable"
 	warnAccountHomeRedirected   warnCode = "account_home_redirected"
 	warnAccountHomeNotDirectory warnCode = "account_home_not_directory"
+	warnAccountHomeNotAbsolute  warnCode = "account_home_not_absolute"
 	warnAccountsHomeUnusable    warnCode = "accounts_home_unusable"
 
 	// One home's enumeration.
@@ -74,6 +70,7 @@ const (
 	warnProjectRemoteOrigin     warnCode = "project_remote_origin"
 	warnProjectCloudPlaceholder warnCode = "project_cloud_placeholder"
 	warnProjectUserspaceFS      warnCode = "project_userspace_filesystem"
+	warnProjectOnNetworkFS      warnCode = "project_on_network_filesystem"
 	warnProjectRefused          warnCode = "project_read_refused"
 	warnProjectUntrusted        warnCode = "project_untrusted"
 	warnProjectTrustUnknown     warnCode = "project_trust_unknown"
@@ -87,6 +84,7 @@ const (
 	warnWorkspaceListTruncated    warnCode = "workspace_list_truncated"
 	warnWorkspaceRecordUnreadable warnCode = "workspace_record_unreadable"
 	warnWorkspaceRecordMalformed  warnCode = "workspace_record_malformed"
+	warnWorkspaceRecordsOlder     warnCode = "workspace_records_older"
 
 	// Claude Code plugins, which declare their own servers under
 	// ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/.mcp.json.
@@ -98,8 +96,10 @@ const (
 	warnPluginManifestUnreadable  warnCode = "plugin_manifest_unreadable"
 	warnPluginManifestUnsupported warnCode = "plugin_manifest_unsupported"
 	warnPluginManifestTruncated   warnCode = "plugin_manifest_truncated"
+	warnPluginManifestExhausted   warnCode = "plugin_manifest_reads_exhausted"
 	warnPluginManifestMissing     warnCode = "plugin_manifest_missing_source"
 	warnPluginManifestInvalid     warnCode = "plugin_manifest_invalid_declaration"
+	warnPluginManifestPathTooLong warnCode = "plugin_manifest_path_too_long"
 	warnPluginShadowedDecl        warnCode = "plugin_declaration_shadowed"
 	warnPluginSelectionUnknown    warnCode = "plugin_selection_unknown"
 
@@ -173,7 +173,7 @@ const maxReportedKeyLength = 64
 //
 // Every field is either an integer, a value from a closed enum, or -- for Key alone -- a
 // string that has passed identifierRe. Assembling the sentence is render's job and happens
-// at the row boundary, which is what makes the rule auditable: there is one function to read
+// when the row is published, which is what makes the rule auditable: there is one function to read
 // to know what can reach the column.
 type warning struct {
 	Code   warnCode
@@ -186,9 +186,10 @@ type warning struct {
 	// than directly, so the gate cannot be bypassed by assignment.
 	Key string
 
-	Class fsscan.ErrClass // which refusal, from fsscan's closed set
-	Shape parseShape      // what about the document defeated the parser
-	Value string          // a JSON value kind, validated against jsonValueKinds
+	Class  fsscan.ErrClass   // which refusal, from fsscan's closed set
+	Source devclients.Origin // which client's list, from devclients' closed set
+	Shape  parseShape        // what about the document defeated the parser
+	Value  string            // a JSON value kind, validated against jsonValueKinds
 }
 
 // empty reports whether this warning says anything. The zero value is "no finding", which is
@@ -243,6 +244,8 @@ var warnSentences = map[warnCode]string{
 		"point, which is not followed, so its configuration is not listed",
 	warnAccountHomeNotDirectory: "the home directory this account declares is not a " +
 		"directory, so its configuration is not listed",
+	warnAccountHomeNotAbsolute: "the home directory this account declares is not an absolute " +
+		"path free of '..', so it was not resolved and its configuration is not listed",
 	warnAccountsHomeUnusable: "accounts with no usable home directory were not inspected; " +
 		"query a specific user to see which",
 
@@ -277,10 +280,12 @@ var warnSentences = map[warnCode]string{
 		"were not inspected",
 	warnProjectRemoteOrigin: "recorded projects are on another host rather than this " +
 		"filesystem and were not inspected",
-	warnProjectCloudPlaceholder: "recorded projects are held by a cloud storage provider " +
-		"and were not inspected, because reading them would download their contents",
-	warnProjectUserspaceFS: "recorded projects are on a filesystem implemented in " +
-		"userspace, where a read may fetch their contents on demand, and were not inspected",
+	warnProjectCloudPlaceholder: "recorded projects are stored with a cloud storage provider " +
+		"rather than on this machine's disk and were not read, so nothing was downloaded",
+	warnProjectUserspaceFS: "recorded projects are on a filesystem implemented in userspace, " +
+		"where a read may fetch their contents on demand, and were not read",
+	warnProjectOnNetworkFS: "recorded projects are on a network filesystem, unlike this " +
+		"account's home, and were not read, so nothing was read over the network",
 	warnProjectRefused: "a project configuration file was refused by a safety check " +
 		"rather than being absent, so it exists and was deliberately not read",
 	warnProjectUntrusted: "recorded projects are marked untrusted by their client, which " +
@@ -289,9 +294,9 @@ var warnSentences = map[warnCode]string{
 	warnProjectTrustUnknown: "the trust state of recorded projects could not be read, and " +
 		"project-scoped configuration is only loaded for trusted projects, so any servers " +
 		"they declare are not listed",
-	warnApprovalSettingsUnreadable: "a settings file recording which project servers are " +
-		"approved exists and could not be used, so the approval state of the servers it " +
-		"governs is reported as unknown rather than guessed",
+	warnApprovalSettingsUnreadable: "recorded project servers that a settings file governs " +
+		"are reported with an unknown approval state rather than a guessed one, because the " +
+		"settings file exists and could not be used",
 
 	warnWorkspaceListUnreadable: "an editor's workspace list could not be read, so the " +
 		"projects it records and any configuration in them are not listed",
@@ -301,6 +306,8 @@ var warnSentences = map[warnCode]string{
 		"projects they name and any configuration in them are not listed",
 	warnWorkspaceRecordMalformed: "workspace records could not be parsed, so the projects " +
 		"they name and any configuration in them are not listed",
+	warnWorkspaceRecordsOlder: "recorded project records older than the most recently used " +
+		"ones this scan reads were not inspected",
 
 	warnPluginListUnreadable: "the installed plugin directory could not be listed, so any " +
 		"servers declared by plugins are not listed",
@@ -318,10 +325,15 @@ var warnSentences = map[warnCode]string{
 		"at a URL, which this table does not unpack or fetch, so they are not listed",
 	warnPluginManifestTruncated: "a plugin manifest declares more MCP configuration sources " +
 		"than this table will read, so some of its servers are not listed",
+	warnPluginManifestExhausted: "the plugins' manifests together declare more MCP " +
+		"configuration sources than this table reads in one scan, so some of this manifest's " +
+		"servers are not listed",
 	warnPluginManifestMissing: "a plugin manifest names an MCP configuration file that " +
 		"could not be read, so any servers it declares are not listed",
 	warnPluginManifestInvalid: "a plugin manifest declares MCP servers with a value of a " +
 		"type the field does not accept, so that declaration was not read",
+	warnPluginManifestPathTooLong: "a plugin manifest names an MCP configuration file whose " +
+		"path is longer than this table reads, so any servers it declares are not listed",
 	warnPluginShadowedDecl: "a higher-precedence declaration for this server could not be " +
 		"read, so this definition may not be the one the client loads",
 	warnPluginSelectionUnknown: "it could not be established whether this cached plugin " +
@@ -358,101 +370,82 @@ var warnSentences = map[warnCode]string{
 		"unrecognised option may or may not consume the value after it",
 }
 
-// warnScope says how far a finding reaches, which is what scan_complete is computed from.
+// warnScope says which rows a finding makes incomplete, which is what scan_complete is
+// computed from.
 type warnScope int
 
 const (
-	// scopeDescriptive: something is worth saying and nothing was lost. A dropped column
-	// is this -- the server is still listed, one of its fields is empty.
+	// scopeDescriptive: something is worth saying and nothing was lost. A dropped column is
+	// this, because the server is still listed and one of its fields is empty, and so is a
+	// recorded project this table does not read, because it describes what the table reads.
 	scopeDescriptive warnScope = iota
-	// scopeSource: this file's listing is short. Only rows from that file are affected.
+	// scopeSource: one file's listing is short. The rows from that file read scan_complete = 0.
 	scopeSource
-	// scopeHome: this account's enumeration is short. Every row for the account is
-	// affected, including rows from files that were read perfectly well, because the
-	// question scan_complete answers is whether the enumeration that found them finished.
-	scopeHome
+	// scopePlugin: one plugin version's manifest declares servers that were not all read. The
+	// server rows of that plugin version read scan_complete = 0.
+	scopePlugin
+	// scopeUser: finding the user's configuration fell short: a list of projects, a profile
+	// directory or the plugin cache could not be read, or the scan stopped. The finding is a
+	// row of its own for the user, and no server row changes, so a server row's scan_complete
+	// depends only on its own source and, for a plugin, its own manifest.
+	scopeUser
 )
 
-// scope classifies every code, in one switch.
-//
-// One switch rather than a field on each constant, because this is the thing that must not
-// drift from the code list: a code added without a scope is a row silently reported as
-// complete when it is not. The exhaustiveness test walks warnSentences and requires every
-// key to be classified here, so adding a code without touching this function fails the
-// build's tests rather than quietly defaulting to "fine".
+// scope classifies every code, in one switch. TestWarnCodesAreExhaustivelyClassified requires
+// every code in warnSentences to be named here, so adding a code without a scope fails the
+// tests. An unclassified code is source scope at run time: it marks its own file's rows and no
+// others.
 func (c warnCode) scope() warnScope {
 	switch c {
 	case warnRosterUnreachable, warnRosterQueryFailed, warnRosterAccountUnnamed,
 		warnAccountNotInRoster, warnAccountNonLogin, warnAccountNoHome,
 		warnAccountHomeMissing, warnAccountHomeUnstattable, warnAccountHomeRedirected,
-		warnAccountHomeNotDirectory, warnAccountsHomeUnusable,
+		warnAccountHomeNotDirectory, warnAccountHomeNotAbsolute, warnAccountsHomeUnusable,
 		warnHomeUnreadable, warnBudgetExhaustedPreHome, warnCancelledPreHome,
 		warnBudgetExhaustedOpening, warnBudgetExhaustedInHome, warnCancelledInHome,
 		warnAppDataUndetermined, warnAppDataRedirectedOut, warnProfileListUnreadable,
-		warnProjectListUnreadable, warnProjectListTruncated,
-		warnProjectCloudPlaceholder, warnProjectUserspaceFS, warnProjectRefused,
+		warnProjectListUnreadable, warnProjectListTruncated, warnProjectRefused,
+		warnProjectTrustUnknown,
 		warnWorkspaceListUnreadable, warnWorkspaceListTruncated,
 		warnWorkspaceRecordUnreadable, warnWorkspaceRecordMalformed,
 		warnPluginListUnreadable, warnPluginListTruncated, warnPluginSettingsUnreadable,
-		warnPluginRecordsUnreadable, warnPluginManifestUnreadable,
-		warnPluginManifestUnsupported, warnPluginManifestTruncated,
-		warnPluginManifestMissing, warnPluginManifestInvalid:
-		return scopeHome
-	// warnPluginShadowedDecl is source-scoped, not home-scoped. It says this row's own
-	// source may no longer be authoritative because a higher-precedence declaration over it
-	// failed, which is a statement about that file. Home scope made one stale plugin
-	// definition set scan_complete = 0 on every row for the account -- an unrelated Gemini
-	// configuration included -- so `WHERE scan_complete = 1` lost otherwise usable inventory
-	// for the whole host.
+		warnPluginRecordsUnreadable:
+		return scopeUser
+	case warnPluginManifestUnreadable, warnPluginManifestUnsupported,
+		warnPluginManifestTruncated, warnPluginManifestExhausted,
+		warnPluginManifestMissing, warnPluginManifestInvalid, warnPluginManifestPathTooLong:
+		return scopePlugin
+	// warnPluginShadowedDecl says this row's own definition may have been replaced by a
+	// higher-precedence declaration that could not be read, which is a statement about the
+	// row's source.
 	case warnSourceUnreadable, warnSourceTooLarge, warnParseFailed, warnEntriesSkipped,
 		warnPluginShadowedDecl:
 		return scopeSource
-	// A recorded project this table will not follow. Descriptive rather than degrading,
-	// because these are the definition of what is searched rather than a scan cut short --
-	// the same reasoning that makes a project the user never opened silent, and that made
-	// the walk's depth limit raise no warning.
-	//
-	// Classifying them as home-scope was wrong in a way only running the table showed.
-	// Opening a project outside your home is ordinary -- /tmp, /Volumes, a shared checkout,
-	// another account's repository -- and once you have, that fact is permanent in the
-	// client's project list. On the development machine 4 of 30 recorded projects are
-	// outside the home, so every row for that account came back scan_complete = 0 forever,
-	// which makes the predicate unusable and the column one nobody reads. It also made the
-	// column say something false: the servers that were found were a complete listing of
-	// their sources, and the enumeration did finish.
-	//
-	// What still degrades completeness is a project that IS in scope and could not be read:
-	// a cloud placeholder, a refused file, or a project list that was unreadable or over
-	// cap. Those are losses inside the boundary rather than the boundary itself.
+	// A recorded project this table does not read: outside the home, on another host, at an
+	// unusable path, untrusted, stored off this machine's disk, or recorded by a workspace
+	// record older than the most recent ones read. These describe what the
+	// table reads rather than a scan cut short, the same way a project the user never opened
+	// is silent. Opening a project outside the home is ordinary, and the client's list keeps it
+	// permanently, so treating it as a loss would mark the account incomplete on every run.
 	case warnProjectOutsideHome, warnProjectRemoteOrigin, warnProjectMalformed,
+		warnProjectCloudPlaceholder, warnProjectUserspaceFS, warnProjectOnNetworkFS,
+		warnWorkspaceRecordsOlder,
 		warnProjectUntrusted, warnApprovalSettingsUnreadable,
 		warnPluginSuperseded, warnPluginSelectionUnknown:
 		return scopeDescriptive
-	// Trust that could not be read is a loss rather than a boundary: the project may hold
-	// configuration the client would load, and this scan cannot say.
-	case warnProjectTrustUnknown:
-		return scopeHome
 	case warnCommandBasenameDropped, warnServerNameUnrepresentable,
 		warnSourceContextPathDropped, warnURLEndpointDropped, warnEnvKeyDropped,
 		warnEnvHeaderLiteral, warnIdentityDropped, warnUserIDDropped,
 		warnUnknownLauncherOption:
 		return scopeDescriptive
 	default:
-		// An unclassified code. Treated as the worst case rather than the best: a code
-		// nobody placed is more likely to be a new failure than a new reassurance, and the
-		// cost of being wrong in this direction is a row marked incomplete that was fine.
-		return scopeHome
+		return scopeSource
 	}
 }
 
-// degradesCompleteness reports whether a row carrying this code can still be called a
-// complete listing of its source.
-//
-// The empty code is handled explicitly, and it has to be: scope() sends an unrecognised code
-// to scopeHome so a code nobody classified fails safe, and the zero warning's code is the
-// empty string. Without this guard every *clean* row -- the overwhelming majority -- took
-// that default and reported scan_complete = 0, which is the exact inversion of what the
-// column means. The absence of a finding cannot degrade completeness.
+// degradesCompleteness reports whether a row carrying this code is short of a complete
+// listing. The empty code is a row with no finding, which scope would otherwise send to the
+// default.
 func (c warnCode) degradesCompleteness() bool {
 	if c == "" {
 		return false
@@ -460,12 +453,21 @@ func (c warnCode) degradesCompleteness() bool {
 	return c.scope() != scopeDescriptive
 }
 
+// hasScope reports whether any of rows carries a finding of the given scope.
+func hasScope(rows []Server, scope warnScope) bool {
+	for i := range rows {
+		if !rows[i].Warning.empty() && rows[i].Warning.Code.scope() == scope {
+			return true
+		}
+	}
+	return false
+}
+
 // render builds the column value.
 //
 // Everything appended here is from the sentence table, a decimal integer, a closed-enum
 // spelling, or a Key that passed identifierRe. That list is the contract, and it is short
-// enough to check by reading this function -- which is the point of concentrating it here
-// instead of spreading it across the dozen places that used to concatenate an error.
+// enough to check by reading this function, which is the point of concentrating it here.
 func (w warning) render() string {
 	if w.empty() {
 		return ""
@@ -495,6 +497,9 @@ func (w warning) render() string {
 	// Closed enums. Each is a constant from this package or from fsscan's ErrClass.
 	if w.Class != "" && w.Class != fsscan.ClassNone {
 		details = append(details, "reason="+string(w.Class))
+	}
+	if w.Source != "" {
+		details = append(details, "source="+string(w.Source))
 	}
 	if w.Shape != shapeNone {
 		details = append(details, "shape="+string(w.Shape))
@@ -578,10 +583,15 @@ func parseWarning(err error) warning {
 		return out.withKey(typeErr.Field).withValue(typeErr.Value)
 	}
 
-	// The package's own parse sentinels, which carry no input by construction.
+	// The parse sentinels, which carry no input by construction.
 	if errors.Is(err, errNoDecodableEntries) {
 		out := base
 		out.Shape = shapeEnvelopeUndecodable
+		return out
+	}
+	if errors.Is(err, devclients.ErrNullDocument) {
+		out := base
+		out.Shape = shapeNotAnObject
 		return out
 	}
 

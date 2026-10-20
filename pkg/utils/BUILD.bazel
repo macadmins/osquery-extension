@@ -3,10 +3,12 @@ load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "utils",
     srcs = [
+        "columns.go",
         "constraints.go",
         "exec.go",
         "exec_mocks.go",
         "osquery.go",
+        "recover.go",
         "utils.go",
         "utils_mocks.go",
     ],
@@ -21,9 +23,11 @@ go_library(
 go_test(
     name = "utils_test",
     srcs = [
+        "columns_test.go",
         "constraints_test.go",
         "exec_test.go",
         "osquery_test.go",
+        "recover_test.go",
         "utils_test.go",
     ],
     embed = [":utils"],

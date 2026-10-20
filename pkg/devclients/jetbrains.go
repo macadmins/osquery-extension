@@ -124,7 +124,7 @@ func recentEntries(file recentProjectsFile) ([]recentProjectEntry, bool) {
 
 // JetBrainsProjects lists the projects recorded in each JetBrains IDE's recentProjects.xml.
 //
-// The result uses WorkspaceScan's fields with the same meaning: Listings holds a JetBrains
+// The result uses ProjectListScan's fields with the same meaning: Listings holds a JetBrains
 // directory that failed or was cut short, UnreadableRecords counts recentProjects.xml files
 // that exist and could not be read, MalformedRecords counts ones that did not parse or whose
 // layout recentEntries does not recognize, and
@@ -134,31 +134,33 @@ func recentEntries(file recentProjectsFile) ([]recentProjectEntry, bool) {
 // appDataRoot is the account's redirected roaming root on Windows, or ""; see
 // RedirectAppSupport. opts governs every read.
 func JetBrainsProjects(ctx context.Context, home, appDataRoot string, deadline time.Time,
-	opts fsscan.ReadOpts) WorkspaceScan {
-	var scan WorkspaceScan
+	opts fsscan.ReadOpts) ProjectListScan {
+	var scan ProjectListScan
 	root := filepath.Join(AppSupportDir(), "JetBrains")
 	if rewritten, usable := RedirectAppSupport(root, appDataRoot, home); !usable {
 		return scan
 	} else if rewritten != "" {
 		root = rewritten
 	}
-	if !budgetRemains(ctx, deadline) {
+	if !fsscan.BudgetRemains(ctx, deadline) {
 		scan.Stopped = true
 		return scan
 	}
 	names, truncated, err := fsscan.ListDirNamesCapped(home, root, MaxJetBrainsDirs)
 	if err != nil {
-		scan.Listings = append(scan.Listings, WorkspaceListing{Class: fsscan.ClassifyError(err)})
+		scan.Listings = append(scan.Listings, DirListing{Class: fsscan.ClassifyError(err),
+			Origin: OriginJetBrainsRecent})
 		return scan
 	}
 	if truncated {
-		scan.Listings = append(scan.Listings, WorkspaceListing{Truncated: true, Count: len(names)})
+		scan.Listings = append(scan.Listings, DirListing{Truncated: true, Count: len(names),
+			Limit: MaxJetBrainsDirs, Origin: OriginJetBrainsRecent})
 	}
 	for _, name := range names {
 		if !jetBrainsProductDir.MatchString(name) {
 			continue
 		}
-		if !budgetRemains(ctx, deadline) {
+		if !fsscan.BudgetRemains(ctx, deadline) {
 			scan.Stopped = true
 			break
 		}
@@ -184,19 +186,28 @@ func JetBrainsProjects(ctx context.Context, home, appDataRoot string, deadline t
 			if entry.Value.Meta.Hidden == "true" || strings.HasPrefix(entry.Key, appConfigPlaceholder) {
 				continue
 			}
-			scan.Folders = append(scan.Folders, WorkspaceFolder{
-				Recorded: expandUserHome(entry.Key, home), Origin: OriginJetBrainsRecent})
+			scan.Folders = append(scan.Folders, ListedFolder{
+				Recorded: boundedRecorded(expandUserHome(boundedRecorded(entry.Key), home)),
+				Origin:   OriginJetBrainsRecent})
 		}
 	}
 	return scan
 }
 
-// expandUserHome replaces a leading $USER_HOME$ with home. JetBrains writes the rest of the
-// path with forward slashes on every platform, so it is converted to native separators.
+// expandUserHome replaces a leading $USER_HOME$ with home, when the placeholder is the whole
+// value or is followed by a separator. JetBrains writes the rest of the path with forward
+// slashes on every platform, so it is converted to native separators. The result is joined by
+// concatenation rather than filepath.Join, which would clean it: a ".." in the recorded value
+// has to reach the containment check, which refuses it, rather than be collapsed first. A
+// value such as "$USER_HOME$extra" is returned unexpanded, so containment reports it as an
+// unusable path.
 func expandUserHome(recorded, home string) string {
-	rest, found := strings.CutPrefix(recorded, userHomePlaceholder)
+	if recorded == userHomePlaceholder {
+		return home
+	}
+	rest, found := strings.CutPrefix(recorded, userHomePlaceholder+"/")
 	if !found {
 		return recorded
 	}
-	return filepath.Join(home, filepath.FromSlash(rest))
+	return home + string(filepath.Separator) + filepath.FromSlash(rest)
 }

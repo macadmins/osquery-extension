@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/macadmins/osquery-extension/pkg/utils"
 	"github.com/macadmins/osquery-extension/tables/alt_system_info"
 	"github.com/macadmins/osquery-extension/tables/chromeuserprofiles"
 	"github.com/macadmins/osquery-extension/tables/crowdstrike_falcon"
@@ -94,14 +95,14 @@ func main() {
 	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" || runtime.GOOS == "linux" {
 		plugins = append(plugins, table.NewPlugin(
 			"mcp_servers", mcpservers.MCPServersColumns(),
-			func(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
+			utils.RecoverPanics("mcp_servers", func(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
 				return mcpservers.MCPServersGenerate(ctx, queryContext, *flSocketPath)
-			}))
+			})))
 		plugins = append(plugins, table.NewPlugin(
 			"go_modules", gomodules.GoModulesColumns(),
-			func(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
+			utils.RecoverPanics("go_modules", func(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
 				return gomodules.GoModulesGenerate(ctx, queryContext, *flSocketPath)
-			}))
+			})))
 	}
 
 	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {

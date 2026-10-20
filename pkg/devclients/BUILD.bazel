@@ -4,9 +4,11 @@ go_library(
     name = "devclients",
     srcs = [
         "jetbrains.go",
+        "jsonc.go",
         "paths.go",
         "projects.go",
         "scankey.go",
+        "workspacefile.go",
     ],
     importpath = "github.com/macadmins/osquery-extension/pkg/devclients",
     visibility = ["//visibility:public"],
@@ -20,8 +22,15 @@ go_test(
     name = "devclients_test",
     srcs = [
         "devclients_test.go",
+        "jsonc_test.go",
+        "listing_unix_test.go",
+        "paths_test.go",
         "snap_unix_test.go",
+        "workspacefile_test.go",
     ],
     embed = [":devclients"],
-    deps = ["//pkg/fsscan"],
+    deps = [
+        "//pkg/fsscan",
+        "//pkg/testutil",
+    ],
 )

@@ -12,10 +12,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/osquery/osquery-go/plugin/table"
+
+	"github.com/macadmins/osquery-extension/pkg/devclients"
 	"github.com/macadmins/osquery-extension/pkg/fsscan"
 	"github.com/macadmins/osquery-extension/pkg/redact"
 	"github.com/macadmins/osquery-extension/pkg/utils"
-	"github.com/osquery/osquery-go/plugin/table"
 )
 
 // A token shape the redactor is expected to recognise, used wherever a test needs to prove a
@@ -124,8 +126,7 @@ func TestUserConstraintTakesOnlyEqualityMatches(t *testing.T) {
 	// An unsupported operator alongside equality abandons narrowing entirely. Keeping the
 	// equality values and ignoring the rest can under-scan: QueryContext does not carry
 	// enough boolean structure to prove the subset is sufficient, so `user = 'alice' OR user
-	// LIKE 'b%'` would be answered with alice alone. An earlier version of this test asserted
-	// that unsafe behaviour as correct.
+	// LIKE 'b%'` would be answered with alice alone.
 	if got := userConstraint(constraints(
 		table.Constraint{Operator: table.OperatorEquals, Expression: "alice"},
 		table.Constraint{Operator: table.OperatorGreaterThan, Expression: "c"},
@@ -145,12 +146,6 @@ func TestUserConstraintTakesOnlyEqualityMatches(t *testing.T) {
 		if _, ok := got[want]; !ok {
 			t.Errorf("%q missing from the filter", want)
 		}
-	}
-}
-
-func TestBoolToStr(t *testing.T) {
-	if boolToStr(true) != "1" || boolToStr(false) != "0" {
-		t.Error("disabled must render as the 1/0 integers osquery expects, not true/false")
 	}
 }
 
@@ -224,11 +219,10 @@ func TestMCPServersGenerateWiresConstraintsToDiscovery(t *testing.T) {
 
 // An empty account roster is a failure, not an answer.
 //
-// This previously asserted the opposite: that zero users was "a real answer" producing no
-// rows and no error. It is not. No supported OS genuinely has no accounts, and a virtual
-// table can log an internal error -- an OpenDirectory failure, seen on osquery 5.23.1 --
-// while still returning an empty result set with no SQL error. Normalising that as a clean
-// result is the exact silent-empty failure this table exists to prevent.
+// No supported OS genuinely has no accounts, and a virtual table can log an internal error,
+// such as an OpenDirectory failure seen on osquery 5.23.1, while still returning an empty
+// result set with no SQL error. Treating that as a clean result would be the silent-empty
+// failure this table exists to prevent.
 func TestGenerateWithAnEmptyRosterReportsItRatherThanReturningNothing(t *testing.T) {
 	rows, err := generate(context.Background(), table.QueryContext{}, rosterFrom())
 	if err != nil {
@@ -239,7 +233,7 @@ func TestGenerateWithAnEmptyRosterReportsItRatherThanReturningNothing(t *testing
 	}
 }
 
-// Pins the boundary the schema comment documents, so the residual risk stays a known,
+// Pins the limit the schema comment documents, so the residual risk stays a known,
 // deliberate property rather than something rediscovered later as a surprise.
 //
 // Two halves. A secret shaped like a known issuer token is removed wherever it appears, and
@@ -267,8 +261,8 @@ func TestRedactionRemovesKnownShapesButNotOpaqueOnes(t *testing.T) {
 			opaqueRow["command_basename"])
 	}
 	if !strings.Contains(opaqueRow["source_path"], opaque) {
-		t.Error("source_path no longer passes an opaque value through, so the comment's claim " +
-			"that the limit is uniform across columns is now wrong")
+		t.Error("source_path does not pass an opaque value through, so the schema comment's " +
+			"claim that the limit is uniform across columns is wrong")
 	}
 }
 
@@ -278,7 +272,7 @@ func TestRedactionRemovesKnownShapesButNotOpaqueOnes(t *testing.T) {
 // Two gaps produced this test. The embedded pattern was bounded on the left by `\s`, so an
 // option introduced by a path separator, a bracket or non-ASCII whitespace was not an option
 // as far as the regexp was concerned and its value survived. And source_path and warning are
-// assembled after parsing, so they never passed through redactSecret at all: a project
+// assembled after parsing, so they never passed through redact.Secret at all: a project
 // directory literally named `--token=<secret>` reached the row intact. Both are emission-time
 // properties, so this asserts on serverToRow rather than on the redactor.
 func TestServerToRowRedactsDelimitedAssignmentsInEveryColumnAUserControls(t *testing.T) {
@@ -383,7 +377,7 @@ func TestServerToRowRedactsAnAssignmentCarryingANewline(t *testing.T) {
 	}
 
 	// The same value in the two columns assembled after parsing, which no parse-time
-	// sanitization reaches. Without the emission-boundary pass these carry the credential
+	// sanitization reaches. Without the pass at publication these carry the credential
 	// even though the identically-shaped server name above does not.
 	built := serverToRow(Server{
 		SourcePath: "/Users/alice/--token=\n" + secret + "/.mcp.json",
@@ -396,7 +390,7 @@ func TestServerToRowRedactsAnAssignmentCarryingANewline(t *testing.T) {
 	if !strings.Contains(built["source_path"], redact.RedactedMark) {
 		t.Errorf("source_path = %q, expected the redaction marker", built["source_path"])
 	}
-	// warning is no longer assembled from an error message, so there is nothing for a
+	// warning is not assembled from an error message, so there is nothing for a
 	// newline to hide inside: the column is a sentence chosen by code, plus integers and
 	// closed-enum spellings. Asserted as the absence of the whole secret rather than as the
 	// presence of a marker, because the value never entered the column to be marked.
@@ -586,8 +580,8 @@ func TestQueryForANonLoginAccountIsNotToldItIsAbsent(t *testing.T) {
 		if row.User != "daemon" {
 			t.Errorf("row for %q in a query constrained to daemon: %+v", row.User, row)
 		}
-		if row.UserID != "1" {
-			t.Errorf("row carries user_id %q, want the roster's identity: %+v", row.UserID, row)
+		if row.UserID != "1" || row.UID != "1" {
+			t.Errorf("row carries user_id %q and uid %q, want the roster's: %+v", row.UserID, row.UID, row)
 		}
 	}
 
@@ -603,13 +597,8 @@ func TestQueryForANonLoginAccountIsNotToldItIsAbsent(t *testing.T) {
 
 // The missing-name diagnostic must only claim a companion warning exists when one does.
 //
-// It used to close with "a roster-level warning alongside this row says which" whatever the
-// roster had done, so on a complete roster the sentence sent an operator looking for a row
-// that is not there. The fix was two near-identical paragraphs differing in one clause, which
-// the warning catalogue does not admit -- one sentence per code -- so the distinction is now
-// carried as a count on the code instead, and the sentence says neither thing.
-//
-// What has to hold is the same property, asserted structurally: Count is set exactly when a
+// The warning catalogue holds one sentence per code, so the sentence makes no claim either
+// way and a count on the code carries the distinction: Count is set exactly when a
 // roster-level row was also emitted.
 func TestMissingNameDiagnosticOnlyPromisesAWarningThatExists(t *testing.T) {
 	root := t.TempDir()
@@ -618,12 +607,8 @@ func TestMissingNameDiagnosticOnlyPromisesAWarningThatExists(t *testing.T) {
 	}
 
 	// A roster that reported no limits of its own. There is no companion row, so the
-	// diagnostic must not claim one.
-	//
-	// This case changed with the removal of the always-on Linux note: that note made every
-	// Linux run roster-uncertain, so the claim was truthful there and false everywhere else,
-	// which is why the old test had a platform-dependent branch. With the note gone, a
-	// healthy roster is uncertain on no platform and the assertion is the same everywhere.
+	// diagnostic must not claim one. A healthy roster is uncertain on no platform, so the
+	// assertion is the same everywhere.
 	rows := DiscoverAll(context.Background(), rosterOf(t, root),
 		map[string]struct{}{"nosuchuser": {}})
 	var missing *Server
@@ -664,8 +649,8 @@ func TestMissingNameDiagnosticOnlyPromisesAWarningThatExists(t *testing.T) {
 		}
 	}
 	if !pointed {
-		t.Error("with roster-level uncertainty reported, the missing-name diagnostic no " +
-			"longer flags that a companion row explains it")
+		t.Error("with roster-level uncertainty reported, the missing-name diagnostic does " +
+			"not signal that a companion row explains it")
 	}
 }
 
@@ -886,13 +871,11 @@ func TestASharedHomeIsReportedForBothAccountsAfterTheBudgetIsGone(t *testing.T) 
 	// scanned and cached. The home-rooted pass runs before the project pass, so the seeded
 	// row above survives the truncation.
 	//
-	// A long project list rather than a deep directory tree, which is what the old version
-	// built. That is the same substitution the discovery change made everywhere: what makes
-	// one home expensive is no longer how much source code is under it -- nothing walks --
-	// but how many projects its clients have recorded, because each one costs a probe per
-	// known filename.
-	projects := make(map[string]any, maxProjects)
-	for i := range maxProjects {
+	// A long project list rather than a deep directory tree: nothing walks, so what makes one
+	// home expensive is how many projects its clients have recorded, because each one costs
+	// a probe per known filename.
+	projects := make(map[string]any, devclients.MaxProjects)
+	for i := range devclients.MaxProjects {
 		rel := filepath.Join("code", fmt.Sprintf("p%03d", i))
 		if err := os.MkdirAll(filepath.Join(home, rel), 0o755); err != nil {
 			t.Fatal(err)
@@ -970,21 +953,16 @@ func TestASharedHomeIsReportedForBothAccountsAfterTheBudgetIsGone(t *testing.T) 
 	}
 }
 
-// panickingClienter panics with a value that quotes input, as a parser panic can.
-type panickingClienter struct{}
-
-func (panickingClienter) NewOsqueryClient() (utils.OsqueryClient, error) {
-	panic("unexpected token in TOKEN=opaqueSecret")
-}
-
-// TestAPanicReachesOsqueryAsFixedText: a panic is recovered into an error, and the panic value,
-// which can quote a file the table was reading, does not reach osquery.
-func TestAPanicReachesOsqueryAsFixedText(t *testing.T) {
-	rows, err := generate(context.Background(), table.QueryContext{}, panickingClienter{})
-	if err == nil || rows != nil {
-		t.Fatalf("rows = %v, err = %v; want no rows and an error", rows, err)
-	}
-	if strings.Contains(err.Error(), "opaqueSecret") || strings.Contains(err.Error(), "goroutine") {
-		t.Errorf("the error carries the panic value or the stack: %q", err)
+// TestAnOmittedAccountKeepsItsUID: an account omitted for its home carries its uid, so
+// `WHERE uid = ...` and `JOIN users USING (uid)` keep the row explaining why it has no servers.
+func TestAnOmittedAccountKeepsItsUID(t *testing.T) {
+	roster := rosterFrom(map[string]string{
+		"uid": "502", "username": "carol", "directory": filepath.Join(t.TempDir(), "gone"),
+		"shell": "/bin/zsh",
+	})
+	rows := withoutStandingNotes(DiscoverAll(context.Background(), roster,
+		map[string]struct{}{"carol": {}}))
+	if len(rows) != 1 || rows[0].Warning.Code != warnAccountHomeMissing || rows[0].UID != "502" {
+		t.Errorf("rows = %+v, want one account_home_missing row carrying uid 502", rows)
 	}
 }

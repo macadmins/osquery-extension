@@ -1,30 +1,34 @@
 package mcp_servers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/macadmins/osquery-extension/pkg/devclients"
+	"github.com/macadmins/osquery-extension/pkg/fsscan"
 	"github.com/macadmins/osquery-extension/pkg/redact"
+	"github.com/macadmins/osquery-extension/pkg/testutil"
 )
 
-// The four cases the review named, verbatim, end to end through the row builder.
+// Four configurations a user can write that would put a credential in a column, asserted end
+// to end through the row builder.
 //
-// Each is a real configuration a user can write, and each put a credential in a column before
-// this change. They are asserted together because they are one objection -- redaction catches
-// known shapes and these values have none -- and because the fix is one mechanism applied per
-// column rather than four separate patches.
+// Redaction catches known token formats, and these values have none, so each column applies
+// an allowlist instead. They are asserted together because one mechanism covers all four.
 func TestTheFourNamedLeakCases(t *testing.T) {
 	// Shapeless on purpose. A recognisable issuer prefix would be redacted on the way out
 	// and every case below would pass without its allowlist doing anything.
 	const secret = "Zq7xPlmNvBc2WdEr9TyUiOp0AsDfGhJk"
 
 	t.Run("env = { TOKEN = <bare> } in TOML", func(t *testing.T) {
-		// Invalid TOML -- a bare value -- so the parser fails and the message is where the
-		// token used to surface. The warning catalogue reports a position instead.
+		// Invalid TOML -- a bare value -- so the parser fails, and its message quotes the
+		// token. The warning catalogue reports a position instead.
 		doc := "[mcp_servers.x]\ncommand = \"npx\"\nenv = { TOKEN = " + secret + " }\n"
 		rows := finishProcessing("/home/alice", []byte(doc), nil, "/home/alice/.codex/config.toml",
 			"alice", "codex", false, MaxFileSize, extractCodexTOML)
@@ -76,9 +80,9 @@ func TestTheFourNamedLeakCases(t *testing.T) {
 	})
 
 	t.Run("npx -y --pat <secret> pkg", func(t *testing.T) {
-		// --pat is not in any arity list and is not credential-named by the redactor's
-		// patterns either, so the scan used to treat it as taking no value and report the
-		// secret as the first operand -- copied into package_name and requested_spec.
+		// npx does not list --pat, and it is not credential-named by the redactor's
+		// patterns either. Treated as taking no value, it would leave the secret as the
+		// first operand, copied into package_name and requested_spec.
 		doc := `{"mcpServers":{"x":{"command":"npx","args":["-y","--pat","` + secret + `","pkg"]}}}`
 		rows := finishProcessing("/home/alice", []byte(doc), nil, "/home/alice/.mcp.json",
 			"alice", "claude_code", true, MaxFileSize, extractEnvelopeSimple)
@@ -216,11 +220,10 @@ func TestColumnAllowlists(t *testing.T) {
 			"wss://mcp.example.test":    "wss://mcp.example.test",
 			"ws://127.0.0.1:8080":       "ws://127.0.0.1:8080",
 			"https://[2001:db8::1]:443": "https://[2001:db8::1]:443",
-			// A DNS-embedded token. Admissible as a hostname by DNS rules, which is why
-			// recognition was always the wrong instrument -- but it is not a host shape
-			// this column publishes, because the label is not one a real service uses.
-			// What actually rejects it is the scheme-and-host grammar plus redaction; the
-			// case here is the one the old code relied on redactSecret for.
+			// A DNS-embedded token. DNS rules admit it as a hostname, and so does this
+			// grammar, so validatedEndpoint returns it unchanged. In serverToRow,
+			// redact.Secret runs first and removes the key, and the redacted host then
+			// fails this grammar.
 			"https://aws.AKIAIOSFODNN7EXAMPLE.example.test": "https://aws.AKIAIOSFODNN7EXAMPLE.example.test",
 			// Schemes that are not MCP transports.
 			"file:///etc/passwd":    "",
@@ -288,30 +291,10 @@ func TestColumnAllowlists(t *testing.T) {
 	})
 
 	t.Run("uid", func(t *testing.T) {
-		for candidate, want := range map[string]string{
-			"501": "501", "0": "0", "-2": "-2", "S-1-5-21-1": "", "not-a-uid": "", "": "",
-		} {
-			if got := allowedUID(candidate); got != want {
-				t.Errorf("allowedUID(%q) = %q, want %q", candidate, got, want)
-			}
-		}
 		rows := stampUserID([]Server{{}, {UserID: "kept"}}, "S-1-5-21-1-2-3-1001", "1001")
 		for _, row := range rows {
 			if row.UserID != "S-1-5-21-1-2-3-1001" || row.UID != "1001" {
 				t.Errorf("stampUserID left %+v, want the SID and the uid on every row", row)
-			}
-		}
-	})
-
-	t.Run("user_id", func(t *testing.T) {
-		for candidate, want := range map[string]string{
-			"501": "501", "0": "0",
-			"S-1-5-21-1-2-3-1001":                          "S-1-5-21-1-2-3-1001",
-			"S-1-12-1-3623811015-3361044348-30300820-1013": "S-1-12-1-3623811015-3361044348-30300820-1013",
-			"not-an-id": "", "S-1-5-21-abc": "", "": "",
-		} {
-			if got, _ := allowedUserID(candidate); got != want {
-				t.Errorf("allowedUserID(%q) = %q, want %q", candidate, got, want)
 			}
 		}
 	})
@@ -352,9 +335,9 @@ func TestEveryProducibleEnumValueIsAllowed(t *testing.T) {
 			t.Errorf("probe client %q is not in allowedClients", src.client)
 		}
 	}
-	for _, fork := range vscodeFamily {
+	for _, fork := range devclients.VSCodeFamily {
 		if _, ok := allowedClients[fork.Client]; !ok {
-			t.Errorf("vscodeFamily client %q is not in allowedClients", fork.Client)
+			t.Errorf("devclients.VSCodeFamily client %q is not in allowedClients", fork.Client)
 		}
 	}
 	// package_manager: every launcher the identity table dispatches, plus the remote
@@ -461,14 +444,15 @@ func TestServerNamePlaceholder(t *testing.T) {
 	}
 }
 
-// scan_complete, at both scopes.
+// scan_complete: a source-scope finding marks its own file, and a user-scope one is a row of
+// its own that leaves the server rows alone.
 func TestScanComplete(t *testing.T) {
-	t.Run("an oversized project list degrades the whole home", func(t *testing.T) {
+	t.Run("an oversized project list is a row of its own", func(t *testing.T) {
 		home := t.TempDir()
-		// Past claudeJSONMaxSize. The project list IS this file, so an oversized one costs
-		// the account every project-local config and the whole approval state -- which is
-		// why it is home-scope rather than source-scope.
-		padding := strings.Repeat("x", claudeJSONMaxSize+1024)
+		// Past devclients.ClaudeListMaxSize. The project list is this file, so an oversized one
+		// costs the account every project-local config and the whole approval state, which a
+		// project_list_unreadable row for the user says.
+		padding := strings.Repeat("x", devclients.ClaudeListMaxSize+1024)
 		doc, err := json.Marshal(map[string]any{
 			"mcpServers": map[string]any{},
 			"padding":    padding,
@@ -479,8 +463,8 @@ func TestScanComplete(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(home, ".claude.json"), doc, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		// A healthy config elsewhere in the same home, which must still be listed and must
-		// still be marked incomplete.
+		// A healthy config elsewhere in the same home, which is still listed and complete: its
+		// own file was read in full.
 		if err := os.MkdirAll(filepath.Join(home, ".cursor"), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -490,28 +474,33 @@ func TestScanComplete(t *testing.T) {
 		}
 
 		rows := withoutStandingNotes(discoverForTest("alice", home))
-		var sawOversize, sawHealthy bool
+		var sawOversize, sawListLost, sawHealthy bool
 		for _, row := range rows {
-			if row.Warning.Code == warnSourceTooLarge {
+			switch {
+			case row.Warning.Code == warnSourceTooLarge:
 				sawOversize = true
-				if row.Warning.Limit != claudeJSONMaxSize {
+				if row.Warning.Limit != devclients.ClaudeListMaxSize {
 					t.Errorf("the oversize report names limit %d, want %d",
-						row.Warning.Limit, claudeJSONMaxSize)
+						row.Warning.Limit, devclients.ClaudeListMaxSize)
 				}
-			}
-			if row.ServerName == "healthy" {
+			case row.Warning.Code == warnProjectListUnreadable:
+				sawListLost = true
+			case row.ServerName == "healthy":
 				sawHealthy = true
-			}
-			// Every row for this home, including the healthy one from a different file.
-			if row.ScanComplete {
-				t.Errorf("row is marked complete despite an unreadable project list: %+v", row)
+				if !row.ScanComplete {
+					t.Error("a server from a file read in full is marked incomplete because " +
+						"another file, the project list, could not be read")
+				}
 			}
 		}
 		if !sawOversize {
 			t.Error("an oversized project list was not reported")
 		}
+		if !sawListLost {
+			t.Error("no project_list_unreadable row says the account's projects were not found")
+		}
 		if !sawHealthy {
-			t.Error("the healthy config was lost; degrading completeness must not drop rows")
+			t.Error("the healthy config was lost")
 		}
 	})
 
@@ -565,9 +554,9 @@ func TestScanComplete(t *testing.T) {
 // An unrecognised launcher option empties the identity and says why.
 //
 // The cost of the fail-closed decision, asserted in both directions. A row carrying an
-// ordinary unlisted boolean now loses its package columns, which is the accepted direction of
-// error -- recorded in identity.go beside the KNOWN GAP it resolves -- and a row carrying a
-// known option keeps them, which is what stops the refusal from firing on the common case.
+// ordinary unlisted boolean loses its package columns, which is the accepted direction of
+// error recorded in identity.go, and a row carrying a known option keeps them, which stops
+// the refusal from firing on the common case.
 func TestUnrecognisedLauncherOptionEmptiesTheIdentity(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -575,17 +564,17 @@ func TestUnrecognisedLauncherOptionEmptiesTheIdentity(t *testing.T) {
 		wantPackage string
 		wantCode    warnCode
 	}{
-		// The named case. --pat is in no arity list and is not credential-named by the
-		// redactor's patterns, so the value used to become the operand.
+		// The named case. npx does not list --pat, and the redactor's patterns do not name it
+		// as a credential, so without the refusal its value would become the operand.
 		{"an unrecognised option before the package", []string{"-y", "--pat", "s3cret", "pkg"},
 			"", warnUnknownLauncherOption},
-		// A credential-named option announces its own arity, so the scan knows the token
+		// A credential-named option's name says it takes a value, so the scan knows the token
 		// after it is a value and the real package is still found. Without this the
 		// refusal would fire on the configurations it was added to protect.
 		{"a credential-named option", []string{"--auth-token", "s3cret", "real-server"},
 			"real-server", ""},
 		// A listed value option and a listed boolean both keep working.
-		{"a listed value option", []string{"--python", "3.12", "real-server"},
+		{"a listed value option", []string{"--registry", "https://registry.example", "real-server"},
 			"real-server", ""},
 		{"a listed boolean", []string{"-y", "real-server"}, "real-server", ""},
 		// An inline assignment consumes nothing, so an unrecognised one is harmless.
@@ -645,32 +634,31 @@ func TestDiagnosticRowsHaveNoServerName(t *testing.T) {
 	}
 }
 
-// A project outside the home does not make the account's inventory incomplete.
+// A recorded project this table does not read does not make the account's inventory
+// incomplete.
 //
 // Opening a project outside your home is ordinary -- /tmp, /Volumes, a shared checkout -- and
-// once you have, the client's project list records it permanently. Classifying that as a
-// home-scope loss made scan_complete = 0 for every row of that account forever: on the
-// development machine 4 of 30 recorded projects are outside the home, so the predicate was
-// unusable and the column said something false, since the servers that were found *were* a
-// complete listing of their sources.
+// once you have, the client's project list records it permanently: on the development machine
+// 4 of 30 recorded projects are outside the home. A project stored with a cloud provider or on
+// a userspace filesystem is inventoried where it is stored. Each describes what the table
+// reads.
 //
-// The boundary and a loss inside it are asserted together, because the distinction is the
+// The descriptive codes and the losses are asserted together, because the distinction is the
 // whole point and either one alone would pass with the scopes swapped.
-func TestScopeBoundariesDoNotDegradeCompleteness(t *testing.T) {
+func TestDescriptiveFindingsDoNotDegradeCompleteness(t *testing.T) {
 	// Out of scope by definition: not a loss.
 	for _, code := range []warnCode{
 		warnProjectOutsideHome, warnProjectRemoteOrigin, warnProjectMalformed,
+		warnProjectCloudPlaceholder, warnProjectUserspaceFS,
 	} {
 		if code.degradesCompleteness() {
 			t.Errorf("%s degrades completeness; a recorded project this table declines to "+
-				"follow is the definition of what is searched, not a scan cut short", code)
+				"read is the definition of what is searched, not a scan cut short", code)
 		}
 	}
 	// In scope and not read: a real loss.
 	for _, code := range []warnCode{
-		warnProjectCloudPlaceholder, warnProjectUserspaceFS, warnProjectRefused,
-		warnProjectListUnreadable,
-		warnProjectListTruncated,
+		warnProjectRefused, warnProjectListUnreadable, warnProjectListTruncated,
 	} {
 		if !code.degradesCompleteness() {
 			t.Errorf("%s does not degrade completeness; a configuration inside the home "+
@@ -738,7 +726,7 @@ func TestOutOfScopeProjectsLeaveRowsComplete(t *testing.T) {
 // project directory named `repo --token=opaqueSecret` is perfectly well contained -- inside
 // the home, no traversal -- so it passed the containment check and was emitted verbatim in
 // source_context and inside the placeholder server name, while the same bytes in source_path
-// were redacted because that column runs redactSecret. This is the known shape the redactor
+// were redacted because that column runs redact.Secret. This is the known shape the redactor
 // explicitly recognises, not the documented residual risk about opaque directory names.
 func TestProjectDirectoryNamesAreRedactedInEveryColumn(t *testing.T) {
 	const secret = "opaqueSecretValue123"
@@ -746,7 +734,7 @@ func TestProjectDirectoryNamesAreRedactedInEveryColumn(t *testing.T) {
 	// The directory name carries the assignment, and the server name is unpublishable so
 	// the placeholder -- built from that path -- is exercised too.
 	project := filepath.Join(home, "code", "repo --token="+secret)
-	writeTestFile(t, filepath.Join(project, ".mcp.json"),
+	testutil.WriteFile(t, filepath.Join(project, ".mcp.json"),
 		`{"mcpServers":{"ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA":{"command":"npx","args":["x"]}}}`)
 	recorded, err := json.Marshal(map[string]any{
 		"projects": map[string]any{project: map[string]any{}}})
@@ -787,7 +775,7 @@ func TestProjectDirectoryNamesAreRedactedInEveryColumn(t *testing.T) {
 // Every source_context a producer can emit is in the allowed set.
 //
 // The plugin token was declared, assigned, and never registered, so every healthy plugin row
-// reached the boundary and was emitted with an empty source_context plus a warning claiming
+// reached publication and was emitted with an empty source_context plus a warning claiming
 // its project path could not be published -- about a row that has no project path. A set that
 // must agree with its producers needs a test that compares them.
 func TestEveryProducibleSourceContextIsAllowed(t *testing.T) {
@@ -907,5 +895,147 @@ func TestPartiallyRedactedServerNameKeepsItsMarker(t *testing.T) {
 	}
 	if strings.HasPrefix(published, "[redacted:") {
 		t.Errorf("a cleaned name was sent down the placeholder path: %q", published)
+	}
+}
+
+// TestAnOverlongInlineProjectKeyIsDropped: an inline server under a ~/.claude.json project key
+// longer than devclients.MaxProjectPathLen keeps its row, and its source_context keeps only the
+// section name, with the drop reported, so a key of any length never reaches the column.
+func TestAnOverlongInlineProjectKeyIsDropped(t *testing.T) {
+	home := "/home/alice"
+	key := home + "/" + strings.Repeat("a", devclients.MaxProjectPathLen)
+	data := `{"projects":{"` + key + `":{"mcpServers":{"a":{"command":"npx"},"b":{"command":"uvx"}}}}}`
+	servers, err := extractClaudeCode([]byte(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(servers) != 2 {
+		t.Fatalf("servers = %+v, want both inline servers", servers)
+	}
+	for _, s := range servers {
+		s.Home = home
+		row := serverToRow(s)
+		if row["source_context"] != "projects" || !strings.HasPrefix(row["warning"], warnSentences[warnSourceContextPathDropped]) {
+			t.Errorf("source_context = %q, warning = %q; want the section name and source_context_path_dropped",
+				row["source_context"], row["warning"])
+		}
+	}
+	if got, dropped := allowedSourceContext("projects["+key+"].mcpServers", home); got != "projects" || !dropped {
+		t.Errorf("allowedSourceContext with an overlong key = %q, %v; want the section name, dropped", got, dropped)
+	}
+}
+
+// TestSourcePathIsAbsoluteAndCleanWithoutAHome: a row with no home, which is a row about the
+// roster, still publishes source_path only when it is absolute and clean. The check returned
+// before either test when the home was empty, so a relative or `..` directory the roster declared
+// for a skipped account was published as written.
+func TestSourcePathIsAbsoluteAndCleanWithoutAHome(t *testing.T) {
+	base, other := t.TempDir(), t.TempDir()
+	separator := string(filepath.Separator)
+	for _, testCase := range []struct {
+		path, home string
+		want       bool
+	}{
+		{"", "", true},
+		{base, "", true},
+		{"relative" + separator + "home", "", false},
+		{base + separator + "a" + separator + ".." + separator + "b", "", false},
+		{filepath.Join(base, "x"), base, true},
+		{other, base, false},
+	} {
+		if got := structurallySoundPath(testCase.path, testCase.home); got != testCase.want {
+			t.Errorf("structurallySoundPath(%q, %q) = %v, want %v", testCase.path, testCase.home, got,
+				testCase.want)
+		}
+	}
+	rows := DiscoverAll(context.Background(), rosterFrom(map[string]string{
+		"uid": "501", "username": "bob", "directory": "relative" + separator + "bob", "shell": "/bin/zsh",
+	}), map[string]struct{}{"bob": {}})
+	if len(rows) != 1 || rows[0].Warning.Code != warnAccountHomeNotAbsolute {
+		t.Fatalf("rows = %+v, want one account_home_not_absolute row", rows)
+	}
+	if published := serverToRow(rows[0])["source_path"]; published != "" {
+		t.Errorf("source_path = %q, want empty for a relative directory", published)
+	}
+}
+
+// TestEveryRowCarriesItsHome: every row a home produces carries that home, whichever pass made
+// it, so publication holds its source_path to the home. Most diagnostic rows were built without
+// one, which skipped the containment check for them.
+func TestEveryRowCarriesItsHome(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "alice")
+	testutil.WriteFile(t, filepath.Join(home, ".cursor", "mcp.json"), `{not json`)
+	testutil.WriteFile(t, filepath.Join(home, ".claude", "settings.json"), `null`)
+	testutil.WriteFile(t, filepath.Join(home, ".claude", "plugins", "cache", "mp", "p", "1.0.0",
+		".claude-plugin", "plugin.json"), `{"mcpServers":"./missing.json"}`)
+	rows := withoutStandingNotes(DiscoverAll(context.Background(), rosterOf(t, root), nil))
+	direct := discoverForHome(context.Background(), fsscan.UserHome{Name: "alice", Path: home},
+		time.Now().Add(time.Minute))
+	if len(rows) < 3 || len(direct) < 3 {
+		t.Fatalf("rows = %+v, direct = %+v, want the parse, settings and manifest diagnostics", rows, direct)
+	}
+	for _, row := range append(rows, direct...) {
+		if row.Home != home {
+			t.Errorf("%s row has home %q, want %q", row.Warning.Code, row.Home, home)
+		}
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, row := range DiscoverAll(cancelled, rosterOf(t, root), nil) {
+		if row.Warning.Code == warnCancelledPreHome && row.Home != home {
+			t.Errorf("cancelled_before_home row has home %q, want %q", row.Home, home)
+		}
+	}
+}
+
+// TestPlaceholderIndexesStayDistinct: the index past the thousandth is published as written, so
+// two unrepresentable names from one file never share a placeholder. Every index from 999 up
+// published as #999.
+func TestPlaceholderIndexesStayDistinct(t *testing.T) {
+	for index, want := range map[int]string{
+		999: "[redacted:a/b.json]#999", 1000: "[redacted:a/b.json]#1000", 1001: "[redacted:a/b.json]#1001",
+	} {
+		if got := serverNamePlaceholder(filepath.Join("a", "b.json"), index); got != want {
+			t.Errorf("index %d: %q, want %q", index, got, want)
+		}
+	}
+}
+
+// TestSourceContextPathsKeepTheirSectionsForm: a ~/.claude.json key is published only when it is
+// an absolute path contained in the home, and a probe's path only when it is a relative one, with
+// a `..` refused rather than cleaned away. A relative key such as `opaquesecret123`, which the
+// collector refuses as malformed and never reads, was published as projects[opaquesecret123],
+// and `code/../x` was cleaned to `x` before the check that refuses `..` saw it.
+func TestSourceContextPathsKeepTheirSectionsForm(t *testing.T) {
+	home := t.TempDir()
+	for _, testCase := range []struct {
+		context, want string
+		dropped       bool
+	}{
+		{"projects[opaquesecret123].mcpServers", "projects", true},
+		{"projects[../alice/x].mcpServers", "projects", true},
+		{"projects[" + filepath.Join(home, "code") + "].mcpServers", "projects[code].mcpServers", false},
+		{"project.mcp_json[code]", "project.mcp_json[code]", false},
+		{"project.mcp_json[code/../x]", "project.mcp_json", true},
+		{"project.mcp_json[" + filepath.Join(home, "code") + "]", "project.mcp_json", true},
+	} {
+		got, dropped := allowedSourceContext(testCase.context, home)
+		if got != testCase.want || dropped != testCase.dropped {
+			t.Errorf("%s: %q, dropped %v; want %q, %v", testCase.context, got, dropped, testCase.want,
+				testCase.dropped)
+		}
+	}
+	body := `{"projects":{"opaquesecret123":{"mcpServers":{"s":{"command":"npx","args":["real-pkg"]}}}}}`
+	rows := finishProcessing(home, []byte(body), nil, filepath.Join(home, ".claude.json"), "alice",
+		"claude_code", false, MaxFileSize, extractClaudeCode)
+	if len(rows) != 1 {
+		t.Fatalf("%d rows", len(rows))
+	}
+	row := serverToRow(rows[0])
+	if row["source_context"] != "projects" ||
+		!strings.HasPrefix(row["warning"], warnSentences[warnSourceContextPathDropped]) {
+		t.Errorf("source_context %q, warning %q; want projects and source_context_path_dropped",
+			row["source_context"], row["warning"])
 	}
 }

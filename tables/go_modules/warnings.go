@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/macadmins/osquery-extension/pkg/devclients"
 	"github.com/macadmins/osquery-extension/pkg/fsscan"
 )
 
@@ -21,14 +22,21 @@ type warnCode string
 const (
 	warnRosterUnreachable    warnCode = "roster_unreachable"
 	warnRosterQueryFailed    warnCode = "roster_query_failed"
+	warnRosterAccountUnnamed warnCode = "roster_account_unnamed"
 	warnAccountNotInspected  warnCode = "account_not_inspected"
 	warnAccountsHomeUnusable warnCode = "accounts_home_unusable"
 	warnHomeUnreadable       warnCode = "home_unreadable"
 	warnAccountNotInRoster   warnCode = "account_not_in_roster"
 
+	warnNamedPathNotPublished warnCode = "project_path_not_published_form"
+	warnNamedPathOutsideHomes warnCode = "project_path_outside_scanned_homes"
+	warnNamedPathNoRows       warnCode = "project_path_without_rows"
+
 	warnBudgetExhaustedPreHome warnCode = "budget_exhausted_before_home"
 	warnRowLimitPreHome        warnCode = "row_limit_reached_before_home"
 	warnRowLimitInHome         warnCode = "row_limit_reached_during_home"
+	warnOutputSizePreHome      warnCode = "output_size_reached_before_home"
+	warnOutputSizeInHome       warnCode = "output_size_reached_during_home"
 	warnCancelledPreHome       warnCode = "cancelled_before_home"
 	warnBudgetExhaustedInHome  warnCode = "budget_exhausted_during_home"
 	warnCancelledInHome        warnCode = "cancelled_during_home"
@@ -42,14 +50,17 @@ const (
 	warnWorkspaceListTruncated    warnCode = "workspace_list_truncated"
 	warnWorkspaceRecordUnreadable warnCode = "workspace_record_unreadable"
 	warnWorkspaceRecordMalformed  warnCode = "workspace_record_malformed"
+	warnWorkspaceRecordsOlder     warnCode = "workspace_records_older"
 	warnProjectOutsideHome        warnCode = "project_outside_home"
 	warnProjectRemoteOrigin       warnCode = "project_remote_origin"
 	warnProjectMalformed          warnCode = "project_path_malformed"
 	warnProjectInCloudStorage     warnCode = "project_in_cloud_storage"
 	warnProjectOnNetworkFS        warnCode = "project_on_network_filesystem"
+	warnProjectOnUserspaceFS      warnCode = "project_on_userspace_filesystem"
 	warnWorkspaceUnsupported      warnCode = "go_workspace_unsupported"
 	warnProjectUserspaceFS        warnCode = "project_userspace_filesystem"
 	warnProjectRefused            warnCode = "project_read_refused"
+	warnProjectDirUnreadable      warnCode = "project_directory_unreadable"
 
 	warnSourceUnreadable  warnCode = "source_unreadable"
 	warnSourceLinkRefused warnCode = "source_link_refused"
@@ -61,6 +72,7 @@ const (
 	warnEntriesTruncated  warnCode = "entries_truncated"
 	warnGoSumMalformed    warnCode = "go_sum_malformed"
 	warnEntriesDropped    warnCode = "entries_dropped"
+	warnValuesDropped     warnCode = "values_dropped"
 )
 
 // warnSentences holds the one sentence each code renders as.
@@ -69,6 +81,8 @@ var warnSentences = map[warnCode]string{
 		"account's projects were inspected",
 	warnRosterQueryFailed: "the osquery users table could not be read, so no account " +
 		"could be confirmed or ruled out",
+	warnRosterAccountUnnamed: "the roster returned an account with no username, so it " +
+		"could not be attributed or inspected and this account may be it",
 	warnAccountNotInspected: "this account was not inspected; the reason gives the roster's " +
 		"explanation",
 	warnHomeUnreadable: "this account's home directory could not be opened, so none of its " +
@@ -79,6 +93,16 @@ var warnSentences = map[warnCode]string{
 		"so nothing was scanned for it: the name may be misspelled, the account may have " +
 		"been removed, or it may be one the roster does not enumerate",
 
+	warnNamedPathNotPublished: "the project_path this query names is not written as " +
+		"project_path publishes it, an absolute path with no trailing separator and no . or .. " +
+		"component, so no row can match it and nothing was read for it",
+	warnNamedPathOutsideHomes: "the project_path this query names is not inside the home of " +
+		"any account this query scanned, so nothing was read for it",
+	warnNamedPathNoRows: "no module row matches the project_path this query names, which is " +
+		"inside this account's home: the directory has no go.mod or go.sum, or its module files " +
+		"were not read; the same query without the project_path constraint shows any warning " +
+		"about it",
+
 	warnBudgetExhaustedPreHome: "the query budget was exhausted before this account was " +
 		"scanned, so none of its projects are listed",
 	warnCancelledPreHome: "the query was cancelled before this account was scanned, so none " +
@@ -87,6 +111,10 @@ var warnSentences = map[warnCode]string{
 		"before this account was scanned, so none of its modules are listed",
 	warnRowLimitInHome: "the query reached the number of module rows this table returns part " +
 		"way through this account, so some of its modules are not listed",
+	warnOutputSizePreHome: "the query reached the number of bytes this table returns before " +
+		"this account was scanned, so none of its modules are listed",
+	warnOutputSizeInHome: "the query reached the number of bytes this table returns part way " +
+		"through this account, so some of its modules are not listed",
 	warnBudgetExhaustedInHome: "the query budget was exhausted part way through this " +
 		"account, so some of its projects may not be listed",
 	warnCancelledInHome: "the query was cancelled part way through this account, so some " +
@@ -111,6 +139,8 @@ var warnSentences = map[warnCode]string{
 		"projects they name are not listed",
 	warnWorkspaceRecordMalformed: "workspace records could not be parsed, so the projects " +
 		"they name are not listed",
+	warnWorkspaceRecordsOlder: "recorded project records older than the most recently used " +
+		"ones this scan reads were not inspected",
 	warnProjectOutsideHome: "recorded projects lie outside this account's home and were " +
 		"not inspected",
 	warnProjectRemoteOrigin: "recorded projects are on another host rather than this " +
@@ -118,23 +148,26 @@ var warnSentences = map[warnCode]string{
 	warnProjectMalformed: "recorded project locations were not usable absolute paths and " +
 		"were not inspected",
 	warnProjectInCloudStorage: "recorded projects are stored with a cloud storage provider " +
-		"rather than on this machine's disk and were not read; the provider is where they are " +
-		"inventoried",
+		"rather than on this machine's disk and were not read, so nothing was downloaded",
 	warnWorkspaceUnsupported: "recorded projects have a go.work file, and workspace discovery " +
 		"is not supported in this version: a module at the project root is listed, and the " +
 		"other modules the workspace names are not",
-	warnProjectOnNetworkFS: "recorded projects are on a network filesystem rather than this " +
-		"machine's disk and were not read; the server that stores them is where they are " +
-		"inventoried",
+	warnProjectOnNetworkFS: "recorded projects are on a network filesystem, unlike this " +
+		"account's home, and were not read, so nothing was read over the network",
+	warnProjectOnUserspaceFS: "recorded projects are on a filesystem implemented in userspace, " +
+		"unlike this account's home, where a read may fetch their contents on demand, and were " +
+		"not read",
 	warnProjectUserspaceFS: "a module file in a recorded project is on a filesystem " +
 		"implemented in userspace, where a read may fetch its contents on demand, and was " +
 		"not read",
+	warnProjectDirUnreadable: "project directories this account recorded could not be opened, " +
+		"so their module files were not read",
 	warnProjectRefused: "a module file in a recorded project was refused by a safety check " +
 		"rather than being absent, so it exists and was deliberately not read",
 
 	warnSourceUnreadable: "this module file could not be read, so what it records is missing " +
 		"from this project's rows",
-	warnSourceLinkRefused: "this module file is a symbolic link, which is not followed, so what " +
+	warnSourceLinkRefused: "this module file is a symbolic link this scan did not follow, so what " +
 		"it records is missing from this project's rows",
 	warnSourceTooLarge: "this module file is larger than the limit this scan reads, so what it " +
 		"records is missing from this project's rows",
@@ -148,7 +181,12 @@ var warnSentences = map[warnCode]string{
 	warnGoSumMalformed: "lines in this go.sum are not in the module, version and hash form " +
 		"and were skipped",
 	warnEntriesDropped: "entries in this file have a module path or version outside the Go " +
-		"module grammar, or one containing a known credential format, and are not listed",
+		"module grammar, longer than this table publishes, or containing a known credential " +
+		"format, and are not listed",
+	warnValuesDropped: "values in this go.mod, a replacement target or the module, go or " +
+		"toolchain line, are outside their grammar, longer than this table publishes, or contain " +
+		"a known credential format, so they are not published and the rows are listed with that " +
+		"column empty",
 	warnChecksumConflict: "this go.sum records different hashes for the same module version, " +
 		"which the go command treats as a record it cannot trust; the module version is still " +
 		"listed, without that hash",
@@ -164,6 +202,7 @@ type warning struct {
 	Line   int
 	Class  fsscan.ErrClass       // which refusal, from fsscan's closed set
 	Reason fsscan.OmissionReason // why the roster skipped an account, from fsscan's closed set
+	Source devclients.Origin     // which client's project list, from devclients' closed set
 }
 
 func (w warning) empty() bool { return w.Code == "" }
@@ -193,6 +232,9 @@ func (w warning) render() string {
 	}
 	if w.Reason != "" {
 		details = append(details, "reason="+string(w.Reason))
+	}
+	if w.Source != "" {
+		details = append(details, "source="+string(w.Source))
 	}
 	if len(details) == 0 {
 		return sentence

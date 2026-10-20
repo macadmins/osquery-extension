@@ -9,12 +9,16 @@ import (
 )
 
 // networkFilesystemMagic are the statfs filesystem types of the network filesystems Linux
-// mounts: NFS and SMB, in the SMB, SMB2 and CIFS variants the kernel reports.
+// mounts: NFS; SMB, in the SMB, SMB2 and CIFS variants the kernel reports; CephFS; and AFS.
+// 9p is left out on purpose: WSL2 mounts the Windows drives at /mnt/c over 9p, and developers
+// keep projects there.
 var networkFilesystemMagic = []int64{
 	unix.NFS_SUPER_MAGIC,
 	unix.SMB_SUPER_MAGIC,
 	unix.SMB2_SUPER_MAGIC,
 	unix.CIFS_SUPER_MAGIC,
+	unix.CEPH_SUPER_MAGIC,
+	unix.AFS_SUPER_MAGIC,
 }
 
 // onNetworkFilesystem reports whether file is on a network filesystem. A failed fstatfs is not

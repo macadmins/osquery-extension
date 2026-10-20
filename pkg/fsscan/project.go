@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Reading a file at a path a client's configuration recorded, rather than at a path this
@@ -64,19 +67,37 @@ var (
 
 // ProbeProjectDir opens a recorded project's directory beneath home, with the symlink refusal
 // every read applies, and reports ErrNetworkFilesystem when the directory is on a network
-// filesystem. A caller probes once per project, before reading any file in it, so a project on
-// a network mount costs one directory open and none of its files are opened. Any other error is
-// the open's own, for ClassifyError.
+// filesystem, or ErrUserspaceFilesystem when it is on a userspace one. A caller probes once per
+// project, before reading any file in it, so a project on a network mount costs one directory
+// open and none of its files are opened. Any other error is the open's own, for ClassifyError.
+//
+// A recorded project can be the home itself, which ContainProjectPath reports as ".". That has
+// no component for OpenBeneath to open, so the home is opened directly, with the same refusal
+// of a symlinked or redirected base, and still reaches the network-filesystem check.
 func ProbeProjectDir(home, projRel string) error {
-	dir, err := OpenBeneath(home, projRel)
+	var dir *os.File
+	var err error
+	if components, splitErr := splitSafeComponents(projRel); splitErr == nil && len(components) == 0 {
+		dir, err = openBaseDir(home)
+	} else {
+		dir, err = OpenBeneath(home, projRel)
+	}
 	if err != nil {
 		return err
 	}
 	defer func() { _ = dir.Close() }()
+	// OpenBeneath opens its last component as a file, so a recorded project that is a regular
+	// file opens too. It is refused here, as a path through a non-directory is, before its two
+	// module files are looked for inside it.
+	if info, statErr := dir.Stat(); statErr == nil && !info.IsDir() {
+		return fmt.Errorf("fsscan: recorded project %q is not a directory: %w", projRel, errNotDirectory)
+	}
 	if onNetworkFilesystem(dir) {
 		return ErrNetworkFilesystem
 	}
-	return nil
+	// A userspace filesystem, such as sshfs or rclone on Linux, is decided here too, so a project
+	// on one costs this open and none of its files are opened.
+	return fileOnUserspaceFilesystem(dir)
 }
 
 // UnderCloudStorage reports whether a home-relative path is inside a cloud storage provider's
@@ -105,9 +126,10 @@ func ContainProjectPath(home, recorded string, allowFileURL bool) (string, error
 }
 
 // containProjectPathFor takes the OS as a parameter for the same reason appSupportDirFor does
-// in the mcp_servers table: the Windows answers -- a drive letter after the URL's leading
-// slash, a backslash separator -- are the ones no test on this host could otherwise reach,
-// and there is no Windows CI job to reach them later.
+// in pkg/devclients: the Windows answers -- a drive letter after the URL's leading
+// slash, a backslash separator -- are the ones no test on another host could otherwise reach,
+// and taking the OS as a parameter asserts them on every host, not only on the windows-latest
+// job.
 func containProjectPathFor(goos, home, recorded string, allowFileURL bool) (string, error) {
 	path := recorded
 	// A URL only when it actually looks like one. Parsing unconditionally is wrong on
@@ -127,8 +149,8 @@ func containProjectPathFor(goos, home, recorded string, allowFileURL bool) (stri
 	if path == "" {
 		return "", fmt.Errorf("%w: empty", ErrMalformedPath)
 	}
-	// NUL and every other ASCII control character. NUL truncates a path at the syscall
-	// boundary, so `/home/alice/safe\x00/../../etc` is one string to Go and another to the
+	// NUL and every other ASCII control character. NUL truncates a path where it is handed
+	// to the kernel, so `/home/alice/safe\x00/../../etc` is one string to Go and another to the
 	// kernel -- the check below would inspect a path nobody opens. The remaining control
 	// characters are refused for a different reason: they cannot appear in a path a client
 	// legitimately recorded, and they are exactly what a value crafted to disrupt a log line
@@ -143,6 +165,12 @@ func containProjectPathFor(goos, home, recorded string, allowFileURL bool) (stri
 		// relative to whatever directory the client happened to be in -- so there is no
 		// sound way to resolve it and guessing the home would invent a location.
 		return "", fmt.Errorf("%w: not absolute", ErrMalformedPath)
+	}
+	// A UNC path names another host, as a file URL with a host does, so it is a remote origin.
+	// Refused before containment, which compares components and would read the leading
+	// separators of `\\C:\Users\alice\repo` as nothing and contain it as the local drive's.
+	if goos == "windows" && (strings.HasPrefix(path, `\\`) || strings.HasPrefix(path, "//")) {
+		return "", fmt.Errorf("%w: a UNC path names another host", ErrUnsupportedOrigin)
 	}
 	// Inspected before Clean, exactly as splitSafeComponents does and for the same reason:
 	// Clean collapses `/home/alice/../bob` to `/home/bob`, which is inside no home anyone
@@ -161,10 +189,7 @@ func containProjectPathFor(goos, home, recorded string, allowFileURL bool) (stri
 	cleaned := cleanFor(goos, path)
 	rel, err := relFor(goos, home, cleaned)
 	if err != nil {
-		return "", fmt.Errorf("%w: %s", ErrNotContained, "no relative path to the home exists")
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+separatorFor(goos)) {
-		return "", fmt.Errorf("%w: %s", ErrNotContained, "resolves above the home")
+		return "", fmt.Errorf("%w: %v", ErrNotContained, err)
 	}
 	return rel, nil
 }
@@ -198,6 +223,15 @@ func localPathFromFileURL(goos, raw string) (string, error) {
 	// outbound credential. That is a worse outcome than a missing row by a wide margin.
 	if parsed.Host != "" && !strings.EqualFold(parsed.Host, "localhost") {
 		return "", fmt.Errorf("%w: file URL names a remote host", ErrUnsupportedOrigin)
+	}
+	// Userinfo, a query and a fragment name no path bytes, and VS Code never writes them in a
+	// workspace folder. They are refused rather than discarded, so two spellings of one path
+	// cannot get different answers, and so the length bound a caller applies before parsing
+	// covers every URL this accepts. A raw "#" always starts a fragment, because a "#" in a path
+	// is written %23, and testing for it catches an empty fragment, which url.Parse does not
+	// record.
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || strings.Contains(raw, "#") {
+		return "", fmt.Errorf("%w: file URL carries userinfo, a query or a fragment", ErrMalformedPath)
 	}
 	// url.Parse has already percent-decoded the path into URL.Path, and that is the decoded
 	// form this returns. The ordering point still holds and is still the reason the refusals
@@ -246,8 +280,8 @@ func isDriveLetterByte(c byte) bool {
 //
 // filepath's own functions read runtime.GOOS, so on a macOS test host filepath.IsAbs reports
 // false for `C:\Users\alice` and filepath.Rel treats a backslash as an ordinary character.
-// Every Windows containment case would therefore have been unreachable from a test, on the
-// platform that has no CI job to reach it instead. These four shim it.
+// Every Windows containment case would therefore have been reachable only on a Windows host.
+// These four shim it, so the cases run on every host.
 func isAbsFor(goos, path string) bool {
 	if goos != "windows" {
 		return strings.HasPrefix(path, "/")
@@ -256,8 +290,7 @@ func isAbsFor(goos, path string) bool {
 		(path[2] == '\\' || path[2] == '/') {
 		return true
 	}
-	// A UNC path is absolute and is also refused earlier; recognised here so it is reported
-	// as uncontained rather than as malformed.
+	// A UNC path is absolute, so it is reported as a remote origin rather than as malformed.
 	return strings.HasPrefix(path, `\\`) || strings.HasPrefix(path, "//")
 }
 
@@ -268,35 +301,41 @@ func separatorFor(goos string) string {
 	return "/"
 }
 
-func cleanFor(goos, path string) string {
+// cleanFor is filepath.Clean for goos's separator, computed as text so every host gets the
+// same answer: filepath.Clean on a macOS host leaves a backslash alone, and on a Windows host
+// turns a slash into one.
+func cleanFor(goos, value string) string {
 	if goos != "windows" {
-		return filepath.Clean(path)
+		return path.Clean(value)
 	}
-	return filepath.Clean(strings.ReplaceAll(path, "/", `\`))
+	cleaned := path.Clean(strings.ReplaceAll(value, `\`, "/"))
+	return strings.ReplaceAll(cleaned, "/", `\`)
 }
 
-// relFor is filepath.Rel with the separator and the case-folding supplied rather than taken
-// from the host. Windows paths are case-insensitive, so a home of `C:\Users\Alice` and a
-// recorded project of `c:\users\alice\code` name the same place and a case-sensitive
-// comparison would report the project as outside the home.
+// relFor is filepath.Rel for a target already found absolute and free of "..": the components
+// of target below base, compared one by one under goos's case rule. Windows and macOS fold
+// case, because their default filesystems are case-insensitive, so a home of `/Users/Alice` and
+// a recorded project of `/users/alice/code` name the same place, and a case-sensitive
+// comparison reported the project as outside the home and never read it. The relative path is
+// only ever opened beneath the home, so on a case-sensitive APFS volume a path that differs
+// only in case is read through the home's spelling, inside the same home.
 func relFor(goos, base, target string) (string, error) {
-	if goos != "windows" {
-		return filepath.Rel(base, target)
-	}
-	baseParts := strings.Split(strings.Trim(cleanFor(goos, base), `\`), `\`)
-	targetParts := strings.Split(strings.Trim(cleanFor(goos, target), `\`), `\`)
+	separator := separatorFor(goos)
+	baseParts := strings.Split(strings.TrimSuffix(cleanFor(goos, base), separator), separator)
+	targetParts := strings.Split(strings.TrimSuffix(cleanFor(goos, target), separator), separator)
 	if len(targetParts) < len(baseParts) {
-		return "", errors.New("fsscan: target is shorter than the base")
+		return "", errors.New("target is shorter than the home")
 	}
+	fold := goos == "windows" || goos == "darwin"
 	for i, part := range baseParts {
-		if !strings.EqualFold(part, targetParts[i]) {
-			return "", errors.New("fsscan: target is not under the base")
+		if part != targetParts[i] && (!fold || !strings.EqualFold(part, targetParts[i])) {
+			return "", errors.New("target is not under the home")
 		}
 	}
 	if len(targetParts) == len(baseParts) {
 		return ".", nil
 	}
-	return strings.Join(targetParts[len(baseParts):], `\`), nil
+	return strings.Join(targetParts[len(baseParts):], separator), nil
 }
 
 // cloudStoragePrefixes are the home-relative directories under which macOS mounts a
@@ -321,14 +360,12 @@ func underCloudStorage(rel string) bool {
 }
 
 // underCloudStorageFor takes the OS as a parameter for the same reason containProjectPathFor
-// does, and here the parameter is load-bearing rather than only a test seam: the two prefixes
-// are macOS conventions and nothing else, and they used to be applied on every platform. A
-// Linux project under ~/Library/CloudStorage, or a Windows profile carrying that directory
-// name -- neither of which is a file-provider mount there, because neither system has that
-// mechanism -- had every file beneath it refused as a cloud placeholder, and the refusal is
-// reported as the reason those rows are missing. The other platforms are covered by the
-// attribute check instead: it is exact on Windows, and on Linux there is no placeholder
-// attribute to read, which cloudfile_other.go spells out.
+// does, and here the parameter is load-bearing rather than only a test seam: each platform's
+// prefixes are its own conventions. Applied elsewhere, a Linux project under
+// ~/Library/CloudStorage, which is not a file-provider mount there, would have every file
+// beneath it refused as a cloud placeholder. Linux is covered by no prefix, because it has no
+// file-provider mechanism and no placeholder attribute to read, which cloudfile_other.go
+// spells out.
 //
 // Case-insensitively, because the volume these name is on a case-insensitive filesystem by
 // default and a comparison that missed `library/cloudstorage` would hand the caller exactly
@@ -342,8 +379,7 @@ func underCloudStorageFor(goos, rel string) bool {
 	// runtime.GOOS and is a no-op off Windows. Using it meant every backslash-separated
 	// Windows path stayed one unsplit string, so the prefix match could not fire -- the
 	// whole point of taking goos as a parameter is that the Windows branch has to be
-	// reachable from a host that is not Windows, and there is no Windows CI job to catch it
-	// if it is not.
+	// reachable from a host that is not Windows, where most of the tests run.
 	slashed := strings.ToLower(rel)
 	if goos == "windows" {
 		slashed = strings.ReplaceAll(slashed, `\`, "/")
@@ -378,8 +414,8 @@ func underCloudStorageFor(goos, rel string) bool {
 // at CreateFile, so a handle-based check learns it only after causing the download it exists
 // to prevent -- and os.Root offers no FILE_FLAG_OPEN_NO_RECALL. A string rule runs before
 // anything is opened, so for the locations a provider conventionally owns it closes that
-// window without the handle-relative metadata lookup, which would be new and unexercised
-// code on the platform with no CI job.
+// window without the handle-relative metadata lookup, which would be new Windows code that
+// only the windows-latest job would exercise.
 //
 // What it costs, stated because it is a real loss: a project inside one of these directories
 // is refused even when its files are fully hydrated -- "Always keep on this device" is common
@@ -432,22 +468,13 @@ func ReadProjectFile(home, projRel, relFile string, opts ReadOpts) ([]byte, erro
 	if underCloudStorage(rel) {
 		return nil, fmt.Errorf("%w: under a cloud storage provider's volume", ErrCloudPlaceholder)
 	}
-	placeholder := opts.CloudPlaceholder
-	if placeholder == nil {
-		placeholder = IsCloudPlaceholder
-	}
-	// One open, inspected before it is read. The placeholder check used to be made by path,
-	// against filepath.Join(home, rel), which was wrong for the reason the rest of this
-	// package exists: lstat and GetFileAttributesEx resolve every component on the way, so a
-	// directory the scanned user had replaced redirected that metadata lookup out of the home
-	// -- on Windows as far as a reparse point onto a UNC share, which would have made the
-	// preflight authenticate this host to a server named in a file that user controls. No
-	// content escaped, because the read itself went through OpenBeneath, but the preflight
-	// did I/O the containment exists to prevent.
-	//
-	// Inspecting the descriptor removes the second lookup rather than hardening it, and
-	// reading through the same descriptor means the file inspected IS the file read, so
-	// nothing can be substituted in between either.
+	// One open, inspected before it is read, by readGuarded's placeholder check. A placeholder check made by path, against
+	// filepath.Join(home, rel), would resolve every component on the way, as lstat and
+	// GetFileAttributesEx do, so a directory the scanned user replaced could redirect the
+	// metadata lookup out of the home -- on Windows as far as a reparse point onto a UNC
+	// share, making this host authenticate to a server named in a file that user controls.
+	// Inspecting the descriptor removes that second lookup, and reading through the same
+	// descriptor means the file inspected is the file read.
 	//
 	// KNOWN GAP in this ordering: the file is open by the time the attribute check can
 	// refuse it. That matters for exactly one attribute. FILE_ATTRIBUTE_RECALL_ON_OPEN is by
@@ -457,32 +484,27 @@ func ReadProjectFile(home, projRel, relFile string, opts ReadOpts) ([]byte, erro
 	// still refused before a byte is read, and SF_DATALESS on macOS likewise.
 	//
 	// The prefix rule above is what narrows it: it is a string comparison that runs before
-	// anything is opened, and it now covers the Windows sync-provider directories as well as
-	// the macOS ones, so the locations a provider conventionally owns -- including the
+	// anything is opened, and it covers the Windows sync-provider directories as well as the
+	// macOS ones, so the locations a provider conventionally owns -- including the
 	// Documents and Desktop that OneDrive's Known Folder Move relocates -- are refused with
 	// no syscall at all. What remains is a RECALL_ON_OPEN placeholder somewhere a provider
 	// does not conventionally own.
 	//
 	// Closing that completely wants a metadata lookup anchored to the parent directory's
 	// handle -- fstatat(AT_SYMLINK_NOFOLLOW) on POSIX, NtCreateFile against a RootDirectory
-	// handle on Windows -- which is new and unexercised code on the platform with no CI job.
-	// Written down rather than guessed at.
+	// handle on Windows -- which would be new code, and on Windows exercised only by the
+	// windows-latest job.
 	file, err := OpenBeneath(home, rel)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = file.Close() }()
-	// A failure to read the attributes is ignored rather than reported. It is not evidence of
-	// a placeholder, and the read below is the thing that produces a real diagnosis -- so
-	// refusing here would relabel some other failure as the one refusal that tells an
-	// operator their provider is involved.
-	// Before the per-file attribute check, because on the one platform where this fires the
-	// attribute check cannot answer at all, and because it is the cheaper call.
+	// Before readGuarded's per-file attribute check, because on the one platform where this
+	// fires the attribute check cannot answer at all, and because it is the cheaper call. Only
+	// here: a file at a fixed path in a home on a userspace filesystem is where that account's
+	// configuration lives, so ReadBoundedUnder reads it.
 	if reason := fileOnUserspaceFilesystem(file); reason != nil {
 		return nil, reason
-	}
-	if evicted, attrErr := placeholder(file); attrErr == nil && evicted {
-		return nil, fmt.Errorf("%w: content is not local", ErrCloudPlaceholder)
 	}
 	return readGuarded(file, opts)
 }
@@ -557,7 +579,9 @@ func ListDirNamesUnder(base, rel string, maxEntries int) ([]string, error) {
 //
 // truncated separates "the listing was short" from "the listing failed". Absence is neither,
 // and is reported as a nil error with no names, because most directories a client might
-// create do not exist on most hosts.
+// create do not exist on most hosts. A regular file partway down the path is absence too,
+// because nothing beneath it can exist. A symlink anywhere on the path is a refusal and is
+// returned as an error: the directory exists, and the names in it are lost.
 func ListDirNamesCapped(base, rel string, limit int) (names []string, truncated bool, err error) {
 	names, err = ListDirNamesUnder(base, rel, limit)
 	switch {
@@ -565,9 +589,118 @@ func ListDirNamesCapped(base, rel string, limit int) (names []string, truncated 
 		return names, false, nil
 	case errors.Is(err, ErrTooLarge):
 		return names, true, nil
-	case IsExpectedAbsent(err):
+	case ClassifyError(err) == ClassAbsent, IsNotDirectory(err):
 		return nil, false, nil
 	default:
 		return nil, false, err
 	}
+}
+
+// ListRecentDirNames lists the directories directly inside rel, which is relative to base, and
+// keeps the keep most recently modified, newest first, with the name breaking a tie so the
+// order is the same on every run. older counts the directories read and not kept. At most
+// readLimit entries are read; truncated reports that the directory held more, and the entries
+// past readLimit are neither kept nor counted.
+//
+// Each entry's type and modification time are read relative to the open directory, without
+// following a symlink, so a substituted entry cannot redirect the lookup out of base. Only a
+// directory in its own right is ranked, so newer entries of another kind cannot push one past
+// keep. links counts the symlinks and, on Windows, junctions, which the caller cannot read
+// through and may report; a regular file, any other kind of entry and one removed since the
+// listing are skipped. Absence and a regular file partway down the path are silent, and a
+// refusal is an error, as in ListDirNamesCapped.
+func ListRecentDirNames(base, rel string, keep, readLimit int) (names []string, older, links int,
+	truncated bool, err error) {
+	listed, links, truncated, err := listDirectories(base, rel, readLimit)
+	if err != nil || listed == nil {
+		return nil, 0, links, truncated, err
+	}
+	// Newest first, then by name.
+	sort.Slice(listed, func(i, j int) bool {
+		if !listed[i].modified.Equal(listed[j].modified) {
+			return listed[i].modified.After(listed[j].modified)
+		}
+		return listed[i].name < listed[j].name
+	})
+	if len(listed) > keep {
+		older = len(listed) - keep
+		listed = listed[:keep]
+	}
+	names = make([]string, 0, len(listed))
+	for _, entry := range listed {
+		names = append(names, entry.name)
+	}
+	return names, older, links, truncated, nil
+}
+
+// ListSubdirNames lists the directories directly inside rel, which is relative to base, sorted,
+// for a level whose child names are generated and only a directory can be one. At most
+// readLimit entries are read, and truncated reports that the directory held more; the caller
+// applies its own cap to the names, so files beside the directories cannot use it up, and it
+// can tell which of the two bounds it reached. links counts the symlinks and junctions, which
+// are left out because a read through one is refused, and which the caller reports as it
+// reports a refused listing: the directory a link stands for exists. Any other entry that is
+// not a directory is skipped, and so are absence and a regular file partway down the path; a
+// refusal is an error.
+func ListSubdirNames(base, rel string, readLimit int) (names []string, links int, truncated bool,
+	err error) {
+	listed, links, truncated, err := listDirectories(base, rel, readLimit)
+	if err != nil || listed == nil {
+		return nil, links, truncated, err
+	}
+	names = make([]string, 0, len(listed))
+	for _, entry := range listed {
+		names = append(names, entry.name)
+	}
+	sort.Strings(names)
+	return names, links, truncated, nil
+}
+
+// datedName is a directory listDirectories found, with its modification time.
+type datedName struct {
+	name     string
+	modified time.Time
+}
+
+// listDirectories reads at most readLimit entries directly inside rel and returns the ones that
+// are directories in their own right, each entry's type and time read relative to the open
+// directory without following a symlink. links counts the symlinks and junctions, and truncated
+// reports more entries than readLimit. An absent directory, or one with a regular file partway
+// down its path, returns nothing and no error.
+func listDirectories(base, rel string, readLimit int) (dirs []datedName, links int, truncated bool,
+	err error) {
+	dir, err := OpenBeneath(base, rel)
+	if err != nil {
+		if ClassifyError(err) == ClassAbsent || IsNotDirectory(err) {
+			return nil, 0, false, nil
+		}
+		return nil, 0, false, err
+	}
+	defer func() { _ = dir.Close() }()
+	info, err := dir.Stat()
+	if err != nil {
+		return nil, 0, false, err
+	}
+	if !info.IsDir() {
+		return nil, 0, false, fmt.Errorf("%w: not a directory", ErrNotRegular)
+	}
+	entries, err := dir.ReadDir(readLimit + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, 0, false, err
+	}
+	if len(entries) > readLimit {
+		entries, truncated = entries[:readLimit], true
+	}
+	dirs = make([]datedName, 0, len(entries))
+	for _, entry := range entries {
+		modified, kind, present := entryStat(dir, entry)
+		switch {
+		case !present:
+		case redirectsElsewhere(kind):
+			links++
+		case kind.IsDir():
+			dirs = append(dirs, datedName{entry.Name(), modified})
+		}
+	}
+	return dirs, links, truncated, nil
 }

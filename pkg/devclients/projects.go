@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"sort"
 	"time"
@@ -36,23 +37,47 @@ import (
 // never opened in a participating client is invisible, and so is one recorded only by a client
 // this package has no reader for.
 
-// MaxProjects bounds how many recorded projects one home may contribute.
-//
-// Measured against the development machine, which records 30 projects for Claude Code and
-// about 30 for Codex. An order of magnitude above that is unreachable by ordinary use and still
-// bounds the work: each project costs one component-wise open per file read inside it, so the
-// cap is what keeps a list someone has scripted into thousands of entries from turning a
-// bounded read into an unbounded one. A caller reports exceeding it rather than truncating
-// silently.
-const MaxProjects = 200
+// MaxProjects bounds the distinct project directories one home contributes, across every
+// client's list. A directory several clients record counts once, but a repository opened at its
+// root in one client and at a subdirectory in another counts twice, and a developer who uses
+// several editors accumulates entries in each, so a cap reached early drops whole clients. Each
+// project costs one to three component-wise opens, most of which fail at once because most
+// recorded projects hold none of the files a table looks for, so 1,000 is cheap; the query
+// budget still bounds the work, and a caller reports exceeding the cap rather than truncating
+// silently. The development machine records about 30 projects each for Claude Code and Codex.
+const MaxProjects = 1000
 
-// MaxWorkspaceDirs bounds the generated-name directories under one fork's workspaceStorage.
+// MaxProjectPathLen bounds the absolute path of a recorded project. macOS's PATH_MAX is 1,024
+// bytes, so no usable path there is longer, and on Linux, where it is 4,096, a project directory
+// deeper than 1,024 bytes is implausible. Every row about a project carries its path, and a
+// table keeps its diagnostic rows whatever its output caps, so without this bound a path of any
+// length recorded in a list the user writes would be published once per finding. A longer
+// path is counted as malformed, like any other unusable recorded path.
+const MaxProjectPathLen = 1024
+
+// MaxRecordedPathLen bounds a recorded value before it is contained: percent-encoding at most
+// triples a path, and "file://localhost/" is the longest prefix the reader accepts, so a longer
+// value cannot contain to a path within MaxProjectPathLen. The list readers blank a longer value
+// as soon as they decode it, so a list of large records is not held in memory, and Collector.Add
+// then counts it as malformed.
+const MaxRecordedPathLen = 3*MaxProjectPathLen + len("file://localhost/")
+
+// MaxWorkspaceDirs bounds the records read from one fork's workspaceStorage: the 500 most
+// recently modified of its generated-name directories, each costing a read of a small JSON
+// file.
 //
-// Separate from MaxProjects because it bounds a different thing: a directory listing, one per
-// VS Code fork, where each entry costs a read of a small JSON file. VS Code creates one of
-// these per workspace ever opened and never prunes them, so the count is higher than the
-// number of live projects by a wide margin.
+// Separate from MaxProjects because it bounds a different thing: one directory listing per
+// VS Code fork. VS Code creates one of these directories per workspace ever opened and never
+// prunes them, so on a long-lived machine most are projects nobody has opened in years. The
+// editor writes the directory's state.vscdb while the workspace is open, which updates the
+// directory's modification time, so the most recently modified are the projects in use.
 const MaxWorkspaceDirs = 500
+
+// MaxWorkspaceEntries bounds the entries listed in one fork's workspaceStorage before the most
+// recent MaxWorkspaceDirs are chosen. Each costs one fstatat, so a directory of tens of
+// thousands of records costs a bounded amount of work; a directory with more is reported as
+// truncated, and only the entries read are ordered.
+const MaxWorkspaceEntries = 5000
 
 // Origin names which client's list recorded a project. Closed, and reported rather than
 // inferred, because the answer is not recoverable from the path: the same directory can be
@@ -75,6 +100,10 @@ const (
 	// the rest -- because they share one recent-projects format and none of them has a
 	// project-scoped file another reader here depends on.
 	OriginJetBrainsRecent Origin = "jetbrains_recent"
+
+	// OriginQuery is a project the query named, in a constraint on the column that publishes a
+	// project's path, rather than one a client recorded.
+	OriginQuery Origin = "query"
 )
 
 // workspaceOriginFor maps a fork's client name to the origin its workspace list carries.
@@ -112,6 +141,17 @@ const ClaudeListMaxSize = 4 << 20 // 4 MiB
 // written by a Windows editor can start with one.
 func StripBOM(data []byte) []byte {
 	return bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
+}
+
+// ErrNullDocument reports a JSON document that is the literal null where an object is required.
+var ErrNullDocument = errors.New("devclients: the document is null, not an object")
+
+// NullDocument reports whether a JSON document is the literal null. encoding/json decodes null
+// into a struct or a map without an error and leaves it zero, so a reader that relies on the
+// error alone takes a null document for an empty one. Every other value that is not an object
+// fails the decode.
+func NullDocument(data []byte) bool {
+	return string(bytes.Trim(data, " \t\r\n")) == "null"
 }
 
 // Project is one recorded project that passed containment.
@@ -167,7 +207,17 @@ func NewCollector(home string, limit int) *Collector {
 // The order matters and is fixed: containment first, then the repeat check, then the limit.
 // A repeat is merged even when the limit has been reached, because it adds no project.
 func (c *Collector) Add(recorded string, origin Origin, allowFileURL bool) (int, bool) {
+	// A recorded value longer than MaxRecordedPathLen cannot contain to a usable path, so it is
+	// refused before it is parsed.
+	if len(recorded) > MaxRecordedPathLen {
+		c.refusals.Malformed++
+		return -1, false
+	}
 	rel, err := fsscan.ContainProjectPath(c.home, recorded, allowFileURL)
+	if err == nil && len(filepath.Join(c.home, rel)) > MaxProjectPathLen {
+		c.refusals.Malformed++
+		return -1, false
+	}
 	if err != nil {
 		switch fsscan.ClassifyError(err) {
 		case fsscan.ClassNotContained:
@@ -196,6 +246,17 @@ func (c *Collector) Add(recorded string, origin Origin, allowFileURL bool) (int,
 	return len(c.projects) - 1, true
 }
 
+// boundedRecorded returns recorded, or "" when it is longer than MaxRecordedPathLen. A list
+// reader keeps every folder it decodes until the collector sees them, and a record can be as
+// large as its file cap, so a long value is blanked at once; Collector.Add counts the empty
+// value as malformed, as it would have counted the long one.
+func boundedRecorded(recorded string) string {
+	if len(recorded) > MaxRecordedPathLen {
+		return ""
+	}
+	return recorded
+}
+
 // Projects returns the admitted projects in the order they were first admitted.
 func (c *Collector) Projects() []Project { return c.projects }
 
@@ -215,7 +276,8 @@ type ClaudeEntry struct {
 	Raw      json.RawMessage
 }
 
-// ClaudeEntries lists the projects recorded in ~/.claude.json, sorted by path.
+// ClaudeEntries lists the projects recorded in ~/.claude.json, sorted by path. A document that is
+// not JSON, or is null, is an error.
 //
 // Sorted before anything is decided: map iteration order is random, and a cap applied later
 // would otherwise admit a different set of projects on every run, which differential logging
@@ -224,12 +286,16 @@ func ClaudeEntries(data []byte) ([]ClaudeEntry, error) {
 	var doc struct {
 		Projects map[string]json.RawMessage `json:"projects"`
 	}
-	if err := json.Unmarshal(StripBOM(data), &doc); err != nil {
+	data = StripBOM(data)
+	if NullDocument(data) {
+		return nil, ErrNullDocument
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
 		return nil, err
 	}
 	out := make([]ClaudeEntry, 0, len(doc.Projects))
 	for key, raw := range doc.Projects {
-		out = append(out, ClaudeEntry{Recorded: key, Raw: raw})
+		out = append(out, ClaudeEntry{Recorded: boundedRecorded(key), Raw: raw})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Recorded < out[j].Recorded })
 	return out, nil
@@ -263,66 +329,118 @@ func CodexEntries(data []byte) ([]CodexEntry, error) {
 	}
 	out := make([]CodexEntry, 0, len(doc.Projects))
 	for key, value := range doc.Projects {
-		out = append(out, CodexEntry{Recorded: key, value: value, metadata: metadata})
+		out = append(out, CodexEntry{Recorded: boundedRecorded(key), value: value, metadata: metadata})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Recorded < out[j].Recorded })
 	return out, nil
 }
 
-// WorkspaceFolder is one project an editor recorded, exactly as it wrote it, with the origin
+// ListedFolder is one project an editor recorded, exactly as it wrote it, with the origin
 // of the editor that recorded it. FileURL is true when Recorded is a file:// URL, as VS Code
 // writes it, and false when it is a path, as JetBrains writes it after placeholder expansion.
-type WorkspaceFolder struct {
+type ListedFolder struct {
 	Recorded string
 	Origin   Origin
 	FileURL  bool
 }
 
-// WorkspaceListing is one workspaceStorage directory that could not be listed in full.
-type WorkspaceListing struct {
-	// Truncated is true when the listing filled MaxWorkspaceDirs and Count names were used.
-	// Otherwise the listing failed and Class says why.
+// DirListing is one editor directory whose records were not all read: a VS Code fork's
+// workspaceStorage, or the JetBrains configuration directory.
+type DirListing struct {
+	// Class says why the listing failed; ClassNone when it did not.
+	Class fsscan.ErrClass
+	// Truncated is true when the directory, or a .code-workspace file's folders, held more than
+	// Limit entries and Count were read.
 	Truncated bool
 	Count     int
-	Class     fsscan.ErrClass
+	Limit     int
+	// Older counts the workspaceStorage records read and not inspected, because
+	// MaxWorkspaceDirs more recently modified ones were kept. Every directory of one origin
+	// is summed into one listing.
+	Older int
+	// Origin names the client whose list this is, so a warning about it can say which.
+	Origin Origin
 }
 
-// WorkspaceScan is what the workspace enumeration found for one home.
-type WorkspaceScan struct {
-	Folders []WorkspaceFolder
+// ProjectListScan is what one editor family's project lists yielded for one home: the
+// VS Code family's workspaceStorage records, from WorkspaceFolders, or the JetBrains IDEs'
+// recentProjects.xml files, from JetBrainsProjects.
+type ProjectListScan struct {
+	Folders []ListedFolder
 
-	// Listings holds each storage directory that failed or was cut short, in the order met.
-	Listings []WorkspaceListing
+	// Listings holds each directory that failed, was cut short or had older records left
+	// unread, in the order met.
+	Listings []DirListing
 
-	// UnreadableRecords counts workspace.json files that exist and could not be read: a
-	// permission failure, the size cap, a refused hard link. Absence is not counted, because a
-	// workspaceStorage directory outlives the workspace it was created for and most entries
-	// have no readable record.
+	// UnreadableRecords counts record files, workspace.json or recentProjects.xml, that exist
+	// and could not be read: a permission failure, the size cap, a refused hard link. Absence is
+	// not counted, because a workspaceStorage directory outlives the workspace it was created
+	// for and most entries have no readable record.
 	UnreadableRecords int
 
-	// MalformedRecords counts workspace.json files that were read and did not parse. Counted
-	// apart from unreadable ones because the remedies differ.
+	// MalformedRecords counts record files that were read and did not parse. Counted apart
+	// from unreadable ones because the remedies differ.
 	MalformedRecords int
+
+	// StoredElsewhere counts the .code-workspace files not read because they are stored
+	// somewhere other than this machine's disk, by the class that said so:
+	// fsscan.ClassCloudPlaceholder, ClassNetworkFilesystem or ClassUserspaceFilesystem.
+	StoredElsewhere map[fsscan.ErrClass]int
 
 	// Stopped is true when ctx was cancelled or deadline passed before the enumeration ended.
 	Stopped bool
 }
 
+// storedElsewhere counts one workspace file stored somewhere other than this machine's disk.
+func (scan *ProjectListScan) storedElsewhere(class fsscan.ErrClass) {
+	if scan.StoredElsewhere == nil {
+		scan.StoredElsewhere = map[fsscan.ErrClass]int{}
+	}
+	scan.StoredElsewhere[class]++
+}
+
+// addListing records a listing. A failed one is kept per directory, with its own class; the
+// others are merged per origin and limit, so the directories one origin covers -- Code,
+// Code - Insiders and VSCodium, and the snap and flatpak roots -- report once, with their older
+// records summed.
+func (scan *ProjectListScan) addListing(listing DirListing) {
+	if listing.Class == fsscan.ClassNone {
+		for index := range scan.Listings {
+			existing := &scan.Listings[index]
+			if existing.Class == fsscan.ClassNone && existing.Origin == listing.Origin &&
+				existing.Limit == listing.Limit {
+				existing.Truncated = existing.Truncated || listing.Truncated
+				existing.Count = max(existing.Count, listing.Count)
+				existing.Older += listing.Older
+				return
+			}
+		}
+	}
+	scan.Listings = append(scan.Listings, listing)
+}
+
 // WorkspaceFolders lists the folders recorded in each VS Code fork's workspaceStorage.
 //
 // The directory names under workspaceStorage are generated hashes, so this is the one list a
-// fixed path cannot reach: one directory read per fork and storage root, no recursion, capped
-// at MaxWorkspaceDirs.
+// fixed path cannot reach: one directory read per fork and storage root, no recursion, at most
+// MaxWorkspaceEntries entries, of which the MaxWorkspaceDirs most recently modified directories
+// are read, newest first, so a project cap reached later drops the least recently used
+// projects. Files beside them are not records and are skipped before the cap, so they cannot
+// displace one. A record directory that is a symlink, or on Windows a junction, cannot be read
+// through and is counted as unreadable.
 //
-// Only the `folder` field is read. A multi-root workspace records `workspace` instead, naming
-// a .code-workspace file whose own folder list would have to be parsed. No development machine
-// has had one to verify that format against, so it is skipped rather than guessed at.
+// A record names one folder, or, for a multi-root workspace, a .code-workspace file whose
+// folders are read too; see addWorkspaceFile.
 //
 // appDataRoot is the account's redirected roaming root on Windows, or "" for the conventional
-// location; see RedirectAppSupport. opts governs every workspace.json read.
-func WorkspaceFolders(ctx context.Context, home, appDataRoot string, deadline time.Time,
-	opts fsscan.ReadOpts) WorkspaceScan {
-	var scan WorkspaceScan
+// location; see RedirectAppSupport. homeStorage is how the home is stored, as
+// fsscan.ProbeProjectDir classified it, which a workspace file's directory may share. opts
+// governs every read.
+func WorkspaceFolders(ctx context.Context, home, appDataRoot string, homeStorage fsscan.ErrClass,
+	deadline time.Time, opts fsscan.ReadOpts) ProjectListScan {
+	var scan ProjectListScan
+	files := &workspaceFiles{ctx: ctx, home: home, homeStorage: homeStorage, deadline: deadline,
+		opts: opts, read: map[string]workspaceFile{}, emitted: map[workspaceEmission]struct{}{}}
 	// The budget is checked before each listing and before each record, and a failed check
 	// ends the whole enumeration. Ending only the record loop let the next storage root of the
 	// same fork be listed after the budget had run out, which is filesystem work the deadline
@@ -330,7 +448,7 @@ func WorkspaceFolders(ctx context.Context, home, appDataRoot string, deadline ti
 forks:
 	for _, fork := range VSCodeFamily {
 		for _, storageRel := range AppSupportFork(fork.Dir, "User", "workspaceStorage") {
-			if !budgetRemains(ctx, deadline) {
+			if !fsscan.BudgetRemains(ctx, deadline) {
 				scan.Stopped = true
 				break forks
 			}
@@ -345,48 +463,72 @@ forks:
 			}
 			// An absent directory is the common case -- most hosts have none of the five forks
 			// installed -- so it is silent. A listing that is short still yields its names.
-			names, truncated, err := fsscan.ListDirNamesCapped(home, relPath, MaxWorkspaceDirs)
+			origin := workspaceOriginFor[fork.Client]
+			names, older, links, truncated, err := fsscan.ListRecentDirNames(home, relPath,
+				MaxWorkspaceDirs, MaxWorkspaceEntries)
 			if err != nil {
-				scan.Listings = append(scan.Listings, WorkspaceListing{Class: fsscan.ClassifyError(err)})
+				scan.addListing(DirListing{Class: fsscan.ClassifyError(err), Origin: origin})
 				continue
 			}
-			if truncated {
-				scan.Listings = append(scan.Listings, WorkspaceListing{Truncated: true, Count: len(names)})
+			scan.UnreadableRecords += links
+			if truncated || older > 0 {
+				listing := DirListing{Truncated: truncated, Limit: MaxWorkspaceEntries,
+					Older: older, Origin: origin}
+				if truncated {
+					listing.Count = MaxWorkspaceEntries
+				}
+				scan.addListing(listing)
 			}
 			for _, name := range names {
 				// This loop is the one with thousands of iterations on a long-lived workstation.
-				if !budgetRemains(ctx, deadline) {
+				if !fsscan.BudgetRemains(ctx, deadline) {
 					scan.Stopped = true
 					break forks
 				}
 				data, readErr := fsscan.ReadBoundedUnder(home,
 					filepath.Join(relPath, name, "workspace.json"), opts)
+				// Absence is silent, because a workspaceStorage directory outlives its record, and
+				// so is a regular file partway down the path. A record that exists and was not
+				// read, a refused symlink included, is counted.
 				if readErr != nil {
-					if !fsscan.IsExpectedAbsent(readErr) {
+					if fsscan.ClassifyError(readErr) != fsscan.ClassAbsent && !fsscan.IsNotDirectory(readErr) {
 						scan.UnreadableRecords++
 					}
 					continue
 				}
+				// Kept raw, so a multi-root workspace, which has no folder and names a workspace
+				// file, is told apart from a record whose folder is null or not a string, and from
+				// a top-level null or an object with neither field, which are malformed.
 				var record struct {
-					Folder string `json:"folder"`
+					Folder    json.RawMessage `json:"folder"`
+					Workspace json.RawMessage `json:"workspace"`
 				}
 				if err := json.Unmarshal(StripBOM(data), &record); err != nil {
 					scan.MalformedRecords++
 					continue
 				}
-				if record.Folder == "" {
-					continue // a multi-root workspace; see the function comment
+				if record.Folder == nil {
+					var workspace string
+					if json.Unmarshal(record.Workspace, &workspace) != nil || workspace == "" {
+						scan.MalformedRecords++
+						continue
+					}
+					if !files.add(workspace, origin, &scan) {
+						scan.Stopped = true
+						break forks
+					}
+					continue
 				}
-				scan.Folders = append(scan.Folders, WorkspaceFolder{
-					Recorded: record.Folder, Origin: workspaceOriginFor[fork.Client], FileURL: true})
+				var folder string
+				if err := json.Unmarshal(record.Folder, &folder); err != nil || folder == "" ||
+					string(record.Folder) == "null" {
+					scan.MalformedRecords++
+					continue
+				}
+				scan.Folders = append(scan.Folders, ListedFolder{
+					Recorded: boundedRecorded(folder), Origin: origin, FileURL: true})
 			}
 		}
 	}
 	return scan
-}
-
-// budgetRemains reports whether a loop may take its next step: the query is still wanted and
-// the time allowance has not run out.
-func budgetRemains(ctx context.Context, deadline time.Time) bool {
-	return ctx.Err() == nil && time.Now().Before(deadline)
 }

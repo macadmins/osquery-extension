@@ -4,11 +4,11 @@ package mcp_servers
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
 	"github.com/macadmins/osquery-extension/pkg/fsscan"
+	"github.com/macadmins/osquery-extension/pkg/testutil"
 )
 
 // TestProjectFileReadRefusesAJunctionedParentDirectory is the Windows form of
@@ -26,13 +26,7 @@ func TestProjectFileReadRefusesAJunctionedParentDirectory(t *testing.T) {
 		[]byte(`{"mcpServers":{"victim-secret":{"command":"npx","args":["x"]}}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(home, "code"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	link := filepath.Join(home, "code", "repo")
-	if output, err := exec.Command("cmd", "/c", "mklink", "/J", link, victimDir).CombinedOutput(); err != nil {
-		t.Skipf("mklink /J failed: %v: %s", err, output)
-	}
+	testutil.Junction(t, filepath.Join(home, "code", "repo"), victimDir)
 
 	data, err := fsscan.ReadProjectFile(home, filepath.Join("code", "repo"), ".mcp.json",
 		probeReadOpts(MaxFileSize))

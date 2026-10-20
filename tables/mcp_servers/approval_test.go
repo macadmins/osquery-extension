@@ -7,11 +7,14 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/macadmins/osquery-extension/pkg/devclients"
 	"github.com/macadmins/osquery-extension/pkg/fsscan"
+	"github.com/macadmins/osquery-extension/pkg/testutil"
 )
 
 // The approval resolver, including the precedence rule that makes it safe.
@@ -28,7 +31,7 @@ func TestClaudeApprovalResolver(t *testing.T) {
 		server   string
 		want     approvalState
 	}{
-		{"approved by name", claudeApproval{Certain: approvalEvidence{Enabled: []string{"srv"}}, Known: true},
+		{"approved by name", claudeApproval{Certain: approvalEvidence{Enabled: nameSetOf("srv")}, Known: true},
 			"srv", approvalEnabled},
 		{"approved by enable-all", claudeApproval{Certain: approvalEvidence{EnableAll: boolPtr(true)}, Known: true},
 			"srv", approvalEnabled},
@@ -36,24 +39,24 @@ func TestClaudeApprovalResolver(t *testing.T) {
 		{"explicit false approves nothing",
 			claudeApproval{Certain: approvalEvidence{EnableAll: boolPtr(false)}, Known: true}, "srv", approvalNotApproved},
 		// And it does not revoke a name someone approved individually.
-		{"explicit false with an individual approval", claudeApproval{Certain: approvalEvidence{EnableAll: boolPtr(false), Enabled: []string{"srv"}}, Known: true},
+		{"explicit false with an individual approval", claudeApproval{Certain: approvalEvidence{EnableAll: boolPtr(false), Enabled: nameSetOf("srv")}, Known: true},
 			"srv", approvalEnabled},
-		{"rejected by name", claudeApproval{Certain: approvalEvidence{Disabled: []string{"srv"}}, Known: true},
+		{"rejected by name", claudeApproval{Certain: approvalEvidence{Disabled: nameSetOf("srv")}, Known: true},
 			"srv", approvalDisabled},
 		{"neither", claudeApproval{Known: true}, "srv", approvalNotApproved},
 		// Rejection wins over an approval from another source, which is the documented
 		// rule and the one that stops a rejected server reading as enabled.
-		{"disabled beats enabled", claudeApproval{Certain: approvalEvidence{Enabled: []string{"srv"}, Disabled: []string{"srv"}}, Known: true},
+		{"disabled beats enabled", claudeApproval{Certain: approvalEvidence{Enabled: nameSetOf("srv"), Disabled: nameSetOf("srv")}, Known: true},
 			"srv", approvalDisabled},
-		{"disabled beats enable-all", claudeApproval{Certain: approvalEvidence{EnableAll: boolPtr(true), Disabled: []string{"srv"}}, Known: true},
+		{"disabled beats enable-all", claudeApproval{Certain: approvalEvidence{EnableAll: boolPtr(true), Disabled: nameSetOf("srv")}, Known: true},
 			"srv", approvalDisabled},
 		// A rejection that was read is decisive even when another source was not, because
 		// no unread source could license running a server this one rejects.
-		{"disabled survives unknown", claudeApproval{Certain: approvalEvidence{Disabled: []string{"srv"}}},
+		{"disabled survives unknown", claudeApproval{Certain: approvalEvidence{Disabled: nameSetOf("srv")}},
 			"srv", approvalDisabled},
 		// Approving answers do not survive it: an approval this scan could not read is not
 		// evidence of non-approval either way.
-		{"unknown when a source failed", claudeApproval{Certain: approvalEvidence{Enabled: []string{"other"}}},
+		{"unknown when a source failed", claudeApproval{Certain: approvalEvidence{Enabled: nameSetOf("other")}},
 			"srv", approvalUnknown},
 		{"enable-all does not survive unknown", claudeApproval{Certain: approvalEvidence{EnableAll: boolPtr(true)}},
 			"srv", approvalUnknown},
@@ -68,8 +71,8 @@ func TestClaudeApprovalResolver(t *testing.T) {
 
 // merge is a union with conjunctive certainty, so no source's rejection is lost.
 func TestClaudeApprovalMerge(t *testing.T) {
-	a := claudeApproval{Certain: approvalEvidence{Enabled: []string{"one"}}, Known: true}
-	b := claudeApproval{Certain: approvalEvidence{Disabled: []string{"two"}, EnableAll: boolPtr(true)}, Known: true}
+	a := claudeApproval{Certain: approvalEvidence{Enabled: nameSetOf("one")}, Known: true}
+	b := claudeApproval{Certain: approvalEvidence{Disabled: nameSetOf("two"), EnableAll: boolPtr(true)}, Known: true}
 	merged := a.merge(b)
 	if merged.Certain.EnableAll == nil || !*merged.Certain.EnableAll || !merged.Known {
 		t.Errorf("merged = %+v, want EnableAll set true and Known", merged)
@@ -135,7 +138,7 @@ func TestApprovalSettingsReachTheColumn(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
 			project := filepath.Join(home, "code", "repo")
-			writeTestFile(t, filepath.Join(project, ".mcp.json"),
+			testutil.WriteFile(t, filepath.Join(project, ".mcp.json"),
 				`{"mcpServers":{"srv":{"command":"npx","args":["x"]}}}`)
 			entry := tc.history
 			if entry == nil {
@@ -150,10 +153,10 @@ func TestApprovalSettingsReachTheColumn(t *testing.T) {
 				t.Fatal(err)
 			}
 			if tc.userSettings != "" {
-				writeTestFile(t, filepath.Join(home, ".claude", "settings.json"), tc.userSettings)
+				testutil.WriteFile(t, filepath.Join(home, ".claude", "settings.json"), tc.userSettings)
 			}
 			if tc.projSettings != "" {
-				writeTestFile(t, filepath.Join(project, ".claude", "settings.local.json"),
+				testutil.WriteFile(t, filepath.Join(project, ".claude", "settings.local.json"),
 					tc.projSettings)
 			}
 
@@ -180,7 +183,7 @@ func TestApprovalMatchesOnTheOriginalName(t *testing.T) {
 	// A name the redactor recognises as a token shape, used as a real server name.
 	const tokenShaped = "ghp_ZZZZopaquelookingbutlegitimatenameZZZZ"
 	project := filepath.Join(home, "code", "repo")
-	writeTestFile(t, filepath.Join(project, ".mcp.json"),
+	testutil.WriteFile(t, filepath.Join(project, ".mcp.json"),
 		`{"mcpServers":{"`+tokenShaped+`":{"command":"npx","args":["x"]}}}`)
 	recorded, err := json.Marshal(map[string]any{"projects": map[string]any{
 		project: map[string]any{"enabledMcpjsonServers": []string{tokenShaped}}}})
@@ -266,7 +269,7 @@ func TestPlaceholderOrderingIsStableForCollidingRedactions(t *testing.T) {
 func TestPluginAndWorkspacePassesObserveCancellation(t *testing.T) {
 	home := t.TempDir()
 	for i := 0; i < 5; i++ {
-		writeTestFile(t, filepath.Join(home, ".claude", "plugins", "cache", "mp",
+		testutil.WriteFile(t, filepath.Join(home, ".claude", "plugins", "cache", "mp",
 			"p"+itoaPad(i), "1.0.0", ".mcp.json"),
 			`{"mcpServers":{"s`+itoaPad(i)+`":{"command":"npx","args":["x"]}}}`)
 	}
@@ -288,7 +291,7 @@ func TestPluginAndWorkspacePassesObserveCancellation(t *testing.T) {
 		t.Error("an exhausted budget did not stop the plugin enumeration")
 	}
 
-	_, _, wsStopped := vscodeWorkspaceProjects(ctx, home, "", time.Now().Add(time.Minute))
+	_, _, _, wsStopped := vscodeWorkspaceProjects(ctx, home, "", fsscan.ClassNone, time.Now().Add(time.Minute))
 	if !wsStopped {
 		t.Error("an already-cancelled query did not stop the workspace enumeration")
 	}
@@ -317,10 +320,10 @@ func TestEnableAllFollowsSettingsPrecedence(t *testing.T) {
 		{"project sets false", claudeApproval{Certain: approvalEvidence{EnableAll: boolPtr(false)}, Known: true},
 			approvalNotApproved},
 		// The project opts out but approves this server by name.
-		{"project sets false and names the server", claudeApproval{Certain: approvalEvidence{EnableAll: boolPtr(false), Enabled: []string{"srv"}}, Known: true},
+		{"project sets false and names the server", claudeApproval{Certain: approvalEvidence{EnableAll: boolPtr(false), Enabled: nameSetOf("srv")}, Known: true},
 			approvalEnabled},
 		// A rejection beats everything, from any source.
-		{"project rejects the server", claudeApproval{Certain: approvalEvidence{Disabled: []string{"srv"}}, Known: true}, approvalDisabled},
+		{"project rejects the server", claudeApproval{Certain: approvalEvidence{Disabled: nameSetOf("srv")}, Known: true}, approvalDisabled},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := user.overlay(tc.project).stateFor("srv"); got != tc.want {
@@ -362,11 +365,9 @@ func TestWorkspaceTrustGatesCommittedApprovals(t *testing.T) {
 			want:      approvalEnabled,
 		},
 		{
-			// An ordinary untrusted project: Claude waits for the trust dialog before
-			// applying the local file's approvals at all, so nothing is approved. This
-			// assertion previously expected enabled, on the reasoning that an untracked
-			// file belongs to whoever runs Claude -- which described the behaviour before
-			// v2.1.207 and is no longer true.
+			// An ordinary untrusted project: Claude (v2.1.207 and later) waits for the trust
+			// dialog before applying the local file's approvals at all, so nothing is
+			// approved.
 			name:  "untrusted ordinary project: local file does not approve",
 			local: `{"enabledMcpjsonServers":["srv"]}`,
 			want:  approvalNotApproved,
@@ -399,11 +400,11 @@ func TestWorkspaceTrustGatesCommittedApprovals(t *testing.T) {
 			home := t.TempDir()
 			const projRel = "code/repo"
 			if tc.committed != "" {
-				writeTestFile(t, filepath.Join(home, projRel, ".claude", "settings.json"),
+				testutil.WriteFile(t, filepath.Join(home, projRel, ".claude", "settings.json"),
 					tc.committed)
 			}
 			if tc.local != "" {
-				writeTestFile(t,
+				testutil.WriteFile(t,
 					filepath.Join(home, projRel, ".claude", "settings.local.json"), tc.local)
 			}
 			evidence, warnings := projectApprovalSettings(home, projRel, tc.trusted)
@@ -419,17 +420,15 @@ func TestWorkspaceTrustGatesCommittedApprovals(t *testing.T) {
 
 // Project settings are read through the project guard, so the cloud refusal applies to them.
 //
-// They were read with ReadBoundedUnder, which skips the cloud-directory refusal and the
-// placeholder check -- and because the settings pass runs before the configuration probes, it
-// was the first thing to touch a provider-backed file and could start the download the later
-// probe would have refused.
+// The settings pass runs before the configuration probes, so a read that skips the
+// cloud-directory refusal and the placeholder check would be the first thing to touch a
+// provider-backed file, and could start the download the later probe refuses.
 //
 // Darwin-only, and that is the point rather than a convenience. `Library/Mobile Documents` is
 // a macOS file-provider mount and the prefix rule fires only there; on Linux and Windows a
-// directory of that name is an ordinary directory and must be read. An earlier version of
-// this test asserted the refusal unconditionally, which passes on the development machine and
-// fails the coverage workflow, which runs `go test ./...` on Ubuntu -- so it would have broken
-// CI rather than caught anything. The companion test below covers the other platforms.
+// directory of that name is an ordinary directory and must be read. Asserted unconditionally,
+// the refusal would fail the coverage workflow, which runs `go test ./...` on Ubuntu. The
+// companion test below covers the other platforms.
 func TestProjectApprovalSettingsRespectCloudRefusal(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("the Mobile Documents prefix is a macOS file-provider convention; " +
@@ -437,7 +436,7 @@ func TestProjectApprovalSettingsRespectCloudRefusal(t *testing.T) {
 	}
 	home := t.TempDir()
 	projRel := filepath.Join("Library", "Mobile Documents", "repo")
-	writeTestFile(t, filepath.Join(home, projRel, ".claude", "settings.local.json"),
+	testutil.WriteFile(t, filepath.Join(home, projRel, ".claude", "settings.local.json"),
 		`{"disabledMcpjsonServers":["srv"]}`)
 
 	evidence, warnings := projectApprovalSettings(home, projRel, true)
@@ -471,7 +470,7 @@ func TestProjectApprovalSettingsReadOrdinaryDirectoriesElsewhere(t *testing.T) {
 	}
 	home := t.TempDir()
 	projRel := filepath.Join("Library", "Mobile Documents", "repo")
-	writeTestFile(t, filepath.Join(home, projRel, ".claude", "settings.local.json"),
+	testutil.WriteFile(t, filepath.Join(home, projRel, ".claude", "settings.local.json"),
 		`{"disabledMcpjsonServers":["srv"]}`)
 
 	evidence, warnings := projectApprovalSettings(home, projRel, true)
@@ -494,7 +493,7 @@ func TestUnusableApprovalSettingsAreDiagnosed(t *testing.T) {
 	home := t.TempDir()
 	const projRel = "code/repo"
 	// The reproduction: a field of the wrong type, which decodes to an error.
-	writeTestFile(t, filepath.Join(home, projRel, ".claude", "settings.local.json"),
+	testutil.WriteFile(t, filepath.Join(home, projRel, ".claude", "settings.local.json"),
 		`{"enabledMcpjsonServers":123}`)
 
 	evidence, warnings := projectApprovalSettings(home, projRel, true)
@@ -540,7 +539,7 @@ func TestPlaceholderOrderIsTotalAcrossSections(t *testing.T) {
 	var first map[string]string
 	for attempt := 0; attempt < 10; attempt++ {
 		rows := finishProcessing("/home/alice", []byte(doc), nil,
-			"/home/alice/.claude.json", "alice", "claude_code", false, claudeJSONMaxSize,
+			"/home/alice/.claude.json", "alice", "claude_code", false, devclients.ClaudeListMaxSize,
 			extractClaudeCode)
 		got := map[string]string{}
 		for _, row := range rows {
@@ -566,6 +565,46 @@ func TestPlaceholderOrderIsTotalAcrossSections(t *testing.T) {
 	}
 }
 
+// Two overlong project keys declaring the same unpublishable name keep stable ordinals, although
+// their published source_context is the same section name with the key left out.
+func TestPlaceholderOrderIsTotalForOverlongProjectKeys(t *testing.T) {
+	const shared = "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	one := "/home/alice/" + strings.Repeat("a", devclients.MaxProjectPathLen)
+	two := "/home/alice/" + strings.Repeat("b", devclients.MaxProjectPathLen)
+	doc := `{"projects":{` +
+		`"` + one + `":{"mcpServers":{"` + shared + `":{"command":"npx","args":["a"]}}},` +
+		`"` + two + `":{"mcpServers":{"` + shared + `":{"command":"uvx","args":["b"]}}}}}`
+
+	var first map[string]string
+	for attempt := 0; attempt < 20; attempt++ {
+		rows := finishProcessing("/home/alice", []byte(doc), nil,
+			"/home/alice/.claude.json", "alice", "claude_code", false, devclients.ClaudeListMaxSize,
+			extractClaudeCode)
+		got := map[string]string{}
+		for _, row := range rows {
+			if row.rawName == "" {
+				continue
+			}
+			// Keyed on the command, because the published section is the same for both rows.
+			published := serverToRow(row)
+			got[published["command_basename"]] = published["server_name"]
+		}
+		if len(got) != 2 {
+			t.Fatalf("expected two servers, got %v", got)
+		}
+		if first == nil {
+			first = got
+			continue
+		}
+		for command, placeholder := range first {
+			if got[command] != placeholder {
+				t.Fatalf("placeholder for %s changed between runs: %q then %q",
+					command, placeholder, got[command])
+			}
+		}
+	}
+}
+
 // A refused approval record leaves the answer unknown, not not_approved.
 //
 // IsExpectedAbsent covers a symlink refusal as well as a missing file, which is right for
@@ -579,7 +618,7 @@ func TestPlaceholderOrderIsTotalAcrossSections(t *testing.T) {
 func TestRefusedApprovalRecordLeavesApprovalUnknown(t *testing.T) {
 	home := t.TempDir()
 	project := filepath.Join(home, "code", "repo")
-	writeTestFile(t, filepath.Join(project, ".mcp.json"),
+	testutil.WriteFile(t, filepath.Join(project, ".mcp.json"),
 		`{"mcpServers":{"srv":{"command":"npx","args":["x"]}}}`)
 	recorded, err := json.Marshal(map[string]any{"projects": map[string]any{
 		project: map[string]any{"hasTrustDialogAccepted": true}}})
@@ -592,7 +631,7 @@ func TestRefusedApprovalRecordLeavesApprovalUnknown(t *testing.T) {
 	// The account-wide settings file is a symlink, which the traversal refuses. Its target
 	// would have approved everything.
 	target := filepath.Join(home, "elsewhere-settings.json")
-	writeTestFile(t, target, `{"enableAllProjectMcpServers":true}`)
+	testutil.WriteFile(t, target, `{"enableAllProjectMcpServers":true}`)
 	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -632,21 +671,18 @@ func TestAbsentApprovalRecordStaysKnownEmpty(t *testing.T) {
 	}
 }
 
-// Both settings files failing produce distinguishable diagnostics.
-//
-// Every decode error was labelled top_level_is_not_an_object and every project diagnostic
-// named only the directory, so two simultaneous failures were two identical rows that were
-// both wrong about the cause.
+// Both settings files failing produce distinguishable diagnostics: each names its file and
+// its own kind of decode failure, so two simultaneous failures are not two identical rows.
 func TestSimultaneousSettingsFailuresAreDistinguishable(t *testing.T) {
 	home := t.TempDir()
 	// A directory name no sentence in the catalogue could contain, so the leak assertion
-	// below cannot collide with ordinary prose. An earlier version used "repo", which is a
-	// substring of "reported" in the warning's own sentence -- the assertion failed on the
-	// word, not on a leak.
+	// below cannot collide with ordinary prose. A name such as "repo" is a substring of
+	// "reported" in the warning's own sentence, so the assertion would fail on the word, not
+	// on a leak.
 	const projRel = "code/zqxjkprojectdir"
 	// One a syntax error, one a field of the wrong type, so the shapes must differ too.
-	writeTestFile(t, filepath.Join(home, projRel, ".claude", "settings.json"), `{ not json`)
-	writeTestFile(t, filepath.Join(home, projRel, ".claude", "settings.local.json"),
+	testutil.WriteFile(t, filepath.Join(home, projRel, ".claude", "settings.json"), `{ not json`)
+	testutil.WriteFile(t, filepath.Join(home, projRel, ".claude", "settings.local.json"),
 		`{"enabledMcpjsonServers":123}`)
 
 	_, warnings := projectApprovalSettings(home, projRel, true)
@@ -685,21 +721,19 @@ func TestSimultaneousSettingsFailuresAreDistinguishable(t *testing.T) {
 
 // Placeholder ordinals stay put when two sections' internal contexts collide after redaction.
 //
-// The tie-break was the *published* SourceContext, which materialize has already redacted, and
-// redaction is many-to-one. Two ~/.claude.json project paths that differ only inside a
-// credential-shaped assignment become one string, so the sort compared equal keys and
-// sort.SliceStable preserved whatever map iteration had produced: the two servers swapped
-// ordinals across runs over unchanged bytes.
+// Redaction is many-to-one. Two ~/.claude.json project paths that differ only inside a
+// credential-shaped assignment become one *published* SourceContext, so a tie-break on that
+// value compares equal keys and sort.SliceStable keeps whatever order map iteration produced:
+// the two servers would swap ordinals across runs over unchanged bytes. The sort breaks ties
+// on the unredacted context instead.
 //
-// The fixture has to collide on the *comparator's* key, which is the point an earlier version
-// of this test missed. It used `a --token=AAAA` and `b --token=BBBB`, whose redacted forms are
-// `projects[/home/alice/a --token=[REDACTED]` and `...b --token=[REDACTED]` -- still different,
-// so the old comparator would have ordered them deterministically and the test protected
-// nothing. It appeared to pass because it asserted collision on the value after serverToRow,
-// where containment drops both contexts to "". Identical prefixes are what actually collide.
+// The fixture must collide on the published context itself. `a --token=AAAA` and
+// `b --token=BBBB` redact to different strings and do not tie; identical prefixes do. A
+// collision asserted after serverToRow proves nothing, because containment drops both
+// contexts to the empty string there.
 func TestPlaceholderOrderSurvivesContextRedaction(t *testing.T) {
 	const shared = "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-	// Identical directory names; only the credential value differs, so redactSecret maps
+	// Identical directory names; only the credential value differs, so redact.Secret maps
 	// both contexts to one string while the originals stay distinct.
 	doc := `{"projects":{` +
 		`"/home/alice/repo --token=AAAA":{"mcpServers":{"` + shared +
@@ -710,7 +744,7 @@ func TestPlaceholderOrderSurvivesContextRedaction(t *testing.T) {
 	var first map[string]string
 	for attempt := 0; attempt < 12; attempt++ {
 		rows := finishProcessing("/home/alice", []byte(doc), nil,
-			"/home/alice/.claude.json", "alice", "claude_code", false, claudeJSONMaxSize,
+			"/home/alice/.claude.json", "alice", "claude_code", false, devclients.ClaudeListMaxSize,
 			extractClaudeCode)
 		got := map[string]string{}
 		var published, raw []string
@@ -728,13 +762,13 @@ func TestPlaceholderOrderSurvivesContextRedaction(t *testing.T) {
 			t.Fatalf("expected two servers, got %v", got)
 		}
 		if attempt == 0 {
-			// The fixture is only a regression if the old comparator's key really ties.
+			// The fixture only tests the tie-break if the published contexts really tie.
 			if published[0] != published[1] {
-				t.Fatalf("fixture wrong: the redacted contexts do not collide, so the "+
-					"previous comparator would still have ordered these: %q vs %q",
+				t.Fatalf("fixture wrong: the redacted contexts do not collide, so a sort "+
+					"on them alone would still order these: %q vs %q",
 					published[0], published[1])
 			}
-			// And only meaningful if the new key distinguishes them.
+			// And only means something if the unredacted contexts differ.
 			if raw[0] == raw[1] {
 				t.Fatalf("fixture wrong: the unredacted contexts are identical too, so "+
 					"there is no total order to establish: %q", raw[0])
@@ -798,14 +832,14 @@ func TestUncertainScalarOverrideYieldsUnknown(t *testing.T) {
 			// An individual approval from an eligible source survives an uncertain blanket
 			// opt-out, because it holds under both readings.
 			name:  "individual approval beside an uncertain opt-out",
-			lower: approvalEvidence{Enabled: []string{"srv"}},
+			lower: approvalEvidence{Enabled: nameSetOf("srv")},
 			local: approvalEvidence{EnableAll: &no},
 			want:  approvalEnabled,
 		},
 		{
 			// And a rejection is decisive whatever the uncertain source says.
 			name:  "rejection beside an uncertain approval",
-			lower: approvalEvidence{Disabled: []string{"srv"}},
+			lower: approvalEvidence{Disabled: nameSetOf("srv")},
 			local: approvalEvidence{EnableAll: &yes},
 			want:  approvalDisabled,
 		},
@@ -832,13 +866,13 @@ func TestUncertainScalarOverrideYieldsUnknown(t *testing.T) {
 func TestUncertainLocalOptOutEndToEnd(t *testing.T) {
 	home := t.TempDir()
 	project := filepath.Join(home, "code", "repo")
-	writeTestFile(t, filepath.Join(project, ".mcp.json"),
+	testutil.WriteFile(t, filepath.Join(project, ".mcp.json"),
 		`{"mcpServers":{"srv":{"command":"npx","args":["x"]}}}`)
 	// Account-wide blanket approval.
-	writeTestFile(t, filepath.Join(home, ".claude", "settings.json"),
+	testutil.WriteFile(t, filepath.Join(home, ".claude", "settings.json"),
 		`{"enableAllProjectMcpServers":true}`)
 	// The project's local file opts out, and its eligibility needs git.
-	writeTestFile(t, filepath.Join(project, ".claude", "settings.local.json"),
+	testutil.WriteFile(t, filepath.Join(project, ".claude", "settings.local.json"),
 		`{"enableAllProjectMcpServers":false}`)
 	recorded, err := json.Marshal(map[string]any{"projects": map[string]any{
 		project: map[string]any{"hasTrustDialogAccepted": true}}})
@@ -868,11 +902,11 @@ func TestUncertainLocalOptOutEndToEnd(t *testing.T) {
 
 // A per-server lookup must not copy the approval lists.
 //
-// stateFor resolved the uncertain reading by building `Certain.overlay(Pending)` and throwing
-// it away, so each row allocated both concatenated name lists. The lists are fixed while a
-// project's rows are evaluated, so the cost was server count x list length -- an 889 KB
-// settings file naming 100,000 servers, under the 1 MiB cap, copied 1.6 MB per lookup. A read
-// cap bounds one input and not that product, which is why the bound is asserted here instead.
+// Building `Certain.overlay(Pending)` per lookup would allocate both concatenated name lists
+// for every row. The lists are fixed while a project's rows are evaluated, so the cost would
+// be server count x list length: an 889 KB settings file naming 100,000 servers, under the
+// 1 MiB cap, would copy 1.6 MB per lookup. A read cap bounds one input and not that product,
+// which is why the bound is asserted here instead.
 //
 // Asserted as zero allocations rather than as a ratio: the resolution is membership tests over
 // slices the caller already holds, so there is nothing it legitimately needs to allocate, and
@@ -884,13 +918,13 @@ func TestApprovalLookupDoesNotCopyLists(t *testing.T) {
 		names = append(names, fmt.Sprintf("server-%05d", index))
 	}
 	evidence := claudeApproval{
-		Certain:    approvalEvidence{EnableAll: &yes, Enabled: names, Disabled: names},
-		Pending:    approvalEvidence{Enabled: names, Disabled: names},
+		Certain:    approvalEvidence{EnableAll: &yes, Enabled: newNameSet(names), Disabled: newNameSet(names)},
+		Pending:    approvalEvidence{Enabled: newNameSet(names), Disabled: newNameSet(names)},
 		HasPending: true,
 		Known:      true,
 	}
 	// A name in neither list, so both resolutions run to completion rather than returning
-	// from the first loop -- the worst case, and the one the overlay used to allocate for.
+	// from the first loop -- the worst case, and the one a per-lookup overlay allocates for.
 	const absent = "not-in-any-list"
 	if state := evidence.stateFor(absent); state != approvalEnabled {
 		t.Fatalf("fixture resolves to %q, so this is not measuring the two-outcome path", state)
@@ -900,7 +934,7 @@ func TestApprovalLookupDoesNotCopyLists(t *testing.T) {
 	})
 	if perLookup > 0 {
 		t.Errorf("a lookup allocated %.0f times; the approval lists are being copied per "+
-			"server again", perLookup)
+			"server", perLookup)
 	}
 }
 
@@ -912,12 +946,120 @@ func BenchmarkApprovalStateFor(b *testing.B) {
 		names = append(names, fmt.Sprintf("server-%05d", index))
 	}
 	evidence := claudeApproval{
-		Certain:    approvalEvidence{EnableAll: &yes, Enabled: names, Disabled: names},
-		Pending:    approvalEvidence{Enabled: names, Disabled: names},
+		Certain:    approvalEvidence{EnableAll: &yes, Enabled: newNameSet(names), Disabled: newNameSet(names)},
+		Pending:    approvalEvidence{Enabled: newNameSet(names), Disabled: newNameSet(names)},
 		HasPending: true,
 		Known:      true,
 	}
 	for b.Loop() {
 		evidence.stateFor("not-in-any-list")
+	}
+}
+
+// A null settings file is unusable, not a file that approves nothing: the approval state is
+// unknown and the warning says the top level is not an object, for the user's file and a
+// project's.
+func TestANullApprovalSettingsFileIsDiagnosed(t *testing.T) {
+	home := t.TempDir()
+	const projRel = "code/repo"
+	testutil.WriteFile(t, filepath.Join(home, projRel, ".claude", "settings.local.json"), "null")
+	testutil.WriteFile(t, filepath.Join(home, ".claude", "settings.json"), "\xEF\xBB\xBFnull\n")
+	project, projectWarnings := projectApprovalSettings(home, projRel, true)
+	user, userWarnings := userApprovalSettings(home)
+	for name, testCase := range map[string]struct {
+		evidence claudeApproval
+		warnings []warning
+		key      string
+	}{
+		"project": {project, projectWarnings, "settings_local_json"},
+		"user":    {user, userWarnings, settingsSourceKey(claudeSettingsRel)},
+	} {
+		if testCase.evidence.Known || testCase.evidence.stateFor("srv") != approvalUnknown {
+			t.Errorf("%s: evidence = %+v, want unknown", name, testCase.evidence)
+		}
+		if len(testCase.warnings) != 1 || testCase.warnings[0].Code != warnApprovalSettingsUnreadable ||
+			testCase.warnings[0].Shape != shapeNotAnObject || testCase.warnings[0].Key != testCase.key {
+			t.Errorf("%s: warnings = %+v", name, testCase.warnings)
+		}
+	}
+}
+
+// TestUserApprovalSettingsAreReadOnlyForDeclaredServers: the account-wide settings govern only
+// the servers a Claude project's .mcp.json declares, so a home whose recorded projects declare
+// none gets no approval_settings_unreadable row for a malformed copy. Once a project declares a
+// server, the file is read, its failure reported and the server's approval unknown; a readable
+// copy still approves.
+func TestUserApprovalSettingsAreReadOnlyForDeclaredServers(t *testing.T) {
+	home := buildFakeHomeWithProjects(t, map[string]string{".claude/settings.json": "null"}, "code/repo")
+	scan := func() (approvalState, bool) {
+		approval, warned := approvalState(""), false
+		for _, row := range discoverForTest("alice", home) {
+			if row.ServerName == "srv" {
+				approval = row.Approval
+			}
+			warned = warned || row.Warning.Code == warnApprovalSettingsUnreadable
+		}
+		return approval, warned
+	}
+	if _, warned := scan(); warned {
+		t.Error("approval_settings_unreadable with no project declaring a server")
+	}
+	testutil.WriteFile(t, filepath.Join(home, "code", "repo", ".mcp.json"),
+		`{"mcpServers":{"srv":{"command":"npx","args":["x"]}}}`)
+	if approval, warned := scan(); approval != approvalUnknown || !warned {
+		t.Errorf("approval = %q, warned = %v; want unknown and approval_settings_unreadable", approval, warned)
+	}
+	testutil.WriteFile(t, filepath.Join(home, ".claude", "settings.json"), `{"enabledMcpjsonServers":["srv"]}`)
+	if approval, warned := scan(); approval != approvalEnabled || warned {
+		t.Errorf("approval = %q, warned = %v; want enabled by the account-wide settings", approval, warned)
+	}
+}
+
+// nameSetOf is a nameSet of names, for writing evidence in a test.
+func nameSetOf(names ...string) nameSet { return newNameSet(names) }
+
+// sorted lists every name in s once, in order, for comparing evidence in a test.
+func (s nameSet) sorted() []string {
+	seen := map[string]struct{}{}
+	for _, set := range s {
+		for name := range set {
+			seen[name] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TestApprovalResolutionScalesWithSources: an account-wide settings file and a project's two
+// files naming 90,000 servers each, merged into 1,000 projects of 20 servers, resolve well
+// inside the bound. The lists were copied into every project's evidence and searched name by
+// name for every server, which took 3.5 s for 20,000 lookups over lists of that size, so a
+// few such accounts ran a query past the time osquery allows an extension. The bound is
+// generous enough for the race detector and far below what a copy or a linear search costs.
+func TestApprovalResolutionScalesWithSources(t *testing.T) {
+	names := make([]string, 90000)
+	for index := range names {
+		names[index] = fmt.Sprintf("server-%05d", index)
+	}
+	user := claudeApproval{Certain: approvalEvidence{Enabled: newNameSet(names),
+		Disabled: newNameSet(names[:45000])}, Known: true}
+	project := claudeApproval{Certain: approvalEvidence{Enabled: newNameSet(names)},
+		Pending: approvalEvidence{Enabled: newNameSet(names)}, HasPending: true, Known: true}
+	const absent = "not-in-any-list"
+	start := time.Now()
+	for range 1000 {
+		evidence := user.merge(claudeApproval{Known: true}).overlay(project)
+		for range 20 {
+			if state := evidence.stateFor(absent); state != approvalNotApproved {
+				t.Fatalf("fixture resolves to %q", state)
+			}
+		}
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("20,000 lookups over 90,000-name sources took %v", elapsed)
 	}
 }

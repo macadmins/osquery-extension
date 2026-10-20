@@ -1,6 +1,7 @@
 package mcp_servers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"path/filepath"
@@ -15,23 +16,6 @@ import (
 // shared with every table that reads project-local files, in pkg/devclients. This file adds
 // what only this table needs: the approval and trust evidence that decides whether a project's
 // servers are live, and the configuration files each client's list licenses opening.
-
-// The shared discovery names, kept under this package's spellings so its call sites and tests
-// are unchanged.
-const (
-	maxProjects      = devclients.MaxProjects
-	maxWorkspaceDirs = devclients.MaxWorkspaceDirs
-)
-
-type originCode = devclients.Origin
-
-const (
-	originClaudeJSON        = devclients.OriginClaudeJSON
-	originCodexTOML         = devclients.OriginCodexTOML
-	originVSCodeWorkspace   = devclients.OriginVSCodeWorkspace
-	originCursorWorkspace   = devclients.OriginCursorWorkspace
-	originWindsurfWorkspace = devclients.OriginWindsurfWorkspace
-)
 
 // approvalState says whether a declared server is actually live.
 //
@@ -51,7 +35,7 @@ const (
 	// approvalEnabled: declared and approved, so the client will run it.
 	approvalEnabled approvalState = "enabled"
 	// approvalNotApproved: declared, never approved, so the client will not run it until
-	// someone says yes. This is the value that was previously reported as enabled.
+	// someone says yes.
 	approvalNotApproved approvalState = "not_approved"
 	// approvalDisabled: declared and explicitly turned off.
 	approvalDisabled approvalState = "disabled"
@@ -85,13 +69,11 @@ type projectRef struct {
 	// configuration files are probed inside it.
 	//
 	// A set rather than one value, because deduplication merges a project recorded by
-	// several clients and the provenance of all of them matters. An earlier version kept a
-	// single Origin and Client from whichever sighting happened to be first, never read
-	// them, and applied every probe to every project -- so a directory known only to Codex
-	// produced a vscode row because a dormant .vscode/mcp.json happened to sit in it. That
-	// is a claim the evidence does not support: nothing established that VS Code had ever
-	// opened the directory, let alone that it would load that file.
-	Origins map[originCode]struct{}
+	// several clients and each one's files are probed. Probing every client's file in every
+	// project would report a dormant .vscode/mcp.json in a directory only Codex recorded, a
+	// claim the evidence does not support: nothing establishes that VS Code ever opened the
+	// directory, let alone that it would load that file.
+	Origins map[devclients.Origin]struct{}
 
 	// Approval is every piece of evidence bearing on whether this project's .mcp.json
 	// servers will run: the two name arrays from ~/.claude.json's project entry, plus the
@@ -130,17 +112,17 @@ type projectRef struct {
 // VS Code's workspace list covers both `.vscode/mcp.json` and `.cursor/mcp.json` because the
 // forks share the workspaceStorage layout and a Cursor workspace is recorded the same way,
 // which is how the fork is identified in the first place.
-var originProbes = map[originCode][]string{
-	originClaudeJSON:      {".mcp.json"},
-	originVSCodeWorkspace: {filepath.Join(".vscode", "mcp.json")},
-	originCursorWorkspace: {filepath.Join(".cursor", "mcp.json")},
-	originCodexTOML:       {filepath.Join(".codex", "config.toml")},
+var originProbes = map[devclients.Origin][]string{
+	devclients.OriginClaudeJSON:      {".mcp.json"},
+	devclients.OriginVSCodeWorkspace: {filepath.Join(".vscode", "mcp.json")},
+	devclients.OriginCursorWorkspace: {filepath.Join(".cursor", "mcp.json")},
+	devclients.OriginCodexTOML:       {filepath.Join(".codex", "config.toml")},
 	// Windsurf records workspaces the same way and has no project-scoped MCP path this
 	// table reads: its configuration is the user-scope .codeium/windsurf/mcp_config.json,
 	// which a fixed probe already covers. Present as an origin so a Windsurf-only project
 	// is still deduplicated and reported rather than silently absent, and mapped to nothing
 	// rather than guessed at. Recorded as a known omission in the table README.
-	originWindsurfWorkspace: nil,
+	devclients.OriginWindsurfWorkspace: nil,
 }
 
 // probesFor returns the relative paths worth probing inside this project, given which client
@@ -183,15 +165,6 @@ func (p projectRef) approvalFor(client, serverName string) approvalState {
 	return p.Approval.stateFor(serverName)
 }
 
-// claudeProjectsRelPath and codexProjectsRelPath are both a source of servers and a source of
-// the project list. That dual role is what makes the read cap on ~/.claude.json load-bearing:
-// an oversized file costs the account its project inventory and its approval state, not only
-// one client's global servers. See devclients.ClaudeListMaxSize.
-const (
-	claudeProjectsRelPath = devclients.ClaudeListPath
-	codexProjectsRelPath  = devclients.CodexListPath
-)
-
 // claudeProjects lists the projects recorded in ~/.claude.json.
 //
 // Four things are read from a project entry: the key, which is the project path, the two
@@ -209,12 +182,12 @@ func claudeProjects(home string, data []byte) ([]projectRef, []warning) {
 	if err != nil {
 		// The file is not JSON. The direct probe over the same bytes reports the parse
 		// failure for the servers; this reports the separate and larger loss, which is that
-		// no project-local configuration can be found for this account at all.
-		return nil, []warning{{Code: warnProjectListUnreadable}}
+		// no project-local configuration can be found through this list.
+		return nil, []warning{{Code: warnProjectListUnreadable,
+			Source: devclients.OriginClaudeJSON}}
 	}
 
-	userSettings, warnings := userApprovalSettings(home)
-	collector := newProjectCollector(home, originClaudeJSON)
+	collector := newProjectCollector(home)
 	for _, recorded := range entries {
 		var entry struct {
 			// The only fields read. Adding one here needs the same scrutiny as a new
@@ -230,24 +203,22 @@ func claudeProjects(home string, data []byte) ([]projectRef, []warning) {
 		// But the loss is recorded rather than swallowed. Without known, an undecodable
 		// entry left both lists empty and every server in that project was reported
 		// `not_approved` -- a positive claim resting on evidence that was never read.
-		// The project entry's own arrays, which is where the interactive approval prompt
-		// records its answer, merged with the account-wide settings keys. The settings are
-		// read once per home rather than per project.
 		// The project-history arrays, which is where the interactive approval prompt records
 		// its answer. Certain: this is the user's own recorded decision, not a
 		// repository-provided one, so no trust or tracking condition applies to it.
-		history := claudeApproval{Known: json.Unmarshal(recorded.Raw, &entry) == nil}
+		// A null entry decodes without error into empty lists, which would read as a positive
+		// "approved nothing"; it records nothing, so it is unknown.
+		isNull := bytes.Equal(bytes.TrimSpace(recorded.Raw), []byte("null"))
+		history := claudeApproval{Known: !isNull && json.Unmarshal(recorded.Raw, &entry) == nil}
 		history.Certain = approvalEvidence{
-			Enabled:  entry.EnabledMcpjsonServers,
-			Disabled: entry.DisabledMcpjsonServers,
+			Enabled:  newNameSet(entry.EnabledMcpjsonServers),
+			Disabled: newNameSet(entry.DisabledMcpjsonServers),
 		}
-		// The account-wide settings are the lower precedence of the two, and the project's
-		// own files overlay both later, once containment has admitted the project.
-		collector.addClaude(recorded.Recorded, userSettings.merge(history),
-			entry.HasTrustDialogAccepted)
+		// The account-wide settings, and then the project's own files, are applied by
+		// probeProjects, once the project declares a server they could govern.
+		collector.addClaude(recorded.Recorded, history, entry.HasTrustDialogAccepted)
 	}
-	refs, collectorWarnings := collector.result()
-	return refs, append(warnings, collectorWarnings...)
+	return collector.result()
 }
 
 // codexProjects lists the projects recorded in ~/.codex/config.toml.
@@ -259,10 +230,10 @@ func claudeProjects(home string, data []byte) ([]projectRef, []warning) {
 func codexProjects(home string, data []byte) ([]projectRef, []warning) {
 	entries, err := devclients.CodexEntries(data)
 	if err != nil {
-		return nil, []warning{{Code: warnProjectListUnreadable}}
+		return nil, []warning{{Code: warnProjectListUnreadable, Source: devclients.OriginCodexTOML}}
 	}
 
-	collector := newProjectCollector(home, originCodexTOML)
+	collector := newProjectCollector(home)
 	for _, recorded := range entries {
 		// One field is decoded from the value, and it decides whether the project's config
 		// is configuration at all.
@@ -286,10 +257,8 @@ func codexProjects(home string, data []byte) ([]projectRef, []warning) {
 	}
 	refs, warnings := collector.result()
 	// Counted from the admitted refs rather than while iterating the file, so a project
-	// containment refused does not also report a trust problem. An entry outside the home
-	// produced both project_outside_home and project_trust_unknown, and the second is
-	// home-scope, so a project explicitly beyond the discovery boundary flipped an unrelated
-	// healthy row to scan_complete = 0.
+	// containment refused does not also report a trust problem: trust is a question only for
+	// a project this table would inspect.
 	untrusted, unknownTrust := 0, 0
 	for _, ref := range refs {
 		switch {
@@ -314,32 +283,48 @@ func codexProjects(home string, data []byte) ([]projectRef, []warning) {
 // does not recognise must not read as trusted, and Codex is free to add others.
 const codexTrustedLevel = "trusted"
 
-// vscodeWorkspaceProjects lists the folders recorded in each VS Code fork's workspaceStorage.
+// vscodeWorkspaceProjects lists the folders recorded in each VS Code fork's workspaceStorage,
+// including the folders of a multi-root workspace's .code-workspace file; see
+// devclients.WorkspaceFolders.
 //
-// The directory names under workspaceStorage are generated hashes, so this is the one place a
-// fixed path cannot reach and fsscan.ListDirNamesUnder is used instead: one directory read per
-// fork, no recursion, capped.
-//
-// Only the `folder` field is read. A multi-root workspace records `workspace` instead, naming
-// a .code-workspace file whose own folder list would have to be parsed, and this machine has
-// no workspaceStorage at all to verify that shape against -- so it is documented as a known
-// omission rather than guessed at. See the table README.
+// stored counts the .code-workspace files not read because they are stored somewhere other than
+// this machine's disk, for probeProjects to report in the same rows as projects stored that way.
 func vscodeWorkspaceProjects(ctx context.Context, home, appDataRoot string,
-	deadline time.Time) ([]projectRef, []warning, bool) {
-	scan := devclients.WorkspaceFolders(ctx, home, appDataRoot, deadline,
+	homeStorage fsscan.ErrClass, deadline time.Time) (refs []projectRef, warnings []warning,
+	stored []warning, stopped bool) {
+	scan := devclients.WorkspaceFolders(ctx, home, appDataRoot, homeStorage, deadline,
 		probeReadOpts(MaxFileSize))
-	var warnings []warning
+	for _, kind := range []struct {
+		class fsscan.ErrClass
+		code  warnCode
+	}{
+		{fsscan.ClassCloudPlaceholder, warnProjectCloudPlaceholder},
+		{fsscan.ClassNetworkFilesystem, warnProjectOnNetworkFS},
+		{fsscan.ClassUserspaceFilesystem, warnProjectUserspaceFS},
+	} {
+		if count := scan.StoredElsewhere[kind.class]; count > 0 {
+			stored = append(stored, warning{Code: kind.code, Count: count})
+		}
+	}
 	for _, listing := range scan.Listings {
-		if listing.Truncated {
-			warnings = append(warnings, warning{
-				Code: warnWorkspaceListTruncated, Count: listing.Count, Limit: maxWorkspaceDirs})
+		if listing.Class != fsscan.ClassNone {
+			warnings = append(warnings, warning{Code: warnWorkspaceListUnreadable,
+				Class: listing.Class, Source: listing.Origin})
 			continue
 		}
-		warnings = append(warnings, warning{Code: warnWorkspaceListUnreadable, Class: listing.Class})
+		if listing.Truncated {
+			warnings = append(warnings, warning{Code: warnWorkspaceListTruncated,
+				Count: listing.Count, Limit: int64(listing.Limit), Source: listing.Origin})
+		}
+		// Records past the most recent MaxWorkspaceDirs describe what the table reads.
+		if listing.Older > 0 {
+			warnings = append(warnings, warning{Code: warnWorkspaceRecordsOlder,
+				Count: listing.Older, Limit: devclients.MaxWorkspaceDirs, Source: listing.Origin})
+		}
 	}
-	collector := newProjectCollector(home, originVSCodeWorkspace)
+	collector := newProjectCollector(home)
 	for _, folder := range scan.Folders {
-		collector.addFileURL(folder.Recorded, folder.Origin)
+		collector.addWorkspaceFolder(folder.Recorded, folder.Origin, folder.FileURL)
 	}
 	// Counted across every fork rather than per fork, so one fact produces one row. A record
 	// that exists and cannot be read is lost discovery evidence: a project whose configuration
@@ -353,11 +338,8 @@ func vscodeWorkspaceProjects(ctx context.Context, home, appDataRoot string,
 			Code: warnWorkspaceRecordMalformed, Count: scan.MalformedRecords})
 	}
 	refs, collectorWarnings := collector.result()
-	return refs, append(warnings, collectorWarnings...), scan.Stopped
+	return refs, append(warnings, collectorWarnings...), stored, scan.Stopped
 }
-
-// listCapped is fsscan.ListDirNamesCapped under this package's name.
-var listCapped = fsscan.ListDirNamesCapped
 
 // projectCollector pairs the shared containment collector with this table's evidence for each
 // project: approval, Claude's workspace trust, and Codex's project trust.
@@ -366,8 +348,11 @@ var listCapped = fsscan.ListDirNamesCapped
 // publishable, so a diagnostic naming the offending project would reintroduce the disclosure
 // these columns are narrowed to prevent.
 type projectCollector struct {
-	set    *devclients.Collector
-	origin originCode
+	set *devclients.Collector
+
+	// truncatedBy is the list whose entry first found the collector full, so the truncation
+	// warning names it. The VS Code family shares one collector across its forks.
+	truncatedBy devclients.Origin
 
 	// refs is index-aligned with set.Projects(). Rel, Abs and Origins are filled from the set
 	// in result(); the other fields are merged here as each sighting arrives, because the
@@ -376,43 +361,42 @@ type projectCollector struct {
 	refs []projectRef
 }
 
-func newProjectCollector(home string, origin originCode) *projectCollector {
-	return &projectCollector{set: devclients.NewCollector(home, maxProjects), origin: origin}
+func newProjectCollector(home string) *projectCollector {
+	return &projectCollector{set: devclients.NewCollector(home, devclients.MaxProjects)}
 }
 
-// add contains one recorded path and records it, or counts the refusal.
+// addClaude contains one path from ~/.claude.json and records it, or counts the refusal.
 //
-// approvalKnown says whether the project's entry decoded. It is threaded rather than inferred
+// approval.Known says whether the project's entry decoded. It is threaded rather than inferred
 // from the lists being empty, because "approved nothing" and "could not be read" are both
 // empty lists and only one of them licenses reporting notApproved.
-func (c *projectCollector) add(recorded string, approval claudeApproval) {
-	c.contain(recorded, false, approval, true, true, false)
-}
-
-// addClaude is add for the one lister that also supplies Claude's workspace trust.
 func (c *projectCollector) addClaude(recorded string, approval claudeApproval,
 	trustDialogAccepted bool) {
-	c.contain(recorded, false, approval, true, true, trustDialogAccepted)
+	c.contain(recorded, devclients.OriginClaudeJSON, false, approval, true, true,
+		trustDialogAccepted)
 }
 
-// addTrusted is add for Codex, which supplies trust instead of approval.
+// addTrusted is addClaude for Codex, which supplies trust instead of approval.
 func (c *projectCollector) addTrusted(recorded string, trustKnown, trusted bool) {
-	c.contain(recorded, false, claudeApproval{Known: true}, trustKnown, trusted, false)
+	c.contain(recorded, devclients.OriginCodexTOML, false, claudeApproval{Known: true},
+		trustKnown, trusted, false)
 }
 
-// addFileURL is add for the one recorded form that is a URL rather than a path. origin is
-// supplied per call, because the workspace lister reads several forks and each contributes its
-// own.
-func (c *projectCollector) addFileURL(recorded string, origin originCode) {
-	saved := c.origin
-	c.origin = origin
-	c.contain(recorded, true, claudeApproval{Known: true}, true, true, false)
-	c.origin = saved
+// addWorkspaceFolder is addClaude for a VS Code fork's workspace list, with the origin of the
+// fork whose list it is. fileURL is true for a folder recorded as a file:// URL, as a
+// workspace.json and a .code-workspace `uri` record one, and false for a .code-workspace `path`.
+func (c *projectCollector) addWorkspaceFolder(recorded string, origin devclients.Origin,
+	fileURL bool) {
+	c.contain(recorded, origin, fileURL, claudeApproval{Known: true}, true, true, false)
 }
 
-func (c *projectCollector) contain(recorded string, allowFileURL bool,
+func (c *projectCollector) contain(recorded string, origin devclients.Origin, allowFileURL bool,
 	approval claudeApproval, trustKnown, trusted, trustDialogAccepted bool) {
-	index, admitted := c.set.Add(recorded, c.origin, allowFileURL)
+	wasTruncated := c.set.Refusals().Truncated
+	index, admitted := c.set.Add(recorded, origin, allowFileURL)
+	if !wasTruncated && c.set.Refusals().Truncated {
+		c.truncatedBy = origin
+	}
 	if !admitted {
 		return
 	}
@@ -426,7 +410,7 @@ func (c *projectCollector) contain(recorded string, allowFileURL bool,
 		// Accepted anywhere is accepted: only Claude's list reports it, so a sighting from
 		// another lister has nothing to contribute and must not clear it.
 		existing.TrustDialogAccepted = existing.TrustDialogAccepted || trustDialogAccepted
-		if c.origin == originCodexTOML {
+		if origin == devclients.OriginCodexTOML {
 			existing.TrustKnown = trustKnown
 			existing.Trusted = trusted
 		}
@@ -463,8 +447,8 @@ func (c *projectCollector) result() ([]projectRef, []warning) {
 		warnings = append(warnings, warning{Code: warnProjectMalformed, Count: refusals.Malformed})
 	}
 	if refusals.Truncated {
-		warnings = append(warnings, warning{
-			Code: warnProjectListTruncated, Count: len(c.refs), Limit: maxProjects})
+		warnings = append(warnings, warning{Code: warnProjectListTruncated, Count: len(c.refs),
+			Limit: devclients.MaxProjects, Source: c.truncatedBy})
 	}
 	return c.refs, warnings
 }
@@ -490,13 +474,13 @@ func mergeProjects(groups ...[]projectRef) ([]projectRef, []warning) {
 					ref.TrustDialogAccepted
 				// Trust comes only from Codex's list, so a sighting that carries it wins
 				// over one that never had it to report.
-				if _, fromCodex := ref.Origins[originCodexTOML]; fromCodex {
+				if _, fromCodex := ref.Origins[devclients.OriginCodexTOML]; fromCodex {
 					out[existing].TrustKnown = ref.TrustKnown
 					out[existing].Trusted = ref.Trusted
 				}
 				continue
 			}
-			if len(out) >= maxProjects {
+			if len(out) >= devclients.MaxProjects {
 				truncated++
 				continue
 			}
@@ -507,7 +491,7 @@ func mergeProjects(groups ...[]projectRef) ([]projectRef, []warning) {
 	sort.Slice(out, func(i, j int) bool { return out[i].Rel < out[j].Rel })
 	if truncated > 0 {
 		return out, []warning{{
-			Code: warnProjectListTruncated, Count: len(out), Limit: maxProjects}}
+			Code: warnProjectListTruncated, Count: len(out), Limit: devclients.MaxProjects}}
 	}
 	return out, nil
 }
@@ -543,35 +527,53 @@ func projectRefusalWarning(err error, maxSize int64) (warning, bool) {
 	}
 }
 
-// claudeJSONMaxSize is the read cap for ~/.claude.json, and stripBOM removes a byte-order mark
-// before a JSON decode; both live in pkg/devclients beside the readers that depend on them.
-const claudeJSONMaxSize = devclients.ClaudeListMaxSize
-
-var stripBOM = devclients.StripBOM
-
-// mergeWarnings combines same-code findings from the three listers into one each.
+// mergeWarnings combines findings from the listers that share a code, a source, a limit and a
+// reason into one each.
 //
 // Each lister has its own collector and emits its own counts, so a machine with projects
-// outside the home in two different clients' lists produced two rows saying the same thing
-// with different numbers -- "count=3" and "count=1" where the fact is four. Observed on the
-// development machine. Counts add; the other fields come from the first sighting, since a
-// class with a Class or a Limit has exactly one producer.
+// outside the home in two different clients' lists would get two rows saying the same thing
+// with different numbers -- "count=3" and "count=1" where the fact is four. Counts add; the
+// other fields come from the first sighting. A finding that names its list stays one row per
+// list, so a reader can tell which client's list was lost, and one per reason, so two of one
+// editor's storage roots failing differently report both reasons.
 //
-// Sorted by code, because map iteration is random and these go straight to osquery.
+// Sorted by code, then source, then reason, because map iteration is random and these go
+// straight to osquery.
 func mergeWarnings(warnings []warning) []warning {
 	if len(warnings) < 2 {
 		return warnings
 	}
-	index := make(map[warnCode]int, len(warnings))
+	type mergeKey struct {
+		code   warnCode
+		source devclients.Origin
+		limit  int64
+		class  fsscan.ErrClass
+	}
+	index := make(map[mergeKey]int, len(warnings))
 	var out []warning
 	for _, w := range warnings {
-		if at, seen := index[w.Code]; seen {
+		key := mergeKey{w.Code, w.Source, w.Limit, w.Class}
+		if at, seen := index[key]; seen {
+			// A count measured against a cap is how many were admitted, so two of them are not
+			// added: the larger is reported, and the count never exceeds the limit it names.
+			if w.Limit > 0 {
+				out[at].Count = max(out[at].Count, w.Count)
+				continue
+			}
 			out[at].Count += w.Count
 			continue
 		}
-		index[w.Code] = len(out)
+		index[key] = len(out)
 		out = append(out, w)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Code < out[j].Code })
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Code != out[j].Code {
+			return out[i].Code < out[j].Code
+		}
+		if out[i].Source != out[j].Source {
+			return out[i].Source < out[j].Source
+		}
+		return out[i].Class < out[j].Class
+	})
 	return out
 }

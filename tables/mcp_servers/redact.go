@@ -7,18 +7,9 @@ import (
 	"github.com/macadmins/osquery-extension/pkg/redact"
 )
 
-// Free-text secret redaction lives in pkg/redact so every table applies the same rule. These
-// names keep this package's call sites and tests unchanged.
-var (
-	redactSecret     = redact.Secret
-	isSecretFlagName = redact.IsSecretFlagName
-)
-
-const maxAssignmentDepth = redact.MaxAssignmentDepth
-
-// redactArgs returns a sanitized copy of args. The two-arg flag form (`--token VALUE`)
-// is detected by looking back at the previous element. Allocates one slice; element
-// values are reused unchanged when no redaction is needed.
+// redactArgs returns a sanitized copy of args, which the table counts and does not emit. The
+// two-arg flag form (`--token VALUE`) is detected by looking back at the previous element.
+// Allocates one slice; element values are reused unchanged when no redaction is needed.
 func redactArgs(args []string) []string {
 	if len(args) == 0 {
 		return args
@@ -28,14 +19,31 @@ func redactArgs(args []string) []string {
 		// No exemption for a dash prefix. `--token -opaque` is a secret whose value happens
 		// to start with a dash, and skipping it left the raw value in place. Distinguishing
 		// that from `--token --verbose`, where the flag has no value, needs a real option
-		// parser with per-flag arity; absent one, this over-redacts. That is the documented
-		// preference for this file, and args are counted rather than emitted, so the cost of
-		// redacting one argument too many is nil.
-		if i > 0 && isSecretFlagName(args[i-1]) {
+		// parser that knows whether each option takes a value; absent one, this over-redacts.
+		// That is the documented preference for this file, and args are counted rather than
+		// emitted, so the cost of redacting one argument too many is nil.
+		if i > 0 && redact.IsSecretFlagName(args[i-1]) {
 			out[i] = redact.RedactedMark
 			continue
 		}
-		out[i] = redactSecret(a)
+		out[i] = redact.Secret(a)
+	}
+	return out
+}
+
+// secretEach redacts each argument for its own content, for the identity scan: a known token
+// shape or a credential-named assignment inside one argument. It does not blank the argument
+// after a credential-named option, as redactArgs does, because the scan reads which arguments are
+// options and which are their values by the launcher's grammar, and a blanked argument hid that:
+// a `--` or a dash-led argument after `--key` read as an ordinary value, so `npx --key -c sh`
+// named sh, the command npx's --call runs.
+func secretEach(args []string) []string {
+	if args == nil {
+		return nil
+	}
+	out := make([]string, len(args))
+	for index, argument := range args {
+		out[index] = redact.Secret(argument)
 	}
 	return out
 }

@@ -16,6 +16,7 @@ func TestContainsDistinctiveToken(t *testing.T) {
 		"xoxb-" + strings.Repeat("1", 12),
 		"sk-proj-" + strings.Repeat("d", 24),
 		"sk-ant-" + strings.Repeat("e", 24),
+		"example.com/acme/sk-proj-" + strings.Repeat("h", 24),
 		"AKIA" + strings.Repeat("F", 16),
 		"AIza" + strings.Repeat("g", 35),
 	}
@@ -31,6 +32,8 @@ func TestContainsDistinctiveToken(t *testing.T) {
 		"github.com/acme/sk-payments-service-client",
 		"github.com/acme/gitlab-ci-pipeline-exporter-tools",
 		"github.com/acme/task-management-service-client",
+		"github.com/acme/task-proj-" + strings.Repeat("i", 24),
+		"github.com/acme/disk-ant-" + strings.Repeat("j", 24),
 		"golang.org/x/sys",
 	} {
 		if ContainsDistinctiveToken(value) {

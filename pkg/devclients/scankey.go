@@ -19,12 +19,12 @@ import (
 // Elsewhere discovery is a pure function of the directory, so the path is the whole key and
 // a shared home is scanned once.
 func ScanKey(account fsscan.UserHome) string {
-	return ScanKeyFor(runtime.GOOS, account)
+	return scanKeyFor(runtime.GOOS, account)
 }
 
-// ScanKeyFor takes the OS as a parameter so the Windows rule is reachable from a test on any
-// host; no CI job runs on Windows.
-func ScanKeyFor(goos string, account fsscan.UserHome) string {
+// scanKeyFor takes the OS as a parameter so the Windows rule is asserted by a test on any
+// host, not only on the windows-latest job.
+func scanKeyFor(goos string, account fsscan.UserHome) string {
 	if goos == "windows" {
 		return account.ID + "\x00" + account.Path
 	}

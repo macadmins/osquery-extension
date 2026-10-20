@@ -769,3 +769,13 @@ X-Api-Key = "FROM_HEADER_VAR"
 		t.Errorf("env_keys = %v, want all four references", servers[0].EnvKeys)
 	}
 }
+
+// TestUndecodableCodexEntriesReportTheEnvelopeShape: an mcp_servers table none of whose entries
+// decode reports shape=envelope_present_but_undecodable, as the JSON envelope does. A fresh
+// error read as shape=unrecognised, so one failure had two shapes by format.
+func TestUndecodableCodexEntriesReportTheEnvelopeShape(t *testing.T) {
+	_, err := extractCodexTOML([]byte("[mcp_servers.placeholder]\n"))
+	if !errors.Is(err, errNoDecodableEntries) || parseWarning(err).Shape != shapeEnvelopeUndecodable {
+		t.Errorf("err = %v, shape %q; want %q", err, parseWarning(err).Shape, shapeEnvelopeUndecodable)
+	}
+}
