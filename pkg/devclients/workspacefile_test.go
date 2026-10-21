@@ -249,6 +249,14 @@ func TestAWorkspaceFileNamedInTwoCases(t *testing.T) {
 	named, respelled := filepath.Join(home, "ws", "Shared.code-workspace"), filepath.Join(home, "ws", "shared.code-workspace")
 	multiRootRecord(t, home, "aa", named, `{"folders":[{"path":"alpha"}]}`)
 	multiRootRecord(t, home, "bb", respelled, "")
+	// Records are read newest first, so the one naming the file that exists is made the newest. On
+	// a case-sensitive volume the other spelling names nothing, and under Windows's case rule that
+	// absence, read first, would be cached for both.
+	later := time.Now().Add(time.Hour)
+	storage := filepath.Join(home, AppSupportFork("Code", "User", "workspaceStorage")[0])
+	if err := os.Chtimes(filepath.Join(storage, "aa"), later, later); err != nil {
+		t.Fatal(err)
+	}
 	savedProbe, savedKey := probeDir, samePathKey
 	t.Cleanup(func() { probeDir, samePathKey = savedProbe, savedKey })
 	probes := 0
