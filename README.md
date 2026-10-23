@@ -47,6 +47,6 @@ For production deployment, you should refer to the [osquery documentation](https
 
 ## Development
 
-- Install Go 1.21 (either directly from [go.dev](https://go.dev/dl/) or via [GVM](https://github.com/moovweb/gvm#installing))
-  - `gvm install go1.21`
+- Install Go 1.27.3 or newer (either directly from [go.dev](https://go.dev/dl/) or via [GVM](https://github.com/moovweb/gvm#installing))
+  - `gvm install go1.27.3`
 - Install [Bazelisk](https://github.com/bazelbuild/bazelisk/blob/master/README.md)
