@@ -38,7 +38,7 @@ go_dependencies()
 
 go_rules_dependencies()
 
-go_register_toolchains(version = "1.25.4")
+go_register_toolchains(version = "1.27.3")
 
 load("@bazel_tools//tools/build_defs/repo:utils.bzl", "maybe")
 load("@platforms//host:extension.bzl", "host_platform_repo")
