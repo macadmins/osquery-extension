@@ -926,6 +926,23 @@ func TestAnOverlongInlineProjectKeyIsDropped(t *testing.T) {
 	}
 }
 
+// TestAKeyThatCleansToTheCapKeepsItsPath: the collector bounds a key's contained form, not its
+// raw form, so a key over the limit only because of doubled separators names a project the table
+// reads, and its source_context keeps the path.
+func TestAKeyThatCleansToTheCapKeepsItsPath(t *testing.T) {
+	home := "/home/alice"
+	rel := strings.Repeat("a", devclients.MaxProjectPathLen-len(home)-1)
+	key := home + strings.Repeat("/", 20) + rel
+	if len(key) <= devclients.MaxProjectPathLen || len(filepath.Join(home, rel)) != devclients.MaxProjectPathLen {
+		t.Fatalf("fixture: raw %d bytes, contained %d; want over and exactly at the cap",
+			len(key), len(filepath.Join(home, rel)))
+	}
+	want := "projects[" + rel + "].mcpServers"
+	if got, dropped := allowedSourceContext("projects["+key+"].mcpServers", home); got != want || dropped {
+		t.Errorf("allowedSourceContext = %q, %v; want %q, kept", got, dropped, want)
+	}
+}
+
 // TestSourcePathIsAbsoluteAndCleanWithoutAHome: a row with no home, which is a row about the
 // roster, still publishes source_path only when it is absolute and clean. The check returned
 // before either test when the home was empty, so a relative or `..` directory the roster declared

@@ -116,12 +116,10 @@ func MCPServersColumns() []table.ColumnDefinition {
 		// of the SID, which two accounts can share; user_id holds the whole SID.
 		table.BigIntColumn("uid"),
 		table.TextColumn("user_id"),
-		// The completeness predicate. `WHERE scan_complete = 1` selects the rows whose
-		// source was listed in full by an enumeration that finished, which leaves `warning`
-		// purely descriptive. Before this there was no single predicate for the question:
-		// `warning = ''` selects the healthy servers and discards the diagnostic that said
-		// the list was short, so a truncated scan and a host with nothing on it produced
-		// the same answer.
+		// 1 when every server declared in source_path was listed and, for a server a Claude Code
+		// plugin declares, every source that plugin version's manifest declares was read. A
+		// finding about the user rather than this file is a row of its own and changes no server
+		// row. 0 on every diagnostic row.
 		table.IntegerColumn("scan_complete"),
 		table.TextColumn("warning"),
 	}
@@ -158,9 +156,14 @@ func generate(ctx context.Context, queryContext table.QueryContext, clienter uti
 }
 
 // userConstraint builds the set of usernames a query narrowed to, or nil to scan every home.
-// See utils.EqualityConstraints for why a mixed operator list scans everything.
+// See utils.EqualityConstraints for why a mixed operator list scans everything. An empty name
+// selects the rows that belong to no account, which only a full scan produces.
 func userConstraint(qc table.QueryContext) map[string]struct{} {
-	return utils.EqualityConstraints(qc, "user")
+	users := utils.EqualityConstraints(qc, "user")
+	if _, wantsAccountlessRows := users[""]; wantsAccountlessRows {
+		return nil
+	}
+	return users
 }
 
 // serverToRow builds the emitted row, applying each column's allowlist.

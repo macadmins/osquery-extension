@@ -3,6 +3,7 @@ package devclients
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -207,8 +208,10 @@ func (w *workspaceFiles) totalReached(origin Origin, scan *ProjectListScan) {
 // is passed as recorded. A relative `path` is resolved from the workspace file's directory,
 // dirRel, under fsscan.ResolveBeneath's rules: a leading ".." may climb only as far as the home,
 // and a ".." after a named directory could name a different directory than the text does. An
-// entry the rules refuse, one longer than MaxRecordedPathLen, and one with neither field, is
-// passed empty, which the collector counts as an unusable path.
+// entry the rules refuse, one longer than MaxRecordedPathLen, one with neither field, and on
+// Windows one rooted without a drive (`\repo`) or with a drive and no separator (`C:repo`), is
+// passed empty, which the collector counts as an unusable path. The last two are relative to a
+// current drive or directory this scan does not have.
 func workspaceFileFolder(home, dirRel, path, uri string, origin Origin) ListedFolder {
 	switch {
 	case uri != "":
@@ -217,6 +220,8 @@ func workspaceFileFolder(home, dirRel, path, uri string, origin Origin) ListedFo
 		return ListedFolder{Origin: origin}
 	case filepath.IsAbs(path):
 		return ListedFolder{Recorded: path, Origin: origin}
+	case filepath.VolumeName(path) != "", os.IsPathSeparator(path[0]):
+		return ListedFolder{Origin: origin}
 	}
 	rel, err := fsscan.ResolveBeneath(home, dirRel, path)
 	if err != nil {

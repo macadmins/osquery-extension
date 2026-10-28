@@ -538,13 +538,19 @@ func TestMergedCapCountsAreNotAdded(t *testing.T) {
 		{Code: warnProjectListTruncated, Count: 400, Limit: 1000},
 		{Code: warnProjectOutsideHome, Count: 2},
 		{Code: warnProjectOutsideHome, Count: 3},
+		// Code and Code - Insiders share an origin, and each counts the records past its own 500.
+		{Code: warnWorkspaceRecordsOlder, Count: 30, Limit: devclients.MaxWorkspaceDirs,
+			Source: devclients.OriginVSCodeWorkspace},
+		{Code: warnWorkspaceRecordsOlder, Count: 12, Limit: devclients.MaxWorkspaceDirs,
+			Source: devclients.OriginVSCodeWorkspace},
 	})
 	counts := map[warnCode]int{}
 	for _, w := range merged {
 		counts[w.Code] = w.Count
 	}
-	if counts[warnProjectListTruncated] != 1000 || counts[warnProjectOutsideHome] != 5 {
-		t.Errorf("merged = %+v, want 1000 for the cap and 5 for the outside count", merged)
+	if counts[warnProjectListTruncated] != 1000 || counts[warnProjectOutsideHome] != 5 ||
+		counts[warnWorkspaceRecordsOlder] != 42 {
+		t.Errorf("merged = %+v, want 1000 for the cap, 5 for the outside count and 42 older records", merged)
 	}
 }
 

@@ -293,10 +293,12 @@ func allowedSourceContext(context, home string) (string, bool) {
 	// The path is relative to the home for a project-rooted probe and absolute for a
 	// ~/.claude.json key, and each form is held to its own. Dropping to the bare token keeps
 	// which *section* declared the server, which is the half that is never user-controlled. A
-	// path longer than any recorded project the collector admits is dropped the same way, so a
-	// key of any length in ~/.claude.json does not reach the column.
-	if home != "" && path != "" && len(path) <= devclients.MaxProjectPathLen {
-		if rel, err := contained(home, path, absolute); err == nil {
+	// path is held to the collector's two bounds, the raw length and the contained length, so a
+	// key of any length in ~/.claude.json does not reach the column, and a key whose prefix or
+	// doubled separators the containment removes keeps its path when its project was read.
+	if home != "" && path != "" && len(path) <= devclients.MaxRecordedPathLen {
+		if rel, err := contained(home, path, absolute); err == nil &&
+			len(filepath.Join(home, rel)) <= devclients.MaxProjectPathLen {
 			return token + "[" + rel + suffix, false
 		}
 	}

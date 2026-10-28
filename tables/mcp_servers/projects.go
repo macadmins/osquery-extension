@@ -561,7 +561,9 @@ func mergeWarnings(warnings []warning) []warning {
 		if at, seen := index[key]; seen {
 			// A count measured against a cap is how many were admitted, so two of them are not
 			// added: the larger is reported, and the count never exceeds the limit it names.
-			if w.Limit > 0 {
+			// workspace_records_older counts the records past its limit in each storage root,
+			// and those add.
+			if w.Limit > 0 && w.Code != warnWorkspaceRecordsOlder {
 				out[at].Count = max(out[at].Count, w.Count)
 				continue
 			}

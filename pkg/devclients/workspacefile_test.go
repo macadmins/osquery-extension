@@ -73,6 +73,21 @@ func TestWorkspaceFoldersReadsAMultiRootWorkspace(t *testing.T) {
 // absolute path as recorded, and a relative path is resolved from the file's directory, with a
 // leading ".." allowed only within the home and a ".." after a named directory refused. A refused
 // entry, and one with neither field, is passed empty, which the collector counts as unusable.
+// TestRootedAndDriveRelativeFoldersAreRefusedOnWindows: `\repo` and `C:repo` are relative to a
+// current drive or directory the scan does not have, so they are passed empty rather than
+// resolved under the workspace file's directory.
+func TestRootedAndDriveRelativeFoldersAreRefusedOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("a rooted or drive-relative path is Windows syntax")
+	}
+	for _, path := range []string{`\Users\alice\repo`, `/Users/alice/repo`, `C:repo`} {
+		got := workspaceFileFolder(`C:\Users\alice`, "ws", path, "", OriginVSCodeWorkspace)
+		if !reflect.DeepEqual(got, ListedFolder{Origin: OriginVSCodeWorkspace}) {
+			t.Errorf("%q: %+v, want an empty Recorded", path, got)
+		}
+	}
+}
+
 func TestWorkspaceFileFoldersFollowTheContainmentRules(t *testing.T) {
 	home := t.TempDir()
 	other := testutil.FileURL(filepath.Join(home, "other"))

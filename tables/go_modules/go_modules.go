@@ -30,6 +30,7 @@ package go_modules
 import (
 	"context"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -94,6 +95,10 @@ func GoModulesGenerate(ctx context.Context, queryContext table.QueryContext,
 func generate(ctx context.Context, queryContext table.QueryContext,
 	clienter utils.OsqueryClienter) ([]map[string]string, error) {
 	userFilter := utils.EqualityConstraints(queryContext, "user")
+	// `user = ''` selects the rows that belong to no account, which only a full scan produces.
+	if _, wantsAccountlessRows := userFilter[""]; wantsAccountlessRows {
+		userFilter = nil
+	}
 	pathFilter := utils.EqualityConstraints(queryContext, "project_path")
 	// `project_path = ''` selects the user rows, which only a full scan produces.
 	if _, wantsUserRows := pathFilter[""]; wantsUserRows {
@@ -160,7 +165,11 @@ func publishedProjectPath(r row) string {
 // project_path publishes -- absolute and clean -- and whether redaction would change it. A path
 // that fails either test cannot equal any published project_path.
 func namedPathForm(path string) (publishedForm, redacted bool) {
-	publishedForm = filepath.IsAbs(path) && filepath.Clean(path) == path
+	// On Windows project_path never starts with two separators: a drive path recorded with a
+	// `\\?\` or `\\.\` prefix is published without it, and a UNC path is never read.
+	doubleSeparator := runtime.GOOS == "windows" &&
+		(strings.HasPrefix(path, `\\`) || strings.HasPrefix(path, "//"))
+	publishedForm = filepath.IsAbs(path) && filepath.Clean(path) == path && !doubleSeparator
 	return publishedForm, redact.Secret(redact.Path(path)) != path
 }
 

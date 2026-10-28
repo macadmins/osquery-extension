@@ -488,7 +488,7 @@ func TestReadFailureClassification(t *testing.T) {
 		report bool
 	}{
 		{os.ErrNotExist, "", false},
-		{fsscan.ErrUserspaceFilesystem, warnProjectUserspaceFS, true},
+		{fsscan.ErrUserspaceFilesystem, warnSourceUserspaceFS, true},
 		{fsscan.ErrHardLink, warnProjectRefused, true},
 		{fsscan.ErrForeignOwner, warnProjectRefused, true},
 		{fsscan.ErrTooLarge, warnSourceTooLarge, true},
@@ -987,6 +987,29 @@ func TestAccountDiagnosticsKeepTheirUID(t *testing.T) {
 	}
 }
 
+// TestAnEmptyUserConstraintScansEveryAccount: a user constraint naming the empty string asks for
+// the rows that belong to no account, so it gets the full scan's accounts_home_unusable row, not
+// an account_not_in_roster row for an account named "".
+func TestAnEmptyUserConstraintScansEveryAccount(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "alice")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	clienter := &utils.MockOsqueryClienter{Data: map[string][]map[string]string{fsscan.UsersQuery: {
+		{"uid": "501", "username": "alice", "directory": home, "shell": "/bin/zsh"},
+		{"uid": "502", "username": "carol", "directory": filepath.Join(filepath.Dir(home), "gone"), "shell": "/bin/zsh"},
+	}}}
+	var accountless []string
+	for _, r := range run(t, clienter, onUser("")) {
+		if r["user"] == "" {
+			accountless = append(accountless, r["warning"])
+		}
+	}
+	if len(accountless) != 1 || !strings.HasPrefix(accountless[0], warnSentences[warnAccountsHomeUnusable]) {
+		t.Errorf("rows with no user = %q, want the one accounts_home_unusable row a full scan gives", accountless)
+	}
+}
+
 // TestDescriptiveSentencesShareAPrefix: the eight descriptive sentences, and no others, start with
 // "recorded project", which is the one predicate the README gives for a complete inventory.
 func TestDescriptiveSentencesShareAPrefix(t *testing.T) {
@@ -1439,7 +1462,12 @@ func TestANamedPathNoPublishedPathCanEqualIsNotRead(t *testing.T) {
 		return saved(home, rel)
 	}
 
-	for _, unclean := range []string{project + string(filepath.Separator), project + "/.", "svc"} {
+	unpublished := []string{project + string(filepath.Separator), project + "/.", "svc"}
+	if runtime.GOOS == "windows" {
+		// The prefix Codex records is not part of the published form.
+		unpublished = append(unpublished, `\\?\`+project)
+	}
+	for _, unclean := range unpublished {
 		opened = 0
 		rows := run(t, clienter, onPath(unclean))
 		if len(rows) != 1 || opened != 0 || rows[0]["project_path"] != unclean ||

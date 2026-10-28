@@ -569,8 +569,8 @@ func TestPlaceholderOrderIsTotalAcrossSections(t *testing.T) {
 // their published source_context is the same section name with the key left out.
 func TestPlaceholderOrderIsTotalForOverlongProjectKeys(t *testing.T) {
 	const shared = "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-	one := "/home/alice/" + strings.Repeat("a", devclients.MaxProjectPathLen)
-	two := "/home/alice/" + strings.Repeat("b", devclients.MaxProjectPathLen)
+	one := "/home/alice/" + strings.Repeat("a", devclients.MaxRecordedPathLen)
+	two := "/home/alice/" + strings.Repeat("b", devclients.MaxRecordedPathLen)
 	doc := `{"projects":{` +
 		`"` + one + `":{"mcpServers":{"` + shared + `":{"command":"npx","args":["a"]}}},` +
 		`"` + two + `":{"mcpServers":{"` + shared + `":{"command":"uvx","args":["b"]}}}}}`

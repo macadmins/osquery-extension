@@ -150,6 +150,13 @@ func containProjectPathFor(goos, home, recorded string, allowFileURL bool) (stri
 	if path == "" {
 		return "", fmt.Errorf("%w: empty", ErrMalformedPath)
 	}
+	if goos == "windows" {
+		stripped, err := stripLocalDevicePrefix(path)
+		if err != nil {
+			return "", err
+		}
+		path = stripped
+	}
 	// NUL and every other ASCII control character. NUL truncates a path where it is handed
 	// to the kernel, so `/home/alice/safe\x00/../../etc` is one string to Go and another to the
 	// kernel -- the check below would inspect a path nobody opens. The remaining control
@@ -256,6 +263,27 @@ func localPathFromFileURL(goos, raw string) (string, error) {
 	// path never reaches here and is taken literally, because a directory genuinely named
 	// `100%` is ordinary and decoding it would name a different directory -- or fail.
 	return driveLetterPath(goos, parsed.Path), nil
+}
+
+// stripLocalDevicePrefix turns an extended-length `\\?\C:\Users\alice` or a device-namespace
+// `\\.\C:\Users\alice` into `C:\Users\alice`. Both name a local drive: Rust's
+// std::fs::canonicalize returns the extended form, and Codex records project keys in it. After
+// either prefix, or its forward-slash spelling, `UNC\` names another host, and anything other than
+// a drive letter and `:\` -- a volume GUID, GLOBALROOT, a drive with no separator, a forward-slash
+// drive path -- is malformed. A path with neither prefix is returned unchanged.
+func stripLocalDevicePrefix(path string) (string, error) {
+	if !strings.HasPrefix(path, `\\?\`) && !strings.HasPrefix(path, `\\.\`) &&
+		!strings.HasPrefix(path, "//?/") && !strings.HasPrefix(path, "//./") {
+		return path, nil
+	}
+	rest := path[4:]
+	if len(rest) >= 4 && strings.EqualFold(rest[:3], "UNC") && (rest[3] == '\\' || rest[3] == '/') {
+		return "", fmt.Errorf("%w: a UNC path names another host", ErrUnsupportedOrigin)
+	}
+	if path[0] == '\\' && len(rest) >= 3 && isDriveLetterByte(rest[0]) && rest[1] == ':' && rest[2] == '\\' {
+		return rest, nil
+	}
+	return "", fmt.Errorf("%w: a device path that names no drive directory", ErrMalformedPath)
 }
 
 // driveLetterPath turns a file URL's `/C:/Users/alice` into `C:/Users/alice` on Windows.

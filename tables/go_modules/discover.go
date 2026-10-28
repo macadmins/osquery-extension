@@ -966,7 +966,7 @@ func readFailure(err error) (warning, bool) {
 	case fsscan.ClassNone, fsscan.ClassAbsent, fsscan.ClassRefusedPath:
 		return warning{}, false
 	case fsscan.ClassUserspaceFilesystem:
-		return warning{Code: warnProjectUserspaceFS, Count: 1}, true
+		return warning{Code: warnSourceUserspaceFS, Count: 1}, true
 	case fsscan.ClassHardLink, fsscan.ClassForeignOwner:
 		return warning{Code: warnProjectRefused, Class: class}, true
 	case fsscan.ClassTooLarge:

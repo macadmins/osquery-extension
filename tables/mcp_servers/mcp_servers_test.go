@@ -136,6 +136,14 @@ func TestUserConstraintTakesOnlyEqualityMatches(t *testing.T) {
 		t.Errorf("mixed operators must not narrow: %v", got)
 	}
 
+	// `user = ''` asks for the rows that belong to no account, which only a full scan produces.
+	if got := userConstraint(constraints(
+		table.Constraint{Operator: table.OperatorEquals, Expression: ""},
+		table.Constraint{Operator: table.OperatorEquals, Expression: "alice"},
+	)); got != nil {
+		t.Errorf("an empty name must not narrow: %v", got)
+	}
+
 	// All-equality still narrows, which is the case worth having.
 	got := userConstraint(constraints(
 		table.Constraint{Operator: table.OperatorEquals, Expression: "alice"},

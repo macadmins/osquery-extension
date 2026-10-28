@@ -1572,11 +1572,11 @@ func extractClaudeCode(data []byte) ([]Server, error) {
 		}
 		scoped := make(map[string]rawServerEntry, len(project.MCPServers))
 		skipped += decodeInto(scoped, project.MCPServers)
-		// A key longer than any project path the collector admits is left out of the context
+		// A key longer than any recorded path the collector reads is left out of the context
 		// here, so it is not carried on every server row; publication then reports the path
 		// as dropped and keeps the section name.
 		contextPath := projPath
-		if len(contextPath) > devclients.MaxProjectPathLen {
+		if len(contextPath) > devclients.MaxRecordedPathLen {
 			contextPath = ""
 		}
 		rows, _ := materialize(scoped, "projects["+contextPath+"].mcpServers")

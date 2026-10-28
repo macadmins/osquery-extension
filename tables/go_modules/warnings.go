@@ -58,7 +58,7 @@ const (
 	warnProjectOnNetworkFS        warnCode = "project_on_network_filesystem"
 	warnProjectOnUserspaceFS      warnCode = "project_on_userspace_filesystem"
 	warnWorkspaceUnsupported      warnCode = "go_workspace_unsupported"
-	warnProjectUserspaceFS        warnCode = "project_userspace_filesystem"
+	warnSourceUserspaceFS         warnCode = "source_userspace_filesystem"
 	warnProjectRefused            warnCode = "project_read_refused"
 	warnProjectDirUnreadable      warnCode = "project_directory_unreadable"
 
@@ -157,7 +157,7 @@ var warnSentences = map[warnCode]string{
 	warnProjectOnUserspaceFS: "recorded projects are on a filesystem implemented in userspace, " +
 		"unlike this account's home, where a read may fetch their contents on demand, and were " +
 		"not read",
-	warnProjectUserspaceFS: "a module file in a recorded project is on a filesystem " +
+	warnSourceUserspaceFS: "a module file in a recorded project is on a filesystem " +
 		"implemented in userspace, where a read may fetch its contents on demand, and was " +
 		"not read",
 	warnProjectDirUnreadable: "project directories this account recorded could not be opened, " +
