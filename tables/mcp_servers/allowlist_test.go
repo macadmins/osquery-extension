@@ -930,9 +930,9 @@ func TestAnOverlongInlineProjectKeyIsDropped(t *testing.T) {
 // raw form, so a key over the limit only because of doubled separators names a project the table
 // reads, and its source_context keeps the path.
 func TestAKeyThatCleansToTheCapKeepsItsPath(t *testing.T) {
-	home := "/home/alice"
+	home := testutil.AbsPath("home", "alice")
 	rel := strings.Repeat("a", devclients.MaxProjectPathLen-len(home)-1)
-	key := home + strings.Repeat("/", 20) + rel
+	key := home + strings.Repeat(string(filepath.Separator), 20) + rel
 	if len(key) <= devclients.MaxProjectPathLen || len(filepath.Join(home, rel)) != devclients.MaxProjectPathLen {
 		t.Fatalf("fixture: raw %d bytes, contained %d; want over and exactly at the cap",
 			len(key), len(filepath.Join(home, rel)))
