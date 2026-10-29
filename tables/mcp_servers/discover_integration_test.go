@@ -7,12 +7,14 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/macadmins/osquery-extension/pkg/fsscan"
+	"github.com/macadmins/osquery-extension/pkg/testutil"
 )
 
 // serversOnly drops the diagnostic rows, so a test asserting on the servers found does not
@@ -48,11 +50,10 @@ func discoverForTest(user, home string) []Server {
 // buildFakeHomeWithProjects is buildFakeHome plus the project list that makes the
 // project-local files discoverable.
 //
-// Needed because discovery no longer walks: a project-local config is found by reading the
-// list of projects a client records and probing inside each entry, so a fixture that only
-// creates files on disk creates files nothing looks at. That is the behaviour change these
-// tests exist to pin, and making the fixture state it explicitly is the point -- a reader of
-// the test can see that the recorded list is what drives discovery.
+// Discovery does not walk: a project-local config is found by reading the list of projects a
+// client records and probing inside each entry, so a fixture that only creates files on disk
+// creates files nothing looks at. The fixture states the recorded list explicitly, so a
+// reader can see that it drives discovery.
 func buildFakeHomeWithProjects(t *testing.T, files map[string]string, projectRels ...string) string {
 	t.Helper()
 	home := buildFakeHome(t, files)
@@ -73,17 +74,15 @@ func buildFakeHomeWithProjects(t *testing.T, files map[string]string, projectRel
 // recordVSCodeWorkspace records a project the way a VS Code fork does, which is the only
 // evidence that licenses probing `.vscode/mcp.json` or `.cursor/mcp.json` inside it.
 //
-// Claude's project list no longer stands in for this. Using it did, and that was the
-// cross-product defect: one client's record that a directory is a project was being used to
-// justify reporting a different client's configuration there.
+// Claude's project list does not stand in for this: one client's record that a directory is
+// a project does not justify reporting a different client's configuration there.
 func recordVSCodeWorkspace(t *testing.T, home, fork, projectRel string) {
 	t.Helper()
 	// The directory name under workspaceStorage is a generated hash; any stable string
 	// serves, since it is reached by listing rather than by a fixed path.
 	id := "ws-" + strings.ReplaceAll(projectRel, string(filepath.Separator), "-")
-	record := `{"folder":"file://` +
-		filepath.ToSlash(filepath.Join(home, projectRel)) + `"}`
-	writeTestFile(t, filepath.Join(home,
+	record := `{"folder":"` + testutil.FileURL(filepath.Join(home, projectRel)) + `"}`
+	testutil.WriteFile(t, filepath.Join(home,
 		appSupport(fork, "User", "workspaceStorage", id, "workspace.json")), record)
 }
 
@@ -93,11 +92,21 @@ func recordCodexProject(t *testing.T, home, projectRel, trustLevel string) {
 	t.Helper()
 	path := filepath.Join(home, ".codex", "config.toml")
 	existing, _ := os.ReadFile(path)
-	entry := "[projects.\"" + filepath.Join(home, projectRel) + "\"]\n"
+	entry := codexProjectTable(filepath.Join(home, projectRel))
 	if trustLevel != "" {
 		entry += "trust_level = \"" + trustLevel + "\"\n"
 	}
-	writeTestFile(t, path, string(existing)+entry)
+	testutil.WriteFile(t, path, string(existing)+entry)
+}
+
+// codexProjectTable is the table header recording path as a Codex project. The key is a TOML
+// literal string, so a Windows path's backslashes need no escaping, and on Windows it is
+// lowercased, as Codex's project_trust_key lowercases it there.
+func codexProjectTable(path string) string {
+	if runtime.GOOS == "windows" {
+		path = strings.ToLower(path)
+	}
+	return "[projects.'" + path + "']\n"
 }
 
 func buildFakeHome(t *testing.T, files map[string]string) string {
@@ -116,6 +125,9 @@ func buildFakeHome(t *testing.T, files map[string]string) string {
 }
 
 func TestDiscoverForHome_AllKnownClientsViaDirectPaths(t *testing.T) {
+	outside := t.TempDir()
+	foo := testutil.JSONString(filepath.Join(outside, "foo"))
+	bar := testutil.JSONString(filepath.Join(outside, "bar"))
 	home := buildFakeHome(t, map[string]string{
 		appSupport("Claude", "claude_desktop_config.json"): `{
 			// JSONC: top-of-file comment
@@ -124,8 +136,8 @@ func TestDiscoverForHome_AllKnownClientsViaDirectPaths(t *testing.T) {
 		".claude.json": `{
 			"mcpServers": {"global-claude": {"type": "http", "url": "https://global.example.com/mcp"}},
 			"projects": {
-				"/repo/foo": {"mcpServers": {"foo-local": {"command": "node", "args": ["foo.js"]}}},
-				"/repo/bar": {"mcpServers": {"bar-local": {"command": "uvx", "args": ["bar-mcp"]}}}
+				` + foo + `: {"mcpServers": {"foo-local": {"command": "node", "args": ["foo.js"]}}},
+				` + bar + `: {"mcpServers": {"bar-local": {"command": "uvx", "args": ["bar-mcp"]}}}
 			}
 		}`,
 		".cursor/mcp.json":                  `{"mcpServers": {"cursor-srv": {"command": "uvx", "args": ["cursor-mcp@2.0.0"]}}}`,
@@ -151,8 +163,8 @@ func TestDiscoverForHome_AllKnownClientsViaDirectPaths(t *testing.T) {
 	gotClient := map[string]string{}
 	for _, r := range rows {
 		if !r.Warning.empty() {
-			// The ~/.claude.json fixture records /repo/foo and /repo/bar as projects, which
-			// are absolute paths outside this temporary home. Reporting that is correct and
+			// The ~/.claude.json fixture records foo and bar as projects, at absolute paths
+			// outside this temporary home. Reporting that is correct and
 			// is new: the inline servers those entries declare are still listed -- they are
 			// read out of the file, not probed -- but the directories themselves are not
 			// inspected, and the row set says so with a count and no path.
@@ -179,14 +191,9 @@ func TestDiscoverForHome_AllKnownClientsViaDirectPaths(t *testing.T) {
 
 // A project recorded in a client's own list is probed, and one that is not recorded is not.
 //
-// This is the whole of the discovery change in one test. The old version created
-// ~/code/myrepo/.mcp.json and relied on a depth-6 walk of ~/code to find it, which worked and
-// was nondeterministic: the budget was shared across every home, so whether this file was
-// reached depended on how large the previous account's source tree was.
-//
-// Now the project list is the input. The file is found because ~/.claude.json records
-// ~/code/myrepo as a project, and the second fixture -- an identical file in a directory
-// nobody recorded -- is the cost of the change, asserted rather than left implicit.
+// The file is found because ~/.claude.json records ~/code/myrepo as a project. The second
+// fixture, an identical file in a directory nobody recorded, is the cost of discovering by
+// project list, asserted rather than left implicit.
 func TestDiscoverForHome_ProbesRecordedProjects(t *testing.T) {
 	home := buildFakeHomeWithProjects(t, map[string]string{
 		"code/myrepo/.mcp.json": `{"mcpServers": {"repo-mcp": {"command": "npx", "args": ["repo-mcp@1.0.0"]}}}`,
@@ -246,35 +253,14 @@ func TestDiscoverForHome_ProbesVSCodeInRecordedProject(t *testing.T) {
 	}
 }
 
-// The plugin-catalog exclusions are gone, and so are the tests for them.
+// A recorded project is probed wherever it sits, including under node_modules, and an
+// unrecorded directory is not probed at all.
 //
-// Claude Code and Codex both cache installable plugin definitions as .mcp.json files --
-// catalog entries, not configured servers. Measured on one workstation, 39 of 51 Codex rows
-// came from three such directories. The fix was a list of path substrings, maintained by
-// noticing each new cache location after it polluted the table.
-//
-// Nothing reaches them now. A marketplace cache is not a project any client records, so it is
-// not probed, and the exclusion list became unreachable code with two tests asserting
-// behaviour that could no longer occur. Deleted rather than kept green against a path that
-// does not exist: a test that cannot fail is worse than no test, because it reads as coverage.
-//
-// A behaviour change, asserted rather than hidden: a project recorded under node_modules IS
-// probed now.
-//
-// The walk pruned node_modules, .git and vendor, because descending them found vendored and
-// hook-local configs that nothing was configured to run -- noise indistinguishable from real
-// rows. The prune list is still in fsscan and still correct for a walk.
-//
-// It no longer applies here, because nothing walks. A directory is probed because a client
-// recorded it as a project the user opened, and a client does not record node_modules unless
-// the user genuinely opened an editor there. If they did, that project's MCP configuration is
-// a real thing the editor will act on, and the old behaviour of silently pruning it was the
-// wrong answer for that case.
-//
-// So the noise this prevented is prevented by a different and better mechanism -- nobody
-// records a vendored directory as a project -- and the one case that changes is the one where
-// the user really did open it. Stated here because a test that quietly stopped covering the
-// prune would leave the next reader thinking it still applied.
+// Nothing walks. A directory is probed because a client recorded it as a project the user
+// opened, and a client records a node_modules directory only if the user opened an editor
+// there; that project's MCP configuration is then a real thing the editor acts on. Vendored
+// configs and plugin-catalog caches, such as the .mcp.json files Claude Code and Codex keep
+// for installable plugins, stay out because no client records them as projects.
 func TestDiscoverForHome_ProbesRecordedProjectEvenUnderNodeModules(t *testing.T) {
 	home := buildFakeHomeWithProjects(t, map[string]string{
 		"code/foo/.mcp.json":                  `{"mcpServers": {"good": {"command": "npx", "args": ["x"]}}}`,
@@ -297,14 +283,10 @@ func TestDiscoverForHome_ProbesRecordedProjectEvenUnderNodeModules(t *testing.T)
 
 // Dedup between the home-rooted and project-rooted probe lists.
 //
-// The real case, and it is not contrived: a user's home is frequently itself a recorded
-// project -- it is on the machine this was developed on -- and ~/.cursor/mcp.json is then
-// reachable both as a fixed path relative to the home and as `.cursor/mcp.json` inside the
-// project whose path is the home. Containment allows that deliberately, because `~/.mcp.json`
-// is a legitimate configuration file.
-//
-// So the two lists overlap for exactly one project, and the dedup that used to sit between
-// the direct pass and the walker has to sit between these two instead.
+// A user's home is often itself a recorded project, and ~/.cursor/mcp.json is then reachable
+// both as a fixed path relative to the home and as `.cursor/mcp.json` inside the project
+// whose path is the home. Containment allows that deliberately, because `~/.mcp.json` is a
+// legitimate configuration file, so the two lists overlap for exactly one project.
 func TestDiscoverForHome_DedupsBetweenHomeAndProjectProbes(t *testing.T) {
 	home := buildFakeHome(t, map[string]string{
 		".cursor/mcp.json": `{"mcpServers": {"single": {"command": "npx", "args": ["x"]}}}`,
@@ -498,8 +480,8 @@ func TestDiscoverAllReportsUsersTheBudgetNeverReached(t *testing.T) {
 	}
 }
 
-// A cancelled query must stop the walk. Generate is handed osquery's context and used to
-// discard it, so this guards the threading rather than fsscan's own behaviour.
+// A cancelled query must stop discovery. Generate is handed osquery's context and must pass it
+// on, so this guards the threading rather than fsscan's own behavior.
 func TestDiscoverAllHonoursCallerCancellation(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "alice", ".cursor")
@@ -518,9 +500,9 @@ func TestDiscoverAllHonoursCallerCancellation(t *testing.T) {
 	// first says the query went away, the second says this host is too slow for the
 	// schedule it is on.
 	//
-	// Equality on a code rather than a substring match on the sentence. The old version
-	// searched for "timeout", which passed for every wording that did not happen to contain
-	// that word, including a budget message that said "exhausted" instead.
+	// Equality on a code rather than a substring match on the sentence: a search for
+	// "timeout" would pass for any wording without that word, including a budget message
+	// that says "exhausted".
 	budgetCodes := map[warnCode]struct{}{
 		warnBudgetExhaustedPreHome: {}, warnBudgetExhaustedOpening: {},
 		warnBudgetExhaustedInHome: {},
@@ -640,9 +622,9 @@ func TestDiscoverForHomeReportsAnExhaustedBudget(t *testing.T) {
 				continue
 			}
 			diagnostics++
-			// Equality on the code, not a substring of the sentence. The old assertion
-			// matched "scan truncated" anywhere in the text, so it passed for any message
-			// containing that phrase and would have kept passing if the cause changed.
+			// Equality on the code, not a substring of the sentence: a match on
+			// "scan truncated" would pass for any message containing that phrase, whatever
+			// the cause.
 			if row.Warning.Code != warnBudgetExhaustedInHome &&
 				row.Warning.Code != warnBudgetExhaustedOpening {
 				t.Errorf("%s: warning does not name an exhausted budget: %q",

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+
+	"github.com/macadmins/osquery-extension/pkg/testutil"
 )
 
 // The two descriptor refusals, each driven by the only mechanism that can reach it without
@@ -21,7 +23,7 @@ import (
 func TestReadBoundedUnder_RefusesHardLink(t *testing.T) {
 	base := t.TempDir()
 	target := filepath.Join(base, "f.json")
-	writeFile(t, target, `{}`)
+	testutil.WriteFile(t, target, `{}`)
 	// os.Link is what makes this testable at all. A second link is indistinguishable from
 	// the first from the filesystem's point of view -- there is no "original" -- which is
 	// exactly why the link *count* is the only evidence available and why the refusal has
@@ -54,7 +56,7 @@ func TestReadBoundedUnder_RefusesHardLink(t *testing.T) {
 
 func TestReadBoundedUnder_RefusesForeignOwner(t *testing.T) {
 	base := t.TempDir()
-	writeFile(t, filepath.Join(base, "f.json"), `{}`)
+	testutil.WriteFile(t, filepath.Join(base, "f.json"), `{}`)
 
 	// The real uid passes. Taken from the running process rather than assumed, so the test
 	// says something on a host where tests run as root.
@@ -89,7 +91,7 @@ func TestReadBoundedUnder_RefusesForeignOwner(t *testing.T) {
 // call site silently answers false and every refusal reads as ClassOther.
 func TestClassifyErrorOverTheRealReadPath(t *testing.T) {
 	base := t.TempDir()
-	writeFile(t, filepath.Join(base, "big.json"), `0123456789`)
+	testutil.WriteFile(t, filepath.Join(base, "big.json"), `0123456789`)
 	if err := os.Mkdir(filepath.Join(base, "adir"), 0o755); err != nil {
 		t.Fatal(err)
 	}

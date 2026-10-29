@@ -4,6 +4,7 @@ package fsscan
 
 import (
 	"os"
+	"time"
 )
 
 // This package reads files that another local user may control, so every open has to refuse
@@ -25,6 +26,12 @@ import (
 // to be nameable on every platform because ClassifyError maps it, and a sentinel declared
 // only in the build that returns it cannot be classified in the build that reports it.
 
+var errNotDirectory = errUnsupported
+
+func openBaseDir(string) (*os.File, error) {
+	return nil, errUnsupported
+}
+
 func openBeneathComponents(string, string, []string) (*os.File, error) {
 	return nil, errUnsupported
 }
@@ -41,4 +48,12 @@ func isRefusedOrNotDirectory(error) bool {
 // error keeps the signature honest -- the checks did not fail, they were never reached.
 func checkDescriptor(*os.File, os.FileInfo, ReadOpts) error {
 	return nil
+}
+
+func readLinkAt(*os.File, string) (string, error) {
+	return "", errUnsupported
+}
+
+func entryStat(*os.File, os.DirEntry) (time.Time, os.FileMode, bool) {
+	return time.Time{}, 0, false
 }

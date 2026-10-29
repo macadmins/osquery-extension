@@ -3,8 +3,8 @@ package mcp_servers
 import (
 	"encoding/json"
 	"path/filepath"
-	"slices"
 
+	"github.com/macadmins/osquery-extension/pkg/devclients"
 	"github.com/macadmins/osquery-extension/pkg/fsscan"
 )
 
@@ -36,11 +36,10 @@ import (
 // answer would be a race besides. So where that file would otherwise approve, the honest
 // answer is `unknown`: Claude might run the server and this scan cannot tell.
 //
-// An earlier version granted those approvals outright, with a comment reasoning that an
-// untracked file belongs to whoever is running Claude. That described the behaviour before
-// v2.1.207, which applied them even in a folder never trusted. It is no longer true, and the
-// consequence was a clean `enabled` row for an ordinary untrusted project whose only approval
-// came from a file Claude would have ignored.
+// Granting those approvals outright would report a clean `enabled` row for an ordinary
+// untrusted project whose only approval comes from a file Claude ignores. Claude Code before
+// v2.1.207 applied an untracked file's approvals even in a folder never trusted; current
+// releases do not.
 
 // approvalEvidence is one coherent set of approval facts.
 //
@@ -51,8 +50,47 @@ type approvalEvidence struct {
 	// EnableAll is a pointer so an omitted key and an explicit `false` stay distinguishable.
 	// Collapsing them is what let a lower-precedence `true` survive an explicit opt-out.
 	EnableAll *bool
-	Enabled   []string
-	Disabled  []string
+	Enabled   nameSet
+	Disabled  nameSet
+}
+
+// nameSet is the union of the name lists of the sources merged into one piece of evidence, each
+// list held as a set built once, when its source was read. A merge appends references to those
+// sets rather than copying names, and a lookup asks each set, so a lookup costs one map read per
+// source, not one comparison per name. The lists are the user's: a settings file under the
+// 1 MiB cap can name about 90,000 servers, and searching that list for every server of every
+// project, after copying it into every project's evidence, took seconds per account, enough to
+// run a query past the time osquery allows an extension.
+type nameSet []map[string]struct{}
+
+// newNameSet builds the set of one source's list, or nothing for an empty list.
+func newNameSet(names []string) nameSet {
+	if len(names) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		set[name] = struct{}{}
+	}
+	return nameSet{set}
+}
+
+// union is every name in either, sharing their sets.
+func (s nameSet) union(other nameSet) nameSet {
+	if len(other) == 0 {
+		return s
+	}
+	return append(append(nameSet(nil), s...), other...)
+}
+
+// contains reports whether any merged source names name.
+func (s nameSet) contains(name string) bool {
+	for _, set := range s {
+		if _, ok := set[name]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // overlay applies a higher-precedence source over a lower one.
@@ -62,8 +100,8 @@ type approvalEvidence struct {
 func (lower approvalEvidence) overlay(higher approvalEvidence) approvalEvidence {
 	out := approvalEvidence{
 		EnableAll: lower.EnableAll,
-		Enabled:   append(append([]string(nil), lower.Enabled...), higher.Enabled...),
-		Disabled:  append(append([]string(nil), lower.Disabled...), higher.Disabled...),
+		Enabled:   lower.Enabled.union(higher.Enabled),
+		Disabled:  lower.Disabled.union(higher.Disabled),
 	}
 	if higher.EnableAll != nil {
 		out.EnableAll = higher.EnableAll
@@ -80,23 +118,19 @@ func (e approvalEvidence) resolve(serverName string) approvalState {
 //
 // Separate from overlay() because the two have different lifetimes. Accumulating sources
 // happens once per settings file and wants a real merged value; resolving happens once per
-// server and does not -- every use of the merged lists here is a membership test, so
-// overlay()'s two concatenated slices were allocated and discarded per row. Those lists are
-// fixed while a project's rows are evaluated, which made the cost server count x list
-// length: an 889 KB settings file naming 100,000 servers, under the 1 MiB read cap, copied
-// 1.6 MB per lookup. Bounding the input does not bound a product.
+// server and does not, so building the overlay per lookup would allocate for every row.
 //
-// Checking the two lists in sequence is the same answer, not an approximation. What resolve()
+// Checking the two in sequence is the same answer, not an approximation. What resolve()
 // encodes is precedence between *categories* -- every rejection beats every approval, which
-// beats the blanket scalar -- and within a category the loops return on first match, so
-// concatenation order was never observable.
+// beats the blanket scalar -- and within a category membership is all that is asked, so the
+// order of the sources was never observable.
 func (e approvalEvidence) resolveUnder(higher approvalEvidence, serverName string) approvalState {
-	if slices.Contains(e.Disabled, serverName) || slices.Contains(higher.Disabled, serverName) {
+	if e.Disabled.contains(serverName) || higher.Disabled.contains(serverName) {
 		return approvalDisabled
 	}
 	// An individual approval before the blanket one, so an `enableAllProjectMcpServers:
 	// false` does not revoke a name someone approved explicitly.
-	if slices.Contains(e.Enabled, serverName) || slices.Contains(higher.Enabled, serverName) {
+	if e.Enabled.contains(serverName) || higher.Enabled.contains(serverName) {
 		return approvalEnabled
 	}
 	// The scalar follows source precedence rather than unioning, so the higher source's
@@ -182,7 +216,7 @@ func (a claudeApproval) stateFor(serverName string) approvalState {
 	// Rejection first, and before the certainty gate. A disabled entry that was successfully
 	// read rejects the server however much other evidence is missing, which is both what
 	// Claude documents and the safe direction.
-	if slices.Contains(a.Certain.Disabled, serverName) {
+	if a.Certain.Disabled.contains(serverName) {
 		return approvalDisabled
 	}
 	// Only now does missing evidence matter. An approval this scan could not read is not an
@@ -247,9 +281,9 @@ type approvalSource struct {
 //
 // Absence is success with nothing to report: most accounts and most projects have no settings
 // file, and treating that as unknown would make every ordinary row unknown. A file that
-// exists and cannot be read or parsed sets Known false and returns a warning naming the
-// class, because "unknown" alone leaves an administrator unable to tell malformed JSON from
-// denied access from an oversized file.
+// exists and cannot be read or parsed, or is null, sets Known false and returns a warning
+// naming the class, because "unknown" alone leaves an administrator unable to tell malformed
+// JSON from denied access from an oversized file.
 func readApprovalSettings(home, projRel string, source approvalSource) (claudeApproval, []warning) {
 	// The source's own path travels with its warnings, so a row naming only the project
 	// directory cannot leave an administrator guessing which of two settings files failed.
@@ -286,13 +320,18 @@ func readApprovalSettings(home, projRel string, source approvalSource) (claudeAp
 			Key: settingsSourceKey(source.relFile)}}
 	}
 	var doc mcpApprovalSettings
-	if err := json.Unmarshal(stripBOM(data), &doc); err != nil {
+	data = devclients.StripBOM(data)
+	err = json.Unmarshal(data, &doc)
+	if err == nil && devclients.NullDocument(data) {
+		err = devclients.ErrNullDocument
+	}
+	if err != nil {
 		// The real parser metadata, through the same machinery every other parse failure in
-		// this table uses. Labelling every decode error shapeNotAnObject was wrong about
-		// most of them: `{"enabledMcpjsonServers":123}` is a perfectly good top-level
-		// object with one field of the wrong type, and an administrator told the top level
-		// is not an object goes looking for the wrong thing. parseWarning reads the offset,
-		// the field name and a validated value kind, and never the parser's message.
+		// this table uses. Only a null document is top_level_is_not_an_object:
+		// `{"enabledMcpjsonServers":123}` is a good top-level object with one field of the
+		// wrong type, and an administrator told the top level is not an object would look for
+		// the wrong thing. parseWarning reads the offset, the field name and a validated value
+		// kind, and never the parser's message.
 		detail := parseWarning(err)
 		detail.Code = warnApprovalSettingsUnreadable
 		// The field name parseWarning may have taken from our own struct is replaced by the
@@ -303,12 +342,12 @@ func readApprovalSettings(home, projRel string, source approvalSource) (claudeAp
 	}
 	// Rejections are always certain, whatever the source's eligibility to approve.
 	out := claudeApproval{
-		Certain: approvalEvidence{Disabled: doc.DisabledMcpjsonServers},
+		Certain: approvalEvidence{Disabled: newNameSet(doc.DisabledMcpjsonServers)},
 		Known:   true,
 	}
 	switch source.eligibility {
 	case mayApprove:
-		out.Certain.Enabled = doc.EnabledMcpjsonServers
+		out.Certain.Enabled = newNameSet(doc.EnabledMcpjsonServers)
 		out.Certain.EnableAll = doc.EnableAllProjectMcpServers
 	case eligibilityUncertain:
 		// Held separately, with the scalar's omitted/true/false distinction intact: an
@@ -316,7 +355,7 @@ func readApprovalSettings(home, projRel string, source approvalSource) (claudeAp
 		// this file turns out to be eligible, and collapsing it to a bool made that
 		// unrepresentable.
 		out.Pending = approvalEvidence{
-			Enabled:   doc.EnabledMcpjsonServers,
+			Enabled:   newNameSet(doc.EnabledMcpjsonServers),
 			EnableAll: doc.EnableAllProjectMcpServers,
 		}
 		out.HasPending = true

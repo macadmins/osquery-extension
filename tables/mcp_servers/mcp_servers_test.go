@@ -8,14 +8,18 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
 
+	"github.com/osquery/osquery-go/plugin/table"
+
+	"github.com/macadmins/osquery-extension/pkg/devclients"
 	"github.com/macadmins/osquery-extension/pkg/fsscan"
 	"github.com/macadmins/osquery-extension/pkg/redact"
+	"github.com/macadmins/osquery-extension/pkg/testutil"
 	"github.com/macadmins/osquery-extension/pkg/utils"
-	"github.com/osquery/osquery-go/plugin/table"
 )
 
 // A token shape the redactor is expected to recognise, used wherever a test needs to prove a
@@ -124,13 +128,20 @@ func TestUserConstraintTakesOnlyEqualityMatches(t *testing.T) {
 	// An unsupported operator alongside equality abandons narrowing entirely. Keeping the
 	// equality values and ignoring the rest can under-scan: QueryContext does not carry
 	// enough boolean structure to prove the subset is sufficient, so `user = 'alice' OR user
-	// LIKE 'b%'` would be answered with alice alone. An earlier version of this test asserted
-	// that unsafe behaviour as correct.
+	// LIKE 'b%'` would be answered with alice alone.
 	if got := userConstraint(constraints(
 		table.Constraint{Operator: table.OperatorEquals, Expression: "alice"},
 		table.Constraint{Operator: table.OperatorGreaterThan, Expression: "c"},
 	)); got != nil {
 		t.Errorf("mixed operators must not narrow: %v", got)
+	}
+
+	// `user = ''` asks for the rows that belong to no account, which only a full scan produces.
+	if got := userConstraint(constraints(
+		table.Constraint{Operator: table.OperatorEquals, Expression: ""},
+		table.Constraint{Operator: table.OperatorEquals, Expression: "alice"},
+	)); got != nil {
+		t.Errorf("an empty name must not narrow: %v", got)
 	}
 
 	// All-equality still narrows, which is the case worth having.
@@ -145,12 +156,6 @@ func TestUserConstraintTakesOnlyEqualityMatches(t *testing.T) {
 		if _, ok := got[want]; !ok {
 			t.Errorf("%q missing from the filter", want)
 		}
-	}
-}
-
-func TestBoolToStr(t *testing.T) {
-	if boolToStr(true) != "1" || boolToStr(false) != "0" {
-		t.Error("disabled must render as the 1/0 integers osquery expects, not true/false")
 	}
 }
 
@@ -224,11 +229,10 @@ func TestMCPServersGenerateWiresConstraintsToDiscovery(t *testing.T) {
 
 // An empty account roster is a failure, not an answer.
 //
-// This previously asserted the opposite: that zero users was "a real answer" producing no
-// rows and no error. It is not. No supported OS genuinely has no accounts, and a virtual
-// table can log an internal error -- an OpenDirectory failure, seen on osquery 5.23.1 --
-// while still returning an empty result set with no SQL error. Normalising that as a clean
-// result is the exact silent-empty failure this table exists to prevent.
+// No supported OS genuinely has no accounts, and a virtual table can log an internal error,
+// such as an OpenDirectory failure seen on osquery 5.23.1, while still returning an empty
+// result set with no SQL error. Treating that as a clean result would be the silent-empty
+// failure this table exists to prevent.
 func TestGenerateWithAnEmptyRosterReportsItRatherThanReturningNothing(t *testing.T) {
 	rows, err := generate(context.Background(), table.QueryContext{}, rosterFrom())
 	if err != nil {
@@ -239,7 +243,7 @@ func TestGenerateWithAnEmptyRosterReportsItRatherThanReturningNothing(t *testing
 	}
 }
 
-// Pins the boundary the schema comment documents, so the residual risk stays a known,
+// Pins the limit the schema comment documents, so the residual risk stays a known,
 // deliberate property rather than something rediscovered later as a surprise.
 //
 // Two halves. A secret shaped like a known issuer token is removed wherever it appears, and
@@ -251,7 +255,7 @@ func TestRedactionRemovesKnownShapesButNotOpaqueOnes(t *testing.T) {
 	shaped := "ghp_" + strings.Repeat("B", 36)
 
 	shapedRow := serverToRow(Server{
-		Command: "/tmp/" + shaped, ServerName: shaped, SourcePath: "/Users/x/" + shaped + "/.mcp.json",
+		Command: "/tmp/" + shaped, ServerName: shaped, SourcePath: testutil.AbsPath("Users", "x", shaped, ".mcp.json"),
 		PackageName: shaped, EnvKeys: []string{shaped},
 	})
 	for _, column := range []string{"command_basename", "server_name", "source_path", "package_name", "env_keys"} {
@@ -260,15 +264,16 @@ func TestRedactionRemovesKnownShapesButNotOpaqueOnes(t *testing.T) {
 		}
 	}
 
-	opaqueRow := serverToRow(Server{Command: "/tmp/" + opaque, SourcePath: "/Users/x/" + opaque + "/.mcp.json"})
+	opaqueRow := serverToRow(Server{Command: "/tmp/" + opaque,
+		SourcePath: testutil.AbsPath("Users", "x", opaque, ".mcp.json")})
 	if opaqueRow["command_basename"] != opaque {
 		t.Errorf("command_basename = %q; the documented behaviour is that an opaque value "+
 			"passes through. If this changed deliberately, update the schema comment too.",
 			opaqueRow["command_basename"])
 	}
 	if !strings.Contains(opaqueRow["source_path"], opaque) {
-		t.Error("source_path no longer passes an opaque value through, so the comment's claim " +
-			"that the limit is uniform across columns is now wrong")
+		t.Error("source_path does not pass an opaque value through, so the schema comment's " +
+			"claim that the limit is uniform across columns is wrong")
 	}
 }
 
@@ -278,14 +283,14 @@ func TestRedactionRemovesKnownShapesButNotOpaqueOnes(t *testing.T) {
 // Two gaps produced this test. The embedded pattern was bounded on the left by `\s`, so an
 // option introduced by a path separator, a bracket or non-ASCII whitespace was not an option
 // as far as the regexp was concerned and its value survived. And source_path and warning are
-// assembled after parsing, so they never passed through redactSecret at all: a project
+// assembled after parsing, so they never passed through redact.Secret at all: a project
 // directory literally named `--token=<secret>` reached the row intact. Both are emission-time
 // properties, so this asserts on serverToRow rather than on the redactor.
 func TestServerToRowRedactsDelimitedAssignmentsInEveryColumnAUserControls(t *testing.T) {
 	const secret = "opaqueSecretValue123"
 	row := serverToRow(Server{
-		SourcePath:    "/Users/alice/--token=" + secret + "/project/.mcp.json",
-		SourceContext: "projects[/tmp/--api-key=" + secret + "].mcpServers",
+		SourcePath:    testutil.AbsPath("Users", "alice", "--token="+secret, "project", ".mcp.json"),
+		SourceContext: "projects[" + testutil.AbsPath("tmp", "--api-key="+secret) + "].mcpServers",
 		ServerName:    "group/--api-key=" + secret,
 		Command:       "/opt/--dd-key=" + secret + "/bin/tool",
 		URL:           "https://host/--token=" + secret,
@@ -293,7 +298,7 @@ func TestServerToRowRedactsDelimitedAssignmentsInEveryColumnAUserControls(t *tes
 		RequestedSpec: "pkg@--token=" + secret,
 		PinnedVersion: "1.0.0-\u00a0--token=" + secret,
 		EnvKeys:       []string{"A=--token=" + secret},
-		Home:          "/Users/alice",
+		Home:          testutil.AbsPath("Users", "alice"),
 		Warning:       warning{Code: warnSourceUnreadable, Class: fsscan.ClassDenied},
 	})
 	for column, value := range row {
@@ -383,11 +388,11 @@ func TestServerToRowRedactsAnAssignmentCarryingANewline(t *testing.T) {
 	}
 
 	// The same value in the two columns assembled after parsing, which no parse-time
-	// sanitization reaches. Without the emission-boundary pass these carry the credential
+	// sanitization reaches. Without the pass at publication these carry the credential
 	// even though the identically-shaped server name above does not.
 	built := serverToRow(Server{
-		SourcePath: "/Users/alice/--token=\n" + secret + "/.mcp.json",
-		Home:       "/Users/alice",
+		SourcePath: testutil.AbsPath("Users", "alice", "--token=\n"+secret, ".mcp.json"),
+		Home:       testutil.AbsPath("Users", "alice"),
 		Warning:    warning{Code: warnSourceUnreadable, Class: fsscan.ClassDenied},
 	})
 	if strings.Contains(built["source_path"], secret) {
@@ -396,7 +401,7 @@ func TestServerToRowRedactsAnAssignmentCarryingANewline(t *testing.T) {
 	if !strings.Contains(built["source_path"], redact.RedactedMark) {
 		t.Errorf("source_path = %q, expected the redaction marker", built["source_path"])
 	}
-	// warning is no longer assembled from an error message, so there is nothing for a
+	// warning is not assembled from an error message, so there is nothing for a
 	// newline to hide inside: the column is a sentence chosen by code, plus integers and
 	// closed-enum spellings. Asserted as the absence of the whole secret rather than as the
 	// presence of a marker, because the value never entered the column to be marked.
@@ -586,8 +591,8 @@ func TestQueryForANonLoginAccountIsNotToldItIsAbsent(t *testing.T) {
 		if row.User != "daemon" {
 			t.Errorf("row for %q in a query constrained to daemon: %+v", row.User, row)
 		}
-		if row.UserID != "1" {
-			t.Errorf("row carries user_id %q, want the roster's identity: %+v", row.UserID, row)
+		if row.UserID != "1" || row.UID != "1" {
+			t.Errorf("row carries user_id %q and uid %q, want the roster's: %+v", row.UserID, row.UID, row)
 		}
 	}
 
@@ -603,13 +608,8 @@ func TestQueryForANonLoginAccountIsNotToldItIsAbsent(t *testing.T) {
 
 // The missing-name diagnostic must only claim a companion warning exists when one does.
 //
-// It used to close with "a roster-level warning alongside this row says which" whatever the
-// roster had done, so on a complete roster the sentence sent an operator looking for a row
-// that is not there. The fix was two near-identical paragraphs differing in one clause, which
-// the warning catalogue does not admit -- one sentence per code -- so the distinction is now
-// carried as a count on the code instead, and the sentence says neither thing.
-//
-// What has to hold is the same property, asserted structurally: Count is set exactly when a
+// The warning catalogue holds one sentence per code, so the sentence makes no claim either
+// way and a count on the code carries the distinction: Count is set exactly when a
 // roster-level row was also emitted.
 func TestMissingNameDiagnosticOnlyPromisesAWarningThatExists(t *testing.T) {
 	root := t.TempDir()
@@ -618,12 +618,8 @@ func TestMissingNameDiagnosticOnlyPromisesAWarningThatExists(t *testing.T) {
 	}
 
 	// A roster that reported no limits of its own. There is no companion row, so the
-	// diagnostic must not claim one.
-	//
-	// This case changed with the removal of the always-on Linux note: that note made every
-	// Linux run roster-uncertain, so the claim was truthful there and false everywhere else,
-	// which is why the old test had a platform-dependent branch. With the note gone, a
-	// healthy roster is uncertain on no platform and the assertion is the same everywhere.
+	// diagnostic must not claim one. A healthy roster is uncertain on no platform, so the
+	// assertion is the same everywhere.
 	rows := DiscoverAll(context.Background(), rosterOf(t, root),
 		map[string]struct{}{"nosuchuser": {}})
 	var missing *Server
@@ -664,8 +660,8 @@ func TestMissingNameDiagnosticOnlyPromisesAWarningThatExists(t *testing.T) {
 		}
 	}
 	if !pointed {
-		t.Error("with roster-level uncertainty reported, the missing-name diagnostic no " +
-			"longer flags that a companion row explains it")
+		t.Error("with roster-level uncertainty reported, the missing-name diagnostic does " +
+			"not signal that a companion row explains it")
 	}
 }
 
@@ -867,6 +863,11 @@ func TestDeclaredUnknownTransportIsNotReplacedByAGuess(t *testing.T) {
 // full. The claim was false, and it cost that account every row the cache was already
 // holding. Restamping a cached result is not filesystem work and the budget has no say in it.
 func TestASharedHomeIsReportedForBothAccountsAfterTheBudgetIsGone(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("on Windows each account's scan is its own, keyed by SID as well as home, so " +
+			"the second account meeting the spent budget is correct there; see " +
+			"TestScanKeySeparatesAccountsThatShareAHomeOnWindows")
+	}
 	root := t.TempDir()
 	home := filepath.Join(root, "shared")
 	if err := os.MkdirAll(filepath.Join(home, ".cursor"), 0o755); err != nil {
@@ -886,13 +887,11 @@ func TestASharedHomeIsReportedForBothAccountsAfterTheBudgetIsGone(t *testing.T) 
 	// scanned and cached. The home-rooted pass runs before the project pass, so the seeded
 	// row above survives the truncation.
 	//
-	// A long project list rather than a deep directory tree, which is what the old version
-	// built. That is the same substitution the discovery change made everywhere: what makes
-	// one home expensive is no longer how much source code is under it -- nothing walks --
-	// but how many projects its clients have recorded, because each one costs a probe per
-	// known filename.
-	projects := make(map[string]any, maxProjects)
-	for i := range maxProjects {
+	// A long project list rather than a deep directory tree: nothing walks, so what makes one
+	// home expensive is how many projects its clients have recorded, because each one costs
+	// a probe per known filename.
+	projects := make(map[string]any, devclients.MaxProjects)
+	for i := range devclients.MaxProjects {
 		rel := filepath.Join("code", fmt.Sprintf("p%03d", i))
 		if err := os.MkdirAll(filepath.Join(home, rel), 0o755); err != nil {
 			t.Fatal(err)
@@ -967,5 +966,19 @@ func TestASharedHomeIsReportedForBothAccountsAfterTheBudgetIsGone(t *testing.T) 
 			t.Errorf("no server row for %q; a shared home has to be reported for every "+
 				"account that shares it", user)
 		}
+	}
+}
+
+// TestAnOmittedAccountKeepsItsUID: an account omitted for its home carries its uid, so
+// `WHERE uid = ...` and `JOIN users USING (uid)` keep the row explaining why it has no servers.
+func TestAnOmittedAccountKeepsItsUID(t *testing.T) {
+	roster := rosterFrom(map[string]string{
+		"uid": "502", "username": "carol", "directory": filepath.Join(t.TempDir(), "gone"),
+		"shell": "/bin/zsh",
+	})
+	rows := withoutStandingNotes(DiscoverAll(context.Background(), roster,
+		map[string]struct{}{"carol": {}}))
+	if len(rows) != 1 || rows[0].Warning.Code != warnAccountHomeMissing || rows[0].UID != "502" {
+		t.Errorf("rows = %+v, want one account_home_missing row carrying uid 502", rows)
 	}
 }

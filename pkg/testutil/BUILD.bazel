@@ -1,0 +1,12 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "testutil",
+    srcs = [
+        "files.go",
+        "junction_windows.go",
+    ],
+    importpath = "github.com/macadmins/osquery-extension/pkg/testutil",
+    testonly = True,
+    visibility = ["//visibility:public"],
+)

@@ -2,24 +2,17 @@ package fsscan
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"strings"
 	"testing"
-)
+	"time"
 
-// writeFile creates a file and every directory above it. Shared by the tests in this
-// package rather than redeclared per file: the three that need it are split by build tag,
-// and a per-file copy drifted in permissions the last time this was duplicated.
-func writeFile(t *testing.T, path, content string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
+	"github.com/macadmins/osquery-extension/pkg/testutil"
+)
 
 // Containment is the whole of the security argument for reading a path a user's config file
 // recorded, so the refusals are enumerated rather than sampled.
@@ -63,6 +56,20 @@ func TestContainProjectPath(t *testing.T) {
 		// path containing a space.
 		{name: "percent-decoded file URL", goos: "darwin", home: unixHome,
 			recorded: "file:///Users/alice/My%20Code", fileURL: true, wantRel: "My Code"},
+		// Components that name no path bytes are refused rather than discarded, so a path cannot
+		// be accepted in one spelling and refused in another.
+		{name: "file URL with userinfo", goos: "darwin", home: unixHome,
+			recorded: "file://user@localhost/Users/alice/code", fileURL: true, wantErr: ErrMalformedPath},
+		{name: "file URL with a query", goos: "darwin", home: unixHome,
+			recorded: "file:///Users/alice/code?ignored", fileURL: true, wantErr: ErrMalformedPath},
+		{name: "file URL with an empty query", goos: "darwin", home: unixHome,
+			recorded: "file:///Users/alice/code?", fileURL: true, wantErr: ErrMalformedPath},
+		{name: "file URL with a fragment", goos: "darwin", home: unixHome,
+			recorded: "file:///Users/alice/code#ignored", fileURL: true, wantErr: ErrMalformedPath},
+		{name: "file URL with an empty fragment", goos: "darwin", home: unixHome,
+			recorded: "file:///Users/alice/code#", fileURL: true, wantErr: ErrMalformedPath},
+		{name: "a percent-encoded # is a path byte", goos: "darwin", home: unixHome,
+			recorded: "file:///Users/alice/c%23", fileURL: true, wantRel: "c#"},
 		// Decoded exactly once, which is the whole of the next three rows. url.Parse has
 		// already decoded URL.Path, and decoding it again produced wrong answers on input
 		// that is not unusual in any way.
@@ -134,15 +141,15 @@ func TestContainProjectPath(t *testing.T) {
 		{name: "empty", goos: "darwin", home: unixHome, recorded: "", wantErr: ErrMalformedPath},
 		{name: "relative", goos: "darwin", home: unixHome,
 			recorded: "code/project", wantErr: ErrMalformedPath},
-		// NUL truncates a path at the syscall boundary, so the string Go inspects and the
+		// NUL truncates a path where it is handed to the kernel, so the string Go inspects and the
 		// path the kernel opens are different strings.
 		{name: "NUL byte", goos: "darwin", home: unixHome,
 			recorded: "/Users/alice/safe\x00/../../etc", wantErr: ErrMalformedPath},
 		{name: "newline", goos: "darwin", home: unixHome,
 			recorded: "/Users/alice/a\nb", wantErr: ErrMalformedPath},
 
-		// Windows, reachable only because the OS is a parameter. There is no Windows CI
-		// job, so a test that read runtime.GOOS would assert none of this anywhere.
+		// Windows, reachable only because the OS is a parameter, so these cases run on every
+		// host and not only on the windows-latest job.
 		{name: "windows drive path", goos: "windows", home: winHome,
 			recorded: `C:\Users\alice\code`, wantRel: `code`},
 		// The leading slash is URL grammar, not path. Left in place this is not an absolute
@@ -159,8 +166,56 @@ func TestContainProjectPath(t *testing.T) {
 		// Backslash is a separator on Windows, so the ".." inspection has to split on it.
 		{name: "windows backslash dotdot", goos: "windows", home: winHome,
 			recorded: `C:\Users\alice\..\other`, wantErr: ErrMalformedPath},
+		// A UNC path names another host, so it is a remote origin, not a path outside the home;
+		// with a drive letter after the separators it was contained as the local drive's.
 		{name: "windows bare UNC", goos: "windows", home: winHome,
-			recorded: `\\server\share\p`, wantErr: ErrNotContained},
+			recorded: `\\server\share\p`, wantErr: ErrUnsupportedOrigin},
+		{name: "windows UNC naming the home", goos: "windows", home: winHome,
+			recorded: `\\C:\Users\alice\repo`, wantErr: ErrUnsupportedOrigin},
+		{name: "windows forward-slash UNC", goos: "windows", home: winHome,
+			recorded: `//server/share/p`, wantErr: ErrUnsupportedOrigin},
+		// Extended-length and device-namespace paths to a drive are local; Codex records
+		// project keys in the extended form. The extended UNC form still names another host.
+		{name: "windows extended-length drive path", goos: "windows", home: winHome,
+			recorded: `\\?\C:\Users\alice\repo`, wantRel: `repo`},
+		{name: "windows device-namespace drive path", goos: "windows", home: winHome,
+			recorded: `\\.\C:\Users\alice\repo`, wantRel: `repo`},
+		{name: "windows extended-length path outside home", goos: "windows", home: winHome,
+			recorded: `\\?\C:\Users\other\x`, wantErr: ErrNotContained},
+		{name: "windows extended-length dotdot", goos: "windows", home: winHome,
+			recorded: `\\?\C:\Users\alice\..\other`, wantErr: ErrMalformedPath},
+		{name: "windows extended-length UNC", goos: "windows", home: winHome,
+			recorded: `\\?\UNC\server\share\p`, wantErr: ErrUnsupportedOrigin},
+		{name: "windows device-namespace UNC, lowercase", goos: "windows", home: winHome,
+			recorded: `\\.\unc\server\share\p`, wantErr: ErrUnsupportedOrigin},
+		{name: "windows forward-slash extended UNC", goos: "windows", home: winHome,
+			recorded: `//?/UNC/server/share/p`, wantErr: ErrUnsupportedOrigin},
+		// After the prefix, anything but a drive directory or UNC names no path this scan can
+		// contain, so it is malformed rather than another host.
+		{name: "windows extended-length relative", goos: "windows", home: winHome,
+			recorded: `\\?\repo`, wantErr: ErrMalformedPath},
+		{name: "windows extended-length bare drive", goos: "windows", home: winHome,
+			recorded: `\\?\C:`, wantErr: ErrMalformedPath},
+		{name: "windows extended-length drive-relative", goos: "windows", home: winHome,
+			recorded: `\\?\C:repo`, wantErr: ErrMalformedPath},
+		{name: "windows extended-length volume GUID", goos: "windows", home: winHome,
+			recorded: `\\?\Volume{0f2c4b1e-0000-0000-0000-100000000000}\repo`, wantErr: ErrMalformedPath},
+		{name: "windows extended-length forward-slash drive", goos: "windows", home: winHome,
+			recorded: `\\?\C:/Users/alice/repo`, wantErr: ErrMalformedPath},
+		{name: "windows forward-slash extended drive", goos: "windows", home: winHome,
+			recorded: `//?/C:/Users/alice/repo`, wantErr: ErrMalformedPath},
+		// Cleaned as Windows cleans it on every host, doubled and trailing separators included.
+		{name: "windows doubled separators", goos: "windows", home: winHome,
+			recorded: `C:\Users\alice\\code\`, wantRel: `code`},
+		// macOS folds case like Windows: APFS is case-insensitive by default, so this is the
+		// home's directory, and was counted as outside the home and never read.
+		{name: "darwin case folding", goos: "darwin", home: unixHome,
+			recorded: "/users/alice/code", wantRel: "code"},
+		{name: "darwin case-folded sibling", goos: "darwin", home: unixHome,
+			recorded: "/users/alicebackup/x", wantErr: ErrNotContained},
+		// Linux does not.
+		{name: "linux case differs", goos: "linux", home: "/home/alice",
+			recorded: "/home/Alice/code", wantErr: ErrNotContained},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rel, err := containProjectPathFor(tc.goos, tc.home, tc.recorded, tc.fileURL)
@@ -180,6 +235,33 @@ func TestContainProjectPath(t *testing.T) {
 				t.Errorf("rel = %q, want %q", rel, tc.wantRel)
 			}
 		})
+	}
+}
+
+// TestSamePathKey: on Windows two spellings of one directory share a key, which agrees with
+// strings.EqualFold even for a rune strings.ToLower does not fold: the long s folds with s. On
+// macOS and Linux case is significant, because a case-sensitive volume can hold both spellings
+// as two directories.
+func TestSamePathKey(t *testing.T) {
+	for _, tc := range []struct {
+		goos, left, right string
+		same              bool
+	}{
+		{"windows", `Code\Repo`, `code\repo`, true},
+		{"windows", "code\\ba\u017fe", `code\BASE`, true},
+		{"windows", `code\repo`, `code\repp`, false},
+		{"darwin", "Code/Repo", "code/repo", false},
+		{"darwin", "code/repo", "code/repo", true},
+		{"linux", "Code/Repo", "code/repo", false},
+	} {
+		left, right := samePathKeyFor(tc.goos, tc.left), samePathKeyFor(tc.goos, tc.right)
+		if (left == right) != tc.same {
+			t.Errorf("%s: keys for %q and %q are %q and %q, want same = %v",
+				tc.goos, tc.left, tc.right, left, right, tc.same)
+		}
+		if tc.goos == "windows" && (left == right) != strings.EqualFold(tc.left, tc.right) {
+			t.Errorf("%s: keys for %q and %q disagree with strings.EqualFold", tc.goos, tc.left, tc.right)
+		}
 	}
 }
 
@@ -227,9 +309,9 @@ func TestUnderCloudStorageAppliesOnDarwinOnly(t *testing.T) {
 // through the injected inspector, because no test can evict a file.
 func TestReadProjectFileRefusesCloudPlaceholders(t *testing.T) {
 	home := t.TempDir()
-	writeFile(t, filepath.Join(home, "Library", "CloudStorage", "OneDrive", ".mcp.json"), `{}`)
-	writeFile(t, filepath.Join(home, "Library", "Mobile Documents", "p", ".mcp.json"), `{}`)
-	writeFile(t, filepath.Join(home, "code", ".mcp.json"), `{}`)
+	testutil.WriteFile(t, filepath.Join(home, "Library", "CloudStorage", "OneDrive", ".mcp.json"), `{}`)
+	testutil.WriteFile(t, filepath.Join(home, "Library", "Mobile Documents", "p", ".mcp.json"), `{}`)
+	testutil.WriteFile(t, filepath.Join(home, "code", ".mcp.json"), `{}`)
 
 	opts := ReadOpts{MaxSize: 1024}
 	for _, projRel := range []string{
@@ -277,8 +359,8 @@ func TestReadProjectFileRefusesCloudPlaceholders(t *testing.T) {
 	}
 
 	// The seam is handed the descriptor the read uses, not a path it has to resolve again.
-	// os.SameFile against the file created above is what proves it: a second lookup by name
-	// is what used to let an intermediate component redirect this check.
+	// os.SameFile against the file created above proves it. A second lookup by name would
+	// let an intermediate component redirect this check.
 	var seen os.FileInfo
 	inspect := ReadOpts{MaxSize: 1024, CloudPlaceholder: func(file *os.File) (bool, error) {
 		info, err := file.Stat()
@@ -308,7 +390,7 @@ func TestListDirNamesUnder(t *testing.T) {
 		}
 	}
 	// A child of a child, to pin that this does not recurse.
-	writeFile(t, filepath.Join(base, "profiles", "alpha", "deep", "mcp.json"), `{}`)
+	testutil.WriteFile(t, filepath.Join(base, "profiles", "alpha", "deep", "mcp.json"), `{}`)
 
 	names, err := ListDirNamesUnder(base, "profiles", 10)
 	if err != nil {
@@ -363,7 +445,7 @@ func TestListDirNamesUnder(t *testing.T) {
 	}
 
 	// A file where a directory was expected.
-	writeFile(t, filepath.Join(base, "afile"), `x`)
+	testutil.WriteFile(t, filepath.Join(base, "afile"), `x`)
 	if _, err := ListDirNamesUnder(base, "afile", 10); !errors.Is(err, ErrNotRegular) {
 		t.Errorf("a file must be refused as not a directory: %v", err)
 	}
@@ -374,8 +456,7 @@ func TestListDirNamesUnder(t *testing.T) {
 //
 // FILE_ATTRIBUTE_RECALL_ON_OPEN is set on exactly the files whose provider starts fetching at
 // CreateFile, so the handle-based check learns it too late. A string rule runs first. Driven
-// per-OS so both branches are asserted from any host, which is the only way these run at all:
-// there is no Windows CI job.
+// per-OS so both branches are asserted from any host, not only on the windows-latest job.
 func TestWindowsCloudPrefixes(t *testing.T) {
 	for _, tc := range []struct {
 		goos, rel string
@@ -406,5 +487,141 @@ func TestWindowsCloudPrefixes(t *testing.T) {
 			t.Errorf("underCloudStorageFor(%q, %q) = %v, want %v",
 				tc.goos, tc.rel, got, tc.want)
 		}
+	}
+}
+
+// TestListDirNamesCappedSeparatesShortFromFailed pins the three outcomes the helper exists to
+// keep apart: a full listing, a capped one that still yields its names, and absence.
+func TestListDirNamesCappedSeparatesShortFromFailed(t *testing.T) {
+	base := t.TempDir()
+	for _, name := range []string{"a", "b", "c"} {
+		if err := os.MkdirAll(filepath.Join(base, "d", name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if names, truncated, err := ListDirNamesCapped(base, "d", 5); err != nil || truncated || len(names) != 3 {
+		t.Errorf("full listing: %v %v %v", names, truncated, err)
+	}
+	if names, truncated, err := ListDirNamesCapped(base, "d", 2); err != nil || !truncated || len(names) != 2 {
+		t.Errorf("capped listing: %v %v %v", names, truncated, err)
+	}
+	if names, truncated, err := ListDirNamesCapped(base, "missing", 2); err != nil || truncated || names != nil {
+		t.Errorf("absent directory: %v %v %v", names, truncated, err)
+	}
+}
+
+// TestListRecentDirNames: the newest entries are kept, newest first with the name breaking a
+// tie, the rest are counted, and only more entries than the read limit is truncation.
+func TestListRecentDirNames(t *testing.T) {
+	base := t.TempDir()
+	now := time.Now()
+	for name, age := range map[string]time.Duration{
+		"old": 4 * time.Hour, "newest": 0, "tie-b": time.Hour, "tie-a": time.Hour, "older": 3 * time.Hour,
+	} {
+		dir := filepath.Join(base, "d", name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(dir, now.Add(-age), now.Add(-age)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	names, older, links, truncated, err := ListRecentDirNames(base, "d", 3, 10)
+	if err != nil || truncated || older != 2 || links != 0 ||
+		!reflect.DeepEqual(names, []string{"newest", "tie-a", "tie-b"}) {
+		t.Errorf("keep 3 of 5: %v %d %d %v %v", names, older, links, truncated, err)
+	}
+	if names, older, _, truncated, err := ListRecentDirNames(base, "d", 3, 4); err != nil || !truncated ||
+		len(names) != 3 || older != 1 {
+		t.Errorf("read 4 of 5: %v %d %v %v", names, older, truncated, err)
+	}
+	if names, _, _, _, err := ListRecentDirNames(base, "missing", 3, 4); err != nil || names != nil {
+		t.Errorf("absent directory: %v %v", names, err)
+	}
+}
+
+// TestListRecentDirNamesRanksOnlyDirectories: files newer than every directory are not ranked,
+// so they cannot push a directory past keep, and are not counted as older.
+func TestListRecentDirNamesRanksOnlyDirectories(t *testing.T) {
+	base := t.TempDir()
+	old := filepath.Join(base, "d", "record")
+	if err := os.MkdirAll(old, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(old, past, past); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a.json", "b.json", "c.vscdb"} {
+		if err := os.WriteFile(filepath.Join(base, "d", name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	names, older, links, truncated, err := ListRecentDirNames(base, "d", 1, 10)
+	if err != nil || truncated || older != 0 || links != 0 || !reflect.DeepEqual(names, []string{"record"}) {
+		t.Errorf("one directory among newer files: %v %d %d %v %v", names, older, links, truncated, err)
+	}
+}
+
+// TestProbeProjectDir: a local project directory probes clean, a missing one reports absence,
+// and the network sentinel classifies as its own class. A network mount cannot be created in a
+// test, so the local case is what exercises the platform's real filesystem check.
+func TestProbeProjectDir(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "code", "svc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ProbeProjectDir(home, filepath.Join("code", "svc")); err != nil {
+		t.Errorf("a local project directory = %v, want nil", err)
+	}
+	// The home itself recorded as a project: ContainProjectPath reports ".", and the probe opens
+	// the home rather than refusing an empty path, so it reaches the network-filesystem check.
+	if err := ProbeProjectDir(home, "."); err != nil {
+		t.Errorf("the home as a project = %v, want nil", err)
+	}
+	if err := ProbeProjectDir(home, filepath.Join("code", "gone")); ClassifyError(err) != ClassAbsent {
+		t.Errorf("a missing project directory = %v (%s), want absent", err, ClassifyError(err))
+	}
+	if got := ClassifyError(fmt.Errorf("probe: %w", ErrNetworkFilesystem)); got != ClassNetworkFilesystem {
+		t.Errorf("the network sentinel classifies as %s", got)
+	}
+	if UnderCloudStorage(filepath.Join("code", "svc")) {
+		t.Error("an ordinary project directory matched a cloud prefix")
+	}
+}
+
+// TestProbeProjectDirRefusesAFile: a recorded project that is a regular file is refused by the
+// probe, as a path through a non-directory is, rather than passing it and failing both reads.
+func TestProbeProjectDirRefusesAFile(t *testing.T) {
+	home := t.TempDir()
+	testutil.WriteFile(t, filepath.Join(home, "notes.txt"), "not a project")
+	if err := ProbeProjectDir(home, "notes.txt"); ClassifyError(err) != ClassRefusedPath {
+		t.Errorf("a file probed as a project = %v (%s), want refused_path", err, ClassifyError(err))
+	}
+}
+
+// TestListSubdirNames: only directories are listed, sorted, so files beside them are not names;
+// more entries than the read limit is truncation; an absent directory is silent.
+func TestListSubdirNames(t *testing.T) {
+	base := t.TempDir()
+	for _, name := range []string{"b", "a", "c"} {
+		if err := os.MkdirAll(filepath.Join(base, "d", name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{".DS_Store", "0-file", "1-file"} {
+		if err := os.WriteFile(filepath.Join(base, "d", name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if names, _, truncated, err := ListSubdirNames(base, "d", 10); err != nil || truncated ||
+		!reflect.DeepEqual(names, []string{"a", "b", "c"}) {
+		t.Errorf("three directories among files: %v %v %v", names, truncated, err)
+	}
+	if _, _, truncated, err := ListSubdirNames(base, "d", 5); err != nil || !truncated {
+		t.Errorf("read limit 5 of 6 entries: %v %v", truncated, err)
+	}
+	if names, _, truncated, err := ListSubdirNames(base, "missing", 10); err != nil || truncated || names != nil {
+		t.Errorf("absent directory: %v %v %v", names, truncated, err)
 	}
 }

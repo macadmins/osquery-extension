@@ -6,26 +6,23 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/macadmins/osquery-extension/pkg/devclients"
+	"github.com/macadmins/osquery-extension/pkg/fsscan"
+	"github.com/macadmins/osquery-extension/pkg/testutil"
 )
 
-// The invariant classify_test.go existed to protect, carried over to the design that
-// replaced it.
+// TestProjectSourcesCoverEveryClient: the project-rooted probe list covers every client that
+// can own a project-local config.
 //
-// That test checked two lists agreed: walkableBasenames said which filenames the walker was
-// allowed to collect, and classifyPath mapped a collected path back to a client. A basename
-// in the first with no case in the second was found and silently dropped -- a real file,
-// present on disk, absent from the table, with nothing saying why.
-//
-// There are no longer two lists. A file is either named in a probe list or it is not found,
-// so the agreement is structural. What still needs asserting is the other half of the same
-// property: that the project-rooted list covers every client capable of owning a
-// project-local config, because a client missing from it is the same silent drop by a
-// different route.
+// A file is found only if a probe list names it. A client missing from this list leaves its
+// real project files absent from the table, with nothing saying why.
 func TestProjectSourcesCoverEveryClient(t *testing.T) {
 	// The clients that keep configuration inside a project directory, as opposed to only at
 	// a fixed path under the home. Each is a documented convention:
@@ -115,11 +112,11 @@ func TestClaudeProjectsReadsOnlyDeclaredFields(t *testing.T) {
 		t.Errorf("Rel = %q", refs[0].Rel)
 	}
 	// The two arrays that may be read were read.
-	if !reflect.DeepEqual(refs[0].Approval.Certain.Enabled, []string{"github"}) {
-		t.Errorf("Enabled = %v, want [github]", refs[0].Approval.Certain.Enabled)
+	if !reflect.DeepEqual(refs[0].Approval.Certain.Enabled.sorted(), []string{"github"}) {
+		t.Errorf("Enabled = %v, want [github]", refs[0].Approval.Certain.Enabled.sorted())
 	}
-	if !reflect.DeepEqual(refs[0].Approval.Certain.Disabled, []string{"scary"}) {
-		t.Errorf("Disabled = %v, want [scary]", refs[0].Approval.Certain.Disabled)
+	if !reflect.DeepEqual(refs[0].Approval.Certain.Disabled.sorted(), []string{"scary"}) {
+		t.Errorf("Disabled = %v, want [scary]", refs[0].Approval.Certain.Disabled.sorted())
 	}
 	if !refs[0].TrustDialogAccepted {
 		t.Error("the workspace trust flag was not read")
@@ -133,8 +130,8 @@ func TestClaudeProjectsReadsOnlyDeclaredFields(t *testing.T) {
 	sort.Strings(origins)
 	rendered := strings.Join([]string{
 		refs[0].Rel, refs[0].Abs, strings.Join(origins, ","),
-		strings.Join(refs[0].Approval.Certain.Enabled, ","),
-		strings.Join(refs[0].Approval.Certain.Disabled, ","),
+		strings.Join(refs[0].Approval.Certain.Enabled.sorted(), ","),
+		strings.Join(refs[0].Approval.Certain.Disabled.sorted(), ","),
 	}, "\x00")
 	if strings.Contains(rendered, secret) {
 		t.Errorf("the prompt's secret reached the project reference: %q", rendered)
@@ -145,7 +142,7 @@ func TestClaudeProjectsReadsOnlyDeclaredFields(t *testing.T) {
 func TestApprovalState(t *testing.T) {
 	project := projectRef{
 		Rel:      "code/repo",
-		Approval: claudeApproval{Certain: approvalEvidence{Enabled: []string{"github"}, Disabled: []string{"scary"}}, Known: true},
+		Approval: claudeApproval{Certain: approvalEvidence{Enabled: nameSetOf("github"), Disabled: nameSetOf("scary")}, Known: true},
 	}
 	for _, tc := range []struct {
 		client, server string
@@ -177,7 +174,7 @@ func TestApprovalState(t *testing.T) {
 	// A name in both lists resolves to disabled. Reporting the more restrictive of a
 	// contradictory pair is the safe direction: a server reported off that is on is a
 	// missed row, one reported on that is off is a false positive.
-	both := projectRef{Approval: claudeApproval{Certain: approvalEvidence{Enabled: []string{"x"}, Disabled: []string{"x"}}, Known: true}}
+	both := projectRef{Approval: claudeApproval{Certain: approvalEvidence{Enabled: nameSetOf("x"), Disabled: nameSetOf("x")}, Known: true}}
 	if got := both.approvalFor("claude_code", "x"); got != approvalDisabled {
 		t.Errorf("a name in both lists = %q, want %q", got, approvalDisabled)
 	}
@@ -185,19 +182,20 @@ func TestApprovalState(t *testing.T) {
 
 // A project outside the home is counted with no path, and a deleted one is silent.
 func TestProjectCollectorReportsWithoutPaths(t *testing.T) {
-	home := "/Users/alice"
-	collector := newProjectCollector(home, originClaudeJSON)
-	collector.add("/Users/alice/code/good", claudeApproval{Known: true})
+	home := testutil.AbsPath("Users", "alice")
+	collector := newProjectCollector(home)
+	collector.addClaude(filepath.Join(home, "code", "good"), claudeApproval{Known: true}, false)
 	// Outside the home: a legitimate configuration this declines to follow.
-	collector.add("/Users/other/secret-project-name", claudeApproval{Known: true})
-	collector.add("/Users/Shared/another-secret", claudeApproval{Known: true})
+	collector.addClaude(testutil.AbsPath("Users", "other", "secret-project-name"), claudeApproval{Known: true}, false)
+	collector.addClaude(testutil.AbsPath("Users", "Shared", "another-secret"), claudeApproval{Known: true}, false)
 	// Not a usable absolute path.
-	collector.add("relative/path", claudeApproval{Known: true})
+	collector.addClaude("relative/path", claudeApproval{Known: true}, false)
 	// A remote origin, which is a different fact from being outside the home.
-	collector.addFileURL("vscode-remote://ssh-remote+box/home/alice/p", originVSCodeWorkspace)
+	collector.addWorkspaceFolder("vscode-remote://ssh-remote+box/home/alice/p",
+		devclients.OriginVSCodeWorkspace, true)
 
 	refs, warnings := collector.result()
-	if len(refs) != 1 || refs[0].Rel != "code/good" {
+	if len(refs) != 1 || refs[0].Rel != filepath.Join("code", "good") {
 		t.Fatalf("refs = %+v, want the one contained project", refs)
 	}
 
@@ -231,11 +229,11 @@ func TestProjectCollectorReportsWithoutPaths(t *testing.T) {
 // read first.
 func TestMergeProjectsDedupsAndKeepsApprovals(t *testing.T) {
 	fromCodex := []projectRef{{Rel: "code/repo",
-		Origins:  map[originCode]struct{}{originCodexTOML: {}},
+		Origins:  map[devclients.Origin]struct{}{devclients.OriginCodexTOML: {}},
 		Approval: claudeApproval{Known: true}}}
 	fromClaude := []projectRef{{Rel: "code/repo",
-		Origins:  map[originCode]struct{}{originClaudeJSON: {}},
-		Approval: claudeApproval{Certain: approvalEvidence{Enabled: []string{"github"}}, Known: true}}}
+		Origins:  map[devclients.Origin]struct{}{devclients.OriginClaudeJSON: {}},
+		Approval: claudeApproval{Certain: approvalEvidence{Enabled: nameSetOf("github")}, Known: true}}}
 
 	merged, warnings := mergeProjects(fromCodex, fromClaude)
 	if len(warnings) != 0 {
@@ -246,35 +244,115 @@ func TestMergeProjectsDedupsAndKeepsApprovals(t *testing.T) {
 	}
 	// Codex's list was read first and carries no approvals. Keeping it as-is would have
 	// silently lost the approval state for the project.
-	if !reflect.DeepEqual(merged[0].Approval.Certain.Enabled, []string{"github"}) {
+	if !reflect.DeepEqual(merged[0].Approval.Certain.Enabled.sorted(), []string{"github"}) {
 		t.Errorf("Enabled = %v, want [github] merged in from the later sighting",
-			merged[0].Approval.Certain.Enabled)
+			merged[0].Approval.Certain.Enabled.sorted())
+	}
+}
+
+// TestAProjectRecordedInTwoCases: on Windows a project one list records as `Code\Repo` and another
+// as `code\repo` merges into one project, as it does when one list records both spellings.
+// Elsewhere the spellings stay two projects, each with only its own client's record, because a
+// case-sensitive volume can hold both as directories: on a case-insensitive volume, macOS's
+// default, the project is probed twice, and on a case-sensitive one the second spelling names
+// nothing.
+func TestAProjectRecordedInTwoCases(t *testing.T) {
+	fromClaude := []projectRef{{Rel: filepath.Join("Code", "Repo"),
+		Origins: map[devclients.Origin]struct{}{devclients.OriginClaudeJSON: {}}}}
+	fromCodex := []projectRef{{Rel: filepath.Join("code", "repo"),
+		Origins: map[devclients.Origin]struct{}{devclients.OriginCodexTOML: {}}}}
+	merged, _ := mergeProjects(fromClaude, fromCodex)
+	want := 2
+	if runtime.GOOS == "windows" {
+		want = 1
+	}
+	if len(merged) != want {
+		t.Errorf("merged = %+v, want %d on %s", merged, want, runtime.GOOS)
+	}
+	for _, ref := range merged {
+		if want == 2 && len(ref.Origins) != 1 {
+			t.Errorf("%s carries %v, including the other spelling's client", ref.Rel, ref.Origins)
+		}
+	}
+
+	home := buildFakeHomeWithProjects(t,
+		map[string]string{"Code/Repo/.mcp.json": `{"mcpServers":{"srv":{"command":"npx","args":["x"]}}}`},
+		"Code/Repo", "code/repo")
+	listings := 1
+	if runtime.GOOS != "windows" &&
+		testutil.SameFile(t, filepath.Join(home, "Code", "Repo"), filepath.Join(home, "code", "repo")) {
+		listings = 2
+	}
+	listed := 0
+	for _, row := range serversOnly(discoverForTest("alice", home)) {
+		if row.ServerName == "srv" {
+			listed++
+		}
+	}
+	if listed != listings {
+		t.Errorf("srv listed %d times, want %d on this %s volume", listed, listings, runtime.GOOS)
 	}
 }
 
 // The project list is capped, and exceeding the cap is reported rather than silently
 // truncating -- which is the same shape of loss the walk's truncation was.
 func TestProjectListCapIsReported(t *testing.T) {
-	home := "/Users/alice"
-	collector := newProjectCollector(home, originClaudeJSON)
-	for i := 0; i < maxProjects+5; i++ {
-		collector.add(filepath.Join(home, "p"+strconv.Itoa(i)), claudeApproval{Known: true})
+	home := testutil.AbsPath("Users", "alice")
+	collector := newProjectCollector(home)
+	for i := 0; i < devclients.MaxProjects+5; i++ {
+		collector.addClaude(filepath.Join(home, "p"+strconv.Itoa(i)), claudeApproval{Known: true}, false)
 	}
 	refs, warnings := collector.result()
-	if len(refs) != maxProjects {
-		t.Errorf("refs = %d, want the cap of %d", len(refs), maxProjects)
+	if len(refs) != devclients.MaxProjects {
+		t.Errorf("refs = %d, want the cap of %d", len(refs), devclients.MaxProjects)
 	}
 	var found bool
 	for _, w := range warnings {
 		if w.Code == warnProjectListTruncated {
 			found = true
-			if w.Limit != maxProjects {
-				t.Errorf("truncation limit = %d, want %d", w.Limit, maxProjects)
+			if w.Limit != devclients.MaxProjects {
+				t.Errorf("truncation limit = %d, want %d", w.Limit, devclients.MaxProjects)
+			}
+			if w.Source != devclients.OriginClaudeJSON {
+				t.Errorf("truncation source = %q, want the list that reached the cap", w.Source)
 			}
 		}
 	}
 	if !found {
 		t.Error("exceeding the project cap was not reported")
+	}
+}
+
+// TestTheWorkspaceCapNamesTheForkThatReachedIt: the VS Code family's forks share one collector,
+// so the truncation warning names the fork whose entry first found it full, and each project
+// keeps the origin of the fork that recorded it.
+func TestTheWorkspaceCapNamesTheForkThatReachedIt(t *testing.T) {
+	home := testutil.AbsPath("Users", "alice")
+	collector := &projectCollector{set: devclients.NewCollector(home, 2)}
+	for _, folder := range []struct {
+		name   string
+		origin devclients.Origin
+	}{
+		{"a", devclients.OriginVSCodeWorkspace}, {"b", devclients.OriginCursorWorkspace},
+		{"c", devclients.OriginWindsurfWorkspace}, {"d", devclients.OriginCursorWorkspace},
+	} {
+		collector.addWorkspaceFolder(testutil.FileURL(filepath.Join(home, folder.name)), folder.origin, true)
+	}
+	refs, warnings := collector.result()
+	if len(refs) != 2 {
+		t.Fatalf("refs = %+v, want two", refs)
+	}
+	if _, ok := refs[1].Origins[devclients.OriginCursorWorkspace]; !ok || len(refs[1].Origins) != 1 {
+		t.Errorf("b's origins = %v, want cursor_workspace alone", refs[1].Origins)
+	}
+	var source devclients.Origin
+	for _, w := range warnings {
+		if w.Code == warnProjectListTruncated {
+			source = w.Source
+		}
+	}
+	if source != devclients.OriginWindsurfWorkspace {
+		t.Errorf("truncation source = %q, want windsurf_workspace", source)
 	}
 }
 
@@ -302,11 +380,37 @@ func TestProjectListersAreDeterministic(t *testing.T) {
 	}
 }
 
+// TestCodexTrustForOneProjectIsConjunctive: two keys in one Codex list that contain to one
+// project -- here one with a trailing separator, on macOS and Windows also two spellings of the
+// home -- leave it trusted only when both say trusted, whichever sorts last.
+func TestCodexTrustForOneProjectIsConjunctive(t *testing.T) {
+	home := t.TempDir()
+	project := filepath.Join(home, "code", "repo")
+	for _, tc := range []struct{ plain, trailing string }{
+		{"trusted", "untrusted"},
+		{"untrusted", "trusted"},
+	} {
+		config := codexProjectTable(project) + "trust_level = \"" + tc.plain + "\"\n" +
+			codexProjectTable(project+string(filepath.Separator)) + "trust_level = \"" + tc.trailing + "\"\n"
+		refs, warnings := codexProjects(home, []byte(config))
+		if len(refs) != 1 {
+			t.Fatalf("refs = %+v; want the two keys contained to one project", refs)
+		}
+		if !refs[0].TrustKnown || refs[0].Trusted {
+			t.Errorf("%s then %s: known = %v, trusted = %v; want known and untrusted",
+				tc.plain, tc.trailing, refs[0].TrustKnown, refs[0].Trusted)
+		}
+		if len(warnings) != 1 || warnings[0].Code != warnProjectUntrusted || warnings[0].Count != 1 {
+			t.Errorf("%s then %s: warnings = %v, want one untrusted project", tc.plain, tc.trailing, warnings)
+		}
+	}
+}
+
 // Codex's project keys are read and its values are not.
 func TestCodexProjectsReadsKeysOnly(t *testing.T) {
 	home := t.TempDir()
 	const secret = "ghp_ZZZZopaquesecretvaluethatmustnotescapeZZZZ"
-	config := "[projects.\"" + filepath.Join(home, "code", "repo") + "\"]\n" +
+	config := codexProjectTable(filepath.Join(home, "code", "repo")) +
 		"trust_level = \"trusted\"\n" +
 		// A value this table has no field for and must not decode.
 		"notes = \"my token is " + secret + "\"\n"
@@ -323,44 +427,63 @@ func TestCodexProjectsReadsKeysOnly(t *testing.T) {
 	}
 }
 
-// vscodeWorkspaceProjects against a synthetic fixture.
-//
-// This machine has no workspaceStorage directory for any fork, so the lister cannot be
-// verified against a real one and the fixture is the only coverage it has. Stated in the
-// table README as well, because it is a limit of the verification rather than of the code.
+// TestVSCodeWorkspaceProjects: a single-folder record, the folders of a multi-root workspace's
+// .code-workspace file, one recorded as a relative path, and a remote folder, which is not
+// admitted.
 func TestVSCodeWorkspaceProjects(t *testing.T) {
 	home := t.TempDir()
 	storage := filepath.Join(home, appSupport("Code", "User", "workspaceStorage"))
 	// A generated directory name, which is why this needs a listing rather than a path.
-	writeTestFile(t, filepath.Join(storage, "a1b2c3d4", "workspace.json"),
-		`{"folder":"file://`+filepath.ToSlash(filepath.Join(home, "code", "repo"))+`"}`)
-	// A multi-root workspace records `workspace`, not `folder`. Only `folder` is read, and
-	// this entry is therefore skipped rather than guessed at.
-	writeTestFile(t, filepath.Join(storage, "e5f6a7b8", "workspace.json"),
-		`{"workspace":"file://`+filepath.ToSlash(filepath.Join(home, "multi.code-workspace"))+`"}`)
+	testutil.WriteFile(t, filepath.Join(storage, "a1b2c3d4", "workspace.json"),
+		`{"folder":"`+testutil.FileURL(filepath.Join(home, "code", "repo"))+`"}`)
+	// A multi-root workspace records `workspace`, naming a .code-workspace file whose folders
+	// are read: one by a path relative to the file, one by a URI.
+	testutil.WriteFile(t, filepath.Join(storage, "e5f6a7b8", "workspace.json"),
+		`{"workspace":"`+testutil.FileURL(filepath.Join(home, "multi.code-workspace"))+`"}`)
+	testutil.WriteFile(t, filepath.Join(home, "multi.code-workspace"),
+		`{"folders":[{"path":"code/alpha"},{"uri":"`+testutil.FileURL(filepath.Join(home, "code", "beta"))+`"}]}`)
 	// A remote workspace, which names a filesystem that is not this one.
-	writeTestFile(t, filepath.Join(storage, "c9d0e1f2", "workspace.json"),
+	testutil.WriteFile(t, filepath.Join(storage, "c9d0e1f2", "workspace.json"),
 		`{"folder":"vscode-remote://ssh-remote%2Bbox/home/alice/p"}`)
 
-	refs, _, _ := vscodeWorkspaceProjects(context.Background(), home, "",
+	refs, _, _, _ := vscodeWorkspaceProjects(context.Background(), home, "", fsscan.ClassNone,
 		time.Now().Add(time.Minute))
 	var rels []string
 	for _, ref := range refs {
 		rels = append(rels, ref.Rel)
 	}
-	if !reflect.DeepEqual(rels, []string{filepath.Join("code", "repo")}) {
-		t.Errorf("rels = %v, want just the local folder", rels)
+	// Records are read newest first, so the order follows the fixture's timestamps.
+	sort.Strings(rels)
+	want := []string{filepath.Join("code", "alpha"), filepath.Join("code", "beta"),
+		filepath.Join("code", "repo")}
+	if !reflect.DeepEqual(rels, want) {
+		t.Errorf("rels = %v, want %v", rels, want)
 	}
 }
 
-// writeTestFile creates a file and every parent directory.
-func writeTestFile(t *testing.T, path, content string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
+// A .code-workspace file both VS Code and Cursor recorded licenses each editor's own file in its
+// folders. The file is read once per scan, and its folders reaching only the first editor left
+// a Cursor server in them unlisted while every row still read scan_complete = 1.
+func TestAWorkspaceFileRecordedByTwoEditorsProbesBoth(t *testing.T) {
+	home := t.TempDir()
+	workspace := testutil.FileURL(filepath.Join(home, "multi.code-workspace"))
+	for _, fork := range []string{"Code", "Cursor"} {
+		testutil.WriteFile(t, filepath.Join(home, appSupport(fork, "User", "workspaceStorage", "ws",
+			"workspace.json")), `{"workspace":"`+workspace+`"}`)
 	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
+	testutil.WriteFile(t, filepath.Join(home, "multi.code-workspace"), `{"folders":[{"path":"code/alpha"}]}`)
+	testutil.WriteFile(t, filepath.Join(home, "code", "alpha", ".vscode", "mcp.json"),
+		`{"servers":{"vs":{"command":"npx","args":["a"]}}}`)
+	testutil.WriteFile(t, filepath.Join(home, "code", "alpha", ".cursor", "mcp.json"),
+		`{"mcpServers":{"cur":{"command":"npx","args":["b"]}}}`)
+	clients := map[string]string{}
+	for _, row := range discoverForTest("alice", home) {
+		if row.ServerName != "" {
+			clients[row.ServerName] = row.Client
+		}
+	}
+	if want := map[string]string{"vs": "vscode", "cur": "cursor"}; !reflect.DeepEqual(clients, want) {
+		t.Errorf("servers = %v, want %v", clients, want)
 	}
 }
 
@@ -370,8 +493,8 @@ func writeTestFile(t *testing.T, path, content string) {
 // the partial listing and report the shortfall. All three callers in this package tested
 // `err != nil` and skipped the level, so an over-cap directory produced zero entries instead
 // of the cap's worth -- a bounded answer turned into a silently empty one, which is exactly
-// the failure this table is written against. listCapped is the one place that contract is
-// applied now.
+// the failure this table is written against. fsscan.ListDirNamesCapped is the one place that
+// contract is applied.
 func TestListCappedUsesThePartialListing(t *testing.T) {
 	home := t.TempDir()
 	for i := 0; i < 12; i++ {
@@ -381,7 +504,7 @@ func TestListCappedUsesThePartialListing(t *testing.T) {
 	}
 
 	// Over the cap: the names must still come back, flagged short.
-	names, truncated, err := listCapped(home, "many", 5)
+	names, truncated, err := fsscan.ListDirNamesCapped(home, "many", 5)
 	if err != nil {
 		t.Fatalf("an over-cap listing must not be an error: %v", err)
 	}
@@ -393,16 +516,58 @@ func TestListCappedUsesThePartialListing(t *testing.T) {
 	}
 
 	// Within the cap: everything, not flagged.
-	names, truncated, err = listCapped(home, "many", 50)
+	names, truncated, err = fsscan.ListDirNamesCapped(home, "many", 50)
 	if err != nil || truncated || len(names) != 12 {
 		t.Errorf("a complete listing came back as (%d names, truncated=%v, err=%v)",
 			len(names), truncated, err)
 	}
 
 	// Absent: silent, because most of these directories do not exist on most hosts.
-	names, truncated, err = listCapped(home, "nothing-here", 50)
+	names, truncated, err = fsscan.ListDirNamesCapped(home, "nothing-here", 50)
 	if err != nil || truncated || len(names) != 0 {
 		t.Errorf("an absent directory came back as (%d names, truncated=%v, err=%v)",
 			len(names), truncated, err)
+	}
+}
+
+// TestMergedCapCountsAreNotAdded: two truncation warnings against the same cap report the larger
+// admitted count, so the count never exceeds the limit it names; other counts still add.
+func TestMergedCapCountsAreNotAdded(t *testing.T) {
+	merged := mergeWarnings([]warning{
+		{Code: warnProjectListTruncated, Count: 1000, Limit: 1000},
+		{Code: warnProjectListTruncated, Count: 400, Limit: 1000},
+		{Code: warnProjectOutsideHome, Count: 2},
+		{Code: warnProjectOutsideHome, Count: 3},
+		// Code and Code - Insiders share an origin, and each counts the records past its own 500.
+		{Code: warnWorkspaceRecordsOlder, Count: 30, Limit: devclients.MaxWorkspaceDirs,
+			Source: devclients.OriginVSCodeWorkspace},
+		{Code: warnWorkspaceRecordsOlder, Count: 12, Limit: devclients.MaxWorkspaceDirs,
+			Source: devclients.OriginVSCodeWorkspace},
+	})
+	counts := map[warnCode]int{}
+	for _, w := range merged {
+		counts[w.Code] = w.Count
+	}
+	if counts[warnProjectListTruncated] != 1000 || counts[warnProjectOutsideHome] != 5 ||
+		counts[warnWorkspaceRecordsOlder] != 42 {
+		t.Errorf("merged = %+v, want 1000 for the cap, 5 for the outside count and 42 older records", merged)
+	}
+}
+
+// TestMergedListingFailuresKeepEachReason: two of one editor's storage roots that failed for
+// different reasons stay two rows, sorted by reason, so neither reason is lost; the same reason
+// twice is one row.
+func TestMergedListingFailuresKeepEachReason(t *testing.T) {
+	merged := mergeWarnings([]warning{
+		{Code: warnWorkspaceListUnreadable, Class: fsscan.ClassRefusedPath, Source: devclients.OriginVSCodeWorkspace},
+		{Code: warnWorkspaceListUnreadable, Class: fsscan.ClassDenied, Source: devclients.OriginVSCodeWorkspace},
+		{Code: warnWorkspaceListUnreadable, Class: fsscan.ClassRefusedPath, Source: devclients.OriginVSCodeWorkspace},
+	})
+	var classes []fsscan.ErrClass
+	for _, w := range merged {
+		classes = append(classes, w.Class)
+	}
+	if want := []fsscan.ErrClass{fsscan.ClassDenied, fsscan.ClassRefusedPath}; !reflect.DeepEqual(classes, want) {
+		t.Errorf("reasons = %v, want %v", classes, want)
 	}
 }

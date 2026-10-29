@@ -5,9 +5,9 @@ package fsscan
 // PARTIALLY VERIFIED. Exercised on a real Windows host: resolution for the logged-on
 // account through the already-mounted HKU\<SID> hive, redirection detected and reported
 // when Roaming points outside the profile, and the account-scoped warning raised when the
-// location cannot be determined. There is no Windows CI job, so nothing here is
-// continuously exercised; `go vet` and cross-compilation are the only automated checks
-// that see this file.
+// location cannot be determined. The windows-latest job in native-tests.yml runs
+// TestRoamingAppDataForTheCurrentAccount, which resolves the runner's own account; the
+// redirection and the warning are covered only by that host run.
 //
 // Only a mounted hive is read. A logged-off account's NTUSER.DAT is not loaded, and that is
 // a decision rather than a gap: an inventory query should not mount a registry hive.
@@ -17,8 +17,8 @@ package fsscan
 // itself is wrong for a table that runs on a schedule. It opens a file another account owns,
 // in a format whose parser is the kernel's, and it creates that file when it is absent, so
 // the pre-check that stopped a read from writing was load-bearing. Against that, the thing
-// it bought is one column for accounts that are not logged on, on the platform with no CI,
-// via a path a single-user machine can never execute -- so it shipped unexercised and
+// it bought is one column for accounts that are not logged on, via a path a single-user
+// machine can never execute -- so it shipped unexercised and
 // stayed that way.
 //
 // An account whose hive is not mounted now falls to the caller's existing "location could
@@ -115,26 +115,35 @@ func readShellFolder(root registry.Key, path string) (string, bool) {
 // directory is what %USERPROFILE% means for the account being read, so that one substitutes
 // exactly.
 //
-// %HOMEPATH% used to be substituted the same way and that was wrong twice over. It carries
-// no drive -- Windows expands it as \Users\alice, with %HOMEDRIVE% holding C: -- so
-// replacing it with a full profile path produces a string Windows would never produce. Worse,
-// it is not a profile variable at all: on a domain-joined host HOMEDRIVE and HOMEPATH come
-// from the account's directory home-folder attribute and commonly name a network share, so
-// equating them with the local profile silently pointed AppData somewhere the account does
-// not keep it -- and reported the result as confirmed. Resolving them properly needs that
-// account's environment, which is the thing this file cannot read. Left unexpanded, so the
-// guard below reports the location as undetermined.
+// %HOMEPATH% is not substituted. It carries no drive -- Windows expands it as \Users\alice,
+// with %HOMEDRIVE% holding C: -- so replacing it with a full profile path produces a string
+// Windows would never produce. And it is not a profile variable: on a domain-joined host
+// HOMEDRIVE and HOMEPATH come from the account's directory home-folder attribute and commonly
+// name a network share, so equating them with the local profile would point AppData somewhere
+// the account does not keep it. Resolving them needs that account's environment, which this
+// file cannot read, so they are left unexpanded and the guard below reports the location as
+// undetermined.
+//
+// %USERPROFILE% is substituted only as a prefix, where Windows writes it, by comparing that
+// prefix ignoring case, so the index is into the value itself; an index found in an uppercased
+// copy is off by however many bytes uppercasing added or removed before it, as ı does. A value
+// that is not absolute, or that holds "..", is refused before filepath.Clean, which would
+// resolve the ".." away, as every other path in this package is.
 func expandProfileVars(raw, profileDir string) string {
+	const name = "%USERPROFILE%"
 	expanded := raw
-	for _, name := range []string{"%USERPROFILE%"} {
-		if idx := strings.Index(strings.ToUpper(expanded), name); idx >= 0 {
-			expanded = expanded[:idx] + profileDir + expanded[idx+len(name):]
-		}
+	if len(expanded) >= len(name) && strings.EqualFold(expanded[:len(name)], name) {
+		expanded = profileDir + expanded[len(name):]
 	}
 	// Anything still unexpanded is a variable this does not know how to resolve for another
 	// account; guessing would be worse than reporting the location as undetermined.
-	if strings.Contains(expanded, "%") {
+	if strings.Contains(expanded, "%") || !filepath.IsAbs(expanded) {
 		return ""
+	}
+	for _, part := range strings.FieldsFunc(expanded, isPathSeparator) {
+		if part == ".." {
+			return ""
+		}
 	}
 	return filepath.Clean(expanded)
 }

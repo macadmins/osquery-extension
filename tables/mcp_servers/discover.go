@@ -3,6 +3,8 @@ package mcp_servers
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -12,7 +14,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/macadmins/osquery-extension/pkg/devclients"
 	"github.com/macadmins/osquery-extension/pkg/fsscan"
+	"github.com/macadmins/osquery-extension/pkg/redact"
 	"github.com/macadmins/osquery-extension/pkg/utils"
 )
 
@@ -38,7 +42,11 @@ type Server struct {
 	// users table on name alone can match the wrong account. It is empty where the roster
 	// could not supply one, which is itself information: it means the account could not be
 	// identified, not that it has no identity.
-	UserID         string
+	UserID string
+	// UID is the uid column of osquery's users table, which core osquery's per-user tables
+	// publish so a query can join on it. On Windows osquery fills it with the last component
+	// of the SID, which two accounts can share, so UserID remains the identity to correlate on.
+	UID            string
 	SourcePath     string
 	SourceContext  string // e.g., "mcpServers", "projects[/abs/path].mcpServers"
 	Client         string
@@ -55,12 +63,10 @@ type Server struct {
 	// PinnedVersion is the version this configuration pins, which is never the version
 	// installed.
 	//
-	// Renamed from `version` because the old name invited exactly the wrong reading. A row
-	// saying `version = 1.2.3` looks like a statement about what is running; what the file
-	// said was `@1.2.3`, and `npx` will happily resolve that to something else, while
-	// `@latest` or no version at all means the pin is absent rather than the version being
-	// unknown. An operator correlating this against a vulnerability feed needs to know
-	// which of the two they have.
+	// Not `version`, which would read as a statement about what is running: what the file
+	// says is `@1.2.3`, and `npx` can resolve that to something else, while `@latest` or no
+	// version at all means the pin is absent rather than the version being unknown. An
+	// operator correlating this against a vulnerability feed needs to know which they have.
 	PinnedVersion string
 
 	Confidence string // low|medium|high
@@ -70,14 +76,13 @@ type Server struct {
 	// an approval step. See approvalState.
 	Approval approvalState
 
-	// ScanComplete records that every server declared in this row's source was listed, and
-	// that the enumeration which found that source ran to completion.
+	// ScanComplete records that every server declared in this row's source was listed and,
+	// for a plugin's server, that every source the plugin version's manifest declares was
+	// read. A problem finding the user's configuration is a row of its own and leaves this
+	// alone.
 	//
-	// False by default, and set true only on the success path. That direction is
-	// deliberate: a row whose completeness nobody established reads as incomplete, which is
-	// the conservative answer. The opposite spelling -- an Incomplete flag defaulting to
-	// "fine" -- makes every future code path complete until someone remembers to say
-	// otherwise, and forgetting is how the gap this column closes was created.
+	// False by default, and set true only on the success path, so a row whose completeness
+	// nobody established reads as incomplete.
 	ScanComplete bool
 
 	// Warning is a finding rather than a sentence. See warnings.go: the column it feeds
@@ -120,6 +125,11 @@ type Server struct {
 	// sort.SliceStable preserved whatever map iteration had produced, so the two servers
 	// swapped their ordinals between runs over unchanged bytes. Never published.
 	rawContext string
+
+	// identityArgs are the arguments the identity scan reads: each redacted for its own content,
+	// by secretEach, and none blanked for following a credential-named option, as Args are. Nil
+	// for a Server built without parsing, which the scan then reads from Args. Never published.
+	identityArgs []string
 
 	// PlaceholderSource and PlaceholderIndex name an unrepresentable server by position.
 	//
@@ -172,7 +182,7 @@ type probe struct {
 	//
 	// Per source because one file needs a different answer from the rest, and a single
 	// global constant made that file's cap decide things it should not. See
-	// claudeJSONMaxSize. The largest real config of any other kind on this machine is
+	// devclients.ClaudeListMaxSize. The largest real config of any other kind on this machine is
 	// 14 KB, so the default is three orders of magnitude of headroom already.
 	maxSize int64
 
@@ -193,10 +203,9 @@ func (p probe) readOpts() fsscan.ReadOpts {
 
 // cap is this probe's effective size limit.
 //
-// Named so the probe and the oversize diagnostic read the same number. The diagnostic used to
-// reconstruct it from the client name, which was wrong for every Claude source except
-// ~/.claude.json: a 1.5 MiB project .mcp.json was reported as exceeding a 4 MiB limit, which
-// is impossible and sends an administrator after the wrong remedy.
+// Named so the probe and the oversize diagnostic read the same number. A limit reconstructed
+// from the client name would be wrong for every Claude source except ~/.claude.json, reporting
+// a 1.5 MiB project .mcp.json as exceeding a 4 MiB limit.
 func (p probe) cap() int64 {
 	if p.maxSize == 0 {
 		return MaxFileSize
@@ -204,15 +213,32 @@ func (p probe) cap() int64 {
 	return p.maxSize
 }
 
+// Where a project's content is stored decides whether this table reads it. These are the
+// checks, as variables so tests can substitute them: a cloud folder and a cloud placeholder
+// cannot be created in a test. cloudPlaceholder is nil in production, which selects
+// fsscan.IsCloudPlaceholder.
+var (
+	underCloudStorage = fsscan.UnderCloudStorage
+	cloudPlaceholder  func(*os.File) (bool, error)
+)
+
+// linkChecks hands fsscan the storage checks a followed link's target directory passes, through
+// this package's seam, and read, the reader the file the link stands for is read with, so the
+// target is read the same way.
+func linkChecks(read func(base, rel string, opts fsscan.ReadOpts) ([]byte, error)) fsscan.LinkChecks {
+	return fsscan.LinkChecks{UnderCloudStorage: underCloudStorage, ProbeDir: fsscan.ProbeProjectDir,
+		Read: read}
+}
+
 // probeReadOpts is the one place the read refusals are chosen, so a new read site cannot
 // quietly opt out of them.
 func probeReadOpts(maxSize int64) fsscan.ReadOpts {
-	// OwnerUID is deliberately not set. It reads correctly on POSIX and cannot be
-	// implemented on Windows without GetSecurityInfo and SID plumbing that no CI job would
-	// ever execute -- and fsscan refuses rather than passes when asked for a check it
+	// OwnerUID is deliberately not set. It reads correctly on POSIX, and on Windows it would
+	// need GetSecurityInfo and SID plumbing that does not exist here -- and fsscan refuses rather than passes when asked for a check it
 	// cannot perform, so setting it here would return zero rows on that platform. Enabling
 	// it wants the Windows implementation, which wants a Windows CI job first.
-	return fsscan.ReadOpts{MaxSize: maxSize, RefuseHardLinks: true}
+	return fsscan.ReadOpts{MaxSize: maxSize, RefuseHardLinks: true,
+		CloudPlaceholder: cloudPlaceholder}
 }
 
 // homeProbes lists every config found at a deterministic path relative to a user's home.
@@ -220,17 +246,14 @@ var homeProbes = buildHomeProbes()
 
 // projectProbes lists every config found at a deterministic path inside a project directory.
 //
-// This replaces the walk entirely. Each is probed once per recorded project, which bounds the
-// work at (projects x 4) component-wise opens instead of at the size of the user's disk --
-// and makes the result a function of the project lists rather than of how far a shared budget
-// happened to get.
+// Each is probed at most once per recorded project, which bounds the work at (projects x 4)
+// component-wise opens rather than at the size of the user's disk, and makes the result a
+// function of the project lists rather than of how far a shared budget got.
 //
 // Four entries, one per client that keeps project-scoped MCP configuration.
-// TestProjectSourcesCoverEveryClient pins that against the client set, because the previous
-// design's characteristic failure was a file that one table knew about and the other did not.
-// projectProbeFor indexes the project-rooted probes by their relative path, because the
-// per-project probe list is now derived from which clients recorded the project rather than
-// being the whole table.
+// TestProjectSourcesCoverEveryClient pins that against the client set. projectProbeFor
+// indexes them by relative path, because the probes run in a project are the ones the clients
+// that recorded it load.
 var projectProbeFor = buildProjectProbeIndex()
 
 func buildProjectProbeIndex() map[string]probe {
@@ -279,11 +302,11 @@ var handWrittenHomeProbes = []probe{
 	},
 	{
 		// The one source with a cap of its own, because it is also the project list for
-		// this account. See claudeJSONMaxSize.
-		relPath: claudeProjectsRelPath,
+		// this account. See devclients.ClaudeListMaxSize.
+		relPath: devclients.ClaudeListPath,
 		client:  "claude_code",
 		jsonc:   false,
-		maxSize: claudeJSONMaxSize,
+		maxSize: devclients.ClaudeListMaxSize,
 		extract: extractClaudeCode,
 	},
 	{
@@ -314,7 +337,7 @@ var handWrittenHomeProbes = []probe{
 	// Codex's actual configuration. TOML, not JSON, so jsonc is false and the extractor is a
 	// TOML one: the probe abstraction only ever promised bytes in and Servers out, so a
 	// second format needed no change to it.
-	{relPath: codexProjectsRelPath, client: "codex", jsonc: false, extract: extractCodexTOML},
+	{relPath: devclients.CodexListPath, client: "codex", jsonc: false, extract: extractCodexTOML},
 	// Codex's older JSON config, which current builds do not write but installs upgraded
 	// from an older one still carry.
 	//
@@ -361,9 +384,8 @@ func DiscoverAll(ctx context.Context, clienter utils.OsqueryClienter, userFilter
 	// because the call site is right and only the dependency is wrong; fixing it is an
 	// osquery-go bump, which is a repository-wide change.
 	defer client.Close()
-	// Established before the roster is read, not after. The roster is now a query back to
-	// osquery rather than a filesystem walk, so it is fast, but it is still work the budget
-	// should cover: a deadline created afterwards excludes whatever the roster cost.
+	// Established before the roster is read, not after. The roster is a query back to
+	// osquery, so it is fast, but it is still work the budget should cover.
 	deadline := time.Now().Add(fsscan.WalkTimeout())
 	// The filter goes to the roster rather than being applied to its answer. Narrowing after
 	// the fact still Lstat'd every home on the host, so one dead automount belonging to an
@@ -392,13 +414,9 @@ func DiscoverAll(ctx context.Context, clienter utils.OsqueryClienter, userFilter
 	// the one query most likely to be asked, and Alice being past the profile cap or served
 	// only by LDAP produces the clean empty result the warning exists to prevent.
 	// Whether anything was emitted that says the roster itself may be incomplete. The
-	// missing-name diagnostic below points at such a row, and pointing at one that was
-	// never emitted told an operator to go read a warning that does not exist.
-	//
-	// Only the nameless-account branch sets this now. The Linux local-accounts note used to
-	// as well, on every single run, which made every Linux host permanently "uncertain" and
-	// the flag meaningless there; that note is documentation rather than a row. See
-	// fsscan/users.go.
+	// missing-name diagnostic below points at such a row, so it must not point at one that
+	// was never emitted. Only the nameless-account branch sets this; the Linux local-accounts
+	// limit is documentation rather than a row, as fsscan/users.go explains.
 	rosterUncertain := false
 	scanned := make(map[string][]Server, len(enumerated.Homes))
 	// Which of the requested names the roster could say something about, so the ones it
@@ -450,7 +468,7 @@ func DiscoverAll(ctx context.Context, clienter utils.OsqueryClienter, userFilter
 			}
 		}
 		row := diagnosticRow(omission.Name, path, "", omissionWarning(omission.Code))
-		row.UserID = omission.ID
+		row.UserID, row.UID = omission.ID, omission.UID
 		out = append(out, row)
 		if answered != nil {
 			answered[omission.Name] = struct{}{}
@@ -476,24 +494,21 @@ func DiscoverAll(ctx context.Context, clienter utils.OsqueryClienter, userFilter
 		// Checked per home, before Pass 1 runs. Direct-path reads take no context, so without
 		// this a cancelled query still performed ten opens per home for every home on the box.
 		if ctx.Err() != nil {
-			out = append(out, stampUserID([]Server{diagnosticRow(h.Name, h.Path, "",
-				warning{Code: warnCancelledPreHome})}, h.ID)...)
+			row := diagnosticRow(h.Name, h.Path, "", warning{Code: warnCancelledPreHome})
+			row.Home = h.Path
+			out = append(out, stampUserID([]Server{row}, h.ID, h.UID)...)
 			continue
 		}
 		// Scanned once per directory, reported once per account. Accounts legitimately
-		// share a home, and the roster now keeps every one of them so a constrained query
-		// cannot lose an account another had claimed -- which means the duplicate work has
-		// to be avoided here instead, after the filter, rather than by discarding accounts
-		// before it.
+		// share a home, and the roster keeps every one of them so a constrained query cannot
+		// lose an account another had claimed, so the duplicate work is avoided here, after
+		// the filter.
 		//
 		// Looked up before the budget is consulted, not after. The budget question is
-		// whether there is time to do *new* filesystem work, and restamping a result
-		// already in hand is none: two accounts sharing a home, where the first one's scan
-		// spent the last of the allowance, had the second told "walk budget exhausted
-		// before this user was scanned" about a home that had just been scanned in full.
-		// The statement was false and it cost the account every row the cache was holding
-		// for it.
-		key := scanKey(h)
+		// whether there is time to do *new* filesystem work, and restamping a result already
+		// in hand is none: when the first of two accounts sharing a home spends the last of
+		// the allowance, the second still gets the rows the cache holds.
+		key := devclients.ScanKey(h)
 		rows, cached := scanned[key]
 		if !cached {
 			if time.Until(deadline) <= 0 {
@@ -501,14 +516,15 @@ func DiscoverAll(ctx context.Context, clienter utils.OsqueryClienter, userFilter
 				// scanned and a user with no MCP configuration are otherwise the same
 				// empty answer, which is the confusion the truncation contract exists to
 				// prevent.
-				out = append(out, stampUserID([]Server{diagnosticRow(h.Name, h.Path, "",
-					warning{Code: warnBudgetExhaustedPreHome})}, h.ID)...)
+				row := diagnosticRow(h.Name, h.Path, "", warning{Code: warnBudgetExhaustedPreHome})
+				row.Home = h.Path
+				out = append(out, stampUserID([]Server{row}, h.ID, h.UID)...)
 				continue
 			}
 			rows = discoverForHome(ctx, h, deadline)
 			scanned[key] = rows
 		}
-		out = append(out, stampUserID(copyRowsFor(rows, h.Name), h.ID)...)
+		out = append(out, stampUserID(copyRowsFor(rows, h.Name), h.ID, h.UID)...)
 	}
 	// A rostered account that cannot log in. Skipped on purpose -- it keeps no editor or
 	// agent configuration -- and silent unless someone asked for it by name, because a host
@@ -526,7 +542,7 @@ func DiscoverAll(ctx context.Context, clienter utils.OsqueryClienter, userFilter
 				path = fsscan.UsersRoot
 			}
 			row := diagnosticRow(omission.Name, path, "", omissionWarning(omission.Code))
-			row.UserID = omission.ID
+			row.UserID, row.UID = omission.ID, omission.UID
 			out = append(out, row)
 			if answered != nil {
 				answered[omission.Name] = struct{}{}
@@ -579,6 +595,8 @@ func omissionWarning(code fsscan.OmissionReason) warning {
 		return warning{Code: warnAccountHomeRedirected}
 	case fsscan.OmittedHomeNotDirectory:
 		return warning{Code: warnAccountHomeNotDirectory}
+	case fsscan.OmittedHomeNotAbsolute:
+		return warning{Code: warnAccountHomeNotAbsolute}
 	default:
 		// A reason this build has no code for. Reported as the generic inability to inspect
 		// the home rather than dropped, because the account still went uninspected and
@@ -603,12 +621,14 @@ func unanswered(userFilter, answered map[string]struct{}) []string {
 // stampUserID attaches the account's stable identity to every row discovered for it,
 // including the diagnostic rows, so a correlation query does not lose the identity precisely
 // on the rows describing what went wrong.
-func stampUserID(rows []Server, id string) []Server {
-	if id == "" {
-		return rows
-	}
+func stampUserID(rows []Server, id, uid string) []Server {
 	for i := range rows {
-		rows[i].UserID = id
+		if id != "" {
+			rows[i].UserID = id
+		}
+		if uid != "" {
+			rows[i].UID = uid
+		}
 	}
 	return rows
 }
@@ -621,18 +641,22 @@ func stampUserID(rows []Server, id string) []Server {
 // configuration is still found. A redirection out of the profile, or an answer that could
 // not be read at all, means this account's application-support configuration is not being
 // inspected, and saying nothing there is the failure mode being fixed.
+// roamingAppDataFor reads an account's registry hive on Windows. Tests use temporary homes with
+// no hive, so they substitute it.
+var roamingAppDataFor = fsscan.RoamingAppDataFor
+
 func roamingRootFor(account fsscan.UserHome) (root string, note warning) {
 	if runtime.GOOS != "windows" {
 		return "", warning{}
 	}
-	resolved, redirected, ok := fsscan.RoamingAppDataFor(account.ID, account.Path)
+	resolved, redirected, ok := roamingAppDataFor(account.ID, account.Path)
 	if !ok {
 		return "", warning{Code: warnAppDataUndetermined}
 	}
 	if !redirected {
 		return "", warning{}
 	}
-	if !withinHome(resolved, account.Path) {
+	if !devclients.WithinHome(resolved, account.Path) {
 		// The redirected path is deliberately not reported. It was, through redact.Path,
 		// and that is a path read out of another account's registry hive -- so it is a
 		// value this package did not choose, in a column whose contract is that every byte
@@ -642,61 +666,6 @@ func roamingRootFor(account fsscan.UserHome) (root string, note warning) {
 		return resolved, warning{Code: warnAppDataRedirectedOut}
 	}
 	return resolved, warning{}
-}
-
-// withinHome reports whether an absolute path lies beneath home. Redirection inside the
-// profile is still reachable by the ordinary bounded, symlink-refusing traversal; redirection
-// outside it is not, because that traversal is anchored to the home on purpose.
-func withinHome(path, home string) bool {
-	rel, err := filepath.Rel(home, path)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
-}
-
-// redirectAppSupport rewrites an application-support-relative path to sit under a redirected
-// roaming root. It reports usable=false when the source cannot be reached at all, which is
-// the out-of-profile case the caller has already warned about.
-func redirectAppSupport(relPath, appDataRoot, home string) (rewritten string, usable bool) {
-	if appDataRoot == "" {
-		return "", true // conventional location; relPath already correct
-	}
-	prefix := appSupportDir() + string(os.PathSeparator)
-	if !strings.HasPrefix(relPath, prefix) {
-		return "", true // a dotfile source, unaffected by where AppData points
-	}
-	if !withinHome(appDataRoot, home) {
-		return "", false
-	}
-	rel, err := filepath.Rel(home, appDataRoot)
-	if err != nil {
-		return "", false
-	}
-	return filepath.Join(rel, strings.TrimPrefix(relPath, prefix)), true
-}
-
-// scanKey names everything discovery depends on, so a cached result is only reused where it
-// would genuinely have been identical.
-//
-// The home path alone is wrong on Windows. discoverForHome resolves Roaming AppData from the
-// registry hive named by the account's SID, so two accounts reporting the same profile path
-// can have different roaming roots, different warnings and different rows. Keyed on path
-// alone, the first account scanned decided the answer for the rest and copyRowsFor merely
-// relabelled it -- attributing one account's redirected AppData, or its "could not be
-// determined" warning, to another.
-//
-// Elsewhere discovery is a pure function of the directory, so the path is the whole key and
-// a shared home is scanned once.
-func scanKey(account fsscan.UserHome) string {
-	return scanKeyFor(runtime.GOOS, account)
-}
-
-// scanKeyFor takes the OS as a parameter so both branches are reachable from a test on any
-// host. The Windows branch is the one that matters and the one no test here can otherwise
-// execute, which is exactly how it went wrong in the first place.
-func scanKeyFor(goos string, account fsscan.UserHome) string {
-	if goos == "windows" {
-		return account.ID + "\x00" + account.Path
-	}
-	return account.Path
 }
 
 // copyRowsFor re-stamps a cached scan for another account sharing the same home.
@@ -737,11 +706,22 @@ func rosterDiagnostic(userFilter map[string]struct{}, path string, w warning) []
 	return rows
 }
 
-// deadline is absolute rather than a remaining duration. A duration is re-based on arrival,
-// so everything this function does before re-basing it -- the home open below, which on a
-// network-backed or automounted home can block for the mount timeout -- fell outside the
-// budget and the home then received the whole of it again. One home overshooting the
-// query-wide deadline by its own open time is small; every home doing it is not.
+// discoverForHome lists one account's servers and diagnostics, and stamps the account's home on
+// every row, whichever pass made it, so publication holds each row's source_path to that home.
+func discoverForHome(ctx context.Context, account fsscan.UserHome, deadline time.Time) []Server {
+	rows := discoverHomePasses(ctx, account, deadline)
+	for index := range rows {
+		rows[index].Home = account.Path
+	}
+	return rows
+}
+
+// discoverHomePasses runs the five discovery passes for one account.
+//
+// deadline is absolute rather than a remaining duration. A duration re-based on arrival would
+// leave everything before the re-basing -- the home open below, which on a network-backed or
+// automounted home can block for the mount timeout -- outside the budget, and every home
+// would then overshoot the query-wide deadline by its own open time.
 //
 // Five passes, all of them bounded by a count rather than by a tree:
 //
@@ -753,26 +733,25 @@ func rosterDiagnostic(userFilter map[string]struct{}, path string, w warning) []
 //  4. Project lists: read the projects each client records, and contain each recorded path.
 //  5. Project-rooted probes: four known filenames inside each contained project.
 //
-// What this replaces was a filesystem walk of ~22 roots per home to depth 6. The passes
-// above touch a number of paths that is a function of how many projects the user has opened,
-// which is a number in a file, so two runs over an unchanged host do the same work and
-// return the same rows. The walk's answer depended on how much of a shared budget earlier
-// homes had left.
-func discoverForHome(ctx context.Context, account fsscan.UserHome, deadline time.Time) []Server {
+// The passes touch a number of paths that is a function of how many projects the user has
+// opened, which is a number in a file, so two runs over an unchanged host do the same work
+// and return the same rows.
+func discoverHomePasses(ctx context.Context, account fsscan.UserHome, deadline time.Time) []Server {
 	user, home := account.Name, account.Path
 
 	// One row when the home itself cannot be opened, rather than one per candidate inside
-	// it. Every probe under an unreadable home fails identically, so without this an
-	// ordinary unprivileged run produced sixteen rows all saying "permission denied" on the
-	// same directory, plus a truncation summary -- seventeen ways of being told one thing.
-	// The information an operator needs is that this account was not inspected.
-	if handle, err := os.Open(home); err != nil {
-		row := diagnosticRow(user, home, "", warning{
-			Code: warnHomeUnreadable, Class: fsscan.ClassifyError(err)})
+	// it: every probe under an unreadable home fails identically, and what an operator needs
+	// is that this account was not inspected. Opened by the same probe go_modules uses, with
+	// symlinks refused. A home on a network or userspace filesystem is still read: it is where
+	// the account's configuration lives. Where the home is stored is also what a symlinked
+	// configuration file's target may share; see fsscan.FollowLink.
+	homeStorage := fsscan.ClassifyError(fsscan.ProbeProjectDir(home, "."))
+	switch homeStorage {
+	case fsscan.ClassNone, fsscan.ClassNetworkFilesystem, fsscan.ClassUserspaceFilesystem:
+	default:
+		row := diagnosticRow(user, home, "", warning{Code: warnHomeUnreadable, Class: homeStorage})
 		row.Home = home
 		return []Server{row}
-	} else {
-		_ = handle.Close()
 	}
 
 	// Charged against the same deadline the open just ran under. Opening a home on a dead
@@ -802,36 +781,32 @@ func discoverForHome(ctx context.Context, account fsscan.UserHome, deadline time
 	// an intermediate directory (e.g. ~/Library) with a symlink to harvest another user's
 	// files when osqueryd runs as root.
 	//
-	// The bytes of the two files that are also project lists are kept, so pass 3 does not
+	// The bytes of the two files that are also project lists are kept, so pass 4 does not
 	// read them a second time. That matters for ~/.claude.json in particular: it is the one
 	// source with a raised cap, and decoding it twice would double the largest allocation
 	// this table makes per account per query.
-	rows, lists, stoppedEarly := probeHome(ctx, home, user, appData, deadline, seen, homeProbes)
+	rows, lists, stoppedEarly := probeHome(ctx, home, homeStorage, user, appData, deadline, seen,
+		homeProbes)
 	out = append(out, rows...)
 
-	// One diagnostic covering both ways the budget can run out during a home, emitted here
-	// rather than at the break so it cannot be missed on one path.
-	//
-	// Breaking out of pass 1 was handled; the loop *completing* while the deadline passed
-	// during its last read was not. The range simply ended, no break fired, and the guard
-	// below then skipped the remaining passes silently -- so a home whose final read was
-	// slow, which is exactly the network-backed case this budget exists for, returned
-	// partial rows that looked complete.
+	// One diagnostic covering both ways the budget can run out during pass 1: a break out of
+	// the loop, and the loop completing while the deadline passed during its last read. A
+	// home whose final read was slow, the network-backed case this budget exists for, would
+	// otherwise skip the remaining passes with nothing saying so.
 	if stoppedEarly || time.Until(deadline) <= 0 {
-		return stampCompleteness(append(out,
-			diagnosticRow(user, home, "", warning{Code: budgetCodeFor(ctx)})), false)
+		return append(out, diagnosticRow(user, home, "", warning{Code: budgetCodeFor(ctx)}))
 	}
 
 	// Pass 2: the two places a generated name sits between a fixed path and a config file.
-	profileRows, profileWarnings := probeGeneratedProfiles(ctx, home, user, appData, deadline, seen)
+	profileRows, profileWarnings := probeGeneratedProfiles(ctx, home, homeStorage, user, appData,
+		deadline, seen)
 	out = append(out, profileRows...)
 	for _, w := range profileWarnings {
 		out = append(out, diagnosticRow(user, home, "", w))
 	}
 
-	if ctx.Err() != nil || time.Until(deadline) <= 0 {
-		return stampCompleteness(append(out,
-			diagnosticRow(user, home, "", warning{Code: budgetCodeFor(ctx)})), false)
+	if !fsscan.BudgetRemains(ctx, deadline) {
+		return append(out, diagnosticRow(user, home, "", warning{Code: budgetCodeFor(ctx)}))
 	}
 
 	// Pass 3: Claude Code plugins, which declare their own servers.
@@ -841,19 +816,18 @@ func discoverForHome(ctx context.Context, account fsscan.UserHome, deadline time
 	// ~/.claude.json of up to 4 MiB. A budget that runs out should lose the expensive thing
 	// rather than the cheap one.
 	pluginRefs, pluginWarnings, pluginStopped := claudePluginRefs(ctx, home, deadline)
-	pluginRows, probeStopped := probePlugins(ctx, home, user, deadline, seen, pluginRefs)
+	pluginRows, probeStopped := probePlugins(ctx, home, homeStorage, user, deadline, seen,
+		pluginRefs)
 	out = append(out, pluginRows...)
 	for _, w := range mergeWarnings(pluginWarnings) {
 		out = append(out, diagnosticRow(user, home, "", w))
 	}
 	if pluginStopped || probeStopped {
-		return stampCompleteness(append(out,
-			diagnosticRow(user, home, "", warning{Code: budgetCodeFor(ctx)})), false)
+		return append(out, diagnosticRow(user, home, "", warning{Code: budgetCodeFor(ctx)}))
 	}
 
-	if ctx.Err() != nil || time.Until(deadline) <= 0 {
-		return stampCompleteness(append(out,
-			diagnosticRow(user, home, "", warning{Code: budgetCodeFor(ctx)})), false)
+	if !fsscan.BudgetRemains(ctx, deadline) {
+		return append(out, diagnosticRow(user, home, "", warning{Code: budgetCodeFor(ctx)}))
 	}
 
 	// Pass 4: what the clients say the user's projects are.
@@ -874,24 +848,24 @@ func discoverForHome(ctx context.Context, account fsscan.UserHome, deadline time
 		projectGroups = append(projectGroups, refs)
 		projectWarnings = append(projectWarnings, warnings...)
 	}
-	// A list file that exists and could not be read is a home-scope loss, and it is the
-	// reason MaxFileSize became load-bearing with this change.
-	//
-	// Before, an oversized ~/.claude.json cost that account its claude_code rows: one
-	// source-scope warning on one file. Now the same failure also costs every project-local
-	// configuration for the account and the whole of the approval state, because the project
-	// list IS that file. The oversize report on the file itself is still source-scope and
-	// still emitted; this is the separate, larger fact, and without it the home would be
-	// reported as completely enumerated on the strength of whatever the other probes found.
+	// A list file that exists and could not be read costs the account every project-local
+	// configuration it records and their approval state, because the project list is that
+	// file. The read failure on the file itself is a separate row, about its own servers. One
+	// row per list, naming it, so a reader can tell which client's projects are missing.
 	//
 	// Absence is silent, which is why this is keyed on a failed read rather than on empty
 	// bytes: most homes have no Codex installed and most have no Claude Code, and a warning
 	// for every account that simply does not use a client would be noise on every host.
-	if lists.claudeFailed || lists.codexFailed {
-		projectWarnings = append(projectWarnings, warning{Code: warnProjectListUnreadable})
+	if lists.claudeFailure != fsscan.ClassNone {
+		projectWarnings = append(projectWarnings, warning{Code: warnProjectListUnreadable,
+			Class: lists.claudeFailure, Source: devclients.OriginClaudeJSON})
 	}
-	workspaceRefs, workspaceWarnings, workspaceStopped := vscodeWorkspaceProjects(
-		ctx, home, appData, deadline)
+	if lists.codexFailure != fsscan.ClassNone {
+		projectWarnings = append(projectWarnings, warning{Code: warnProjectListUnreadable,
+			Class: lists.codexFailure, Source: devclients.OriginCodexTOML})
+	}
+	workspaceRefs, workspaceWarnings, workspaceStored, workspaceStopped := vscodeWorkspaceProjects(
+		ctx, home, appData, homeStorage, deadline)
 	projectGroups = append(projectGroups, workspaceRefs)
 	projectWarnings = append(projectWarnings, workspaceWarnings...)
 
@@ -908,20 +882,14 @@ func discoverForHome(ctx context.Context, account fsscan.UserHome, deadline time
 	}
 
 	// Pass 5: four known filenames inside each contained project.
-	projectRows, projectStopped := probeProjects(ctx, home, user, deadline, seen, projects)
+	projectRows, projectStopped := probeProjects(ctx, home, homeStorage, user, deadline, seen,
+		projects, workspaceStored)
 	out = append(out, projectRows...)
 	if projectStopped {
 		out = append(out, diagnosticRow(user, home, "", warning{Code: budgetCodeFor(ctx)}))
 	}
 
-	// scan_complete, decided once for the whole home.
-	//
-	// Any home-scope finding means the enumeration that found these rows did not finish, so
-	// every row for the account is marked incomplete -- including rows from files that were
-	// read perfectly well. That is the point of the column: the question is not "was this
-	// file parsed" but "is this list of servers the whole list", and a budget that ran out
-	// before the project pass makes the answer no regardless of how clean the first pass was.
-	return stampCompleteness(out, true)
+	return out
 }
 
 // budgetCodeFor distinguishes the two ways a pass stops short, which mean different things
@@ -933,69 +901,40 @@ func budgetCodeFor(ctx context.Context) warnCode {
 	return warnBudgetExhaustedInHome
 }
 
-// stampCompleteness decides scan_complete for every row from one home.
-//
-// Called with enumerated=false on the early-return paths and with true at the end, where it
-// scans what was emitted for a home-scope finding. Two spellings of the same rule, because
-// the early returns know the answer without looking and the final one does not.
-//
-// Source-scope findings are deliberately not consulted here. Those were already applied by
-// finishProcessing to the rows of the file they concern, and widening them to the home would
-// mean one malformed project config marked every other server in the account as incomplete
-// -- which makes the column useless by making it almost always zero.
-func stampCompleteness(rows []Server, enumerated bool) []Server {
-	complete := enumerated
-	if complete {
-		for _, row := range rows {
-			if !row.Warning.empty() && row.Warning.Code.scope() == scopeHome {
-				complete = false
-				break
-			}
-		}
-	}
-	if complete {
-		return rows
-	}
-	for i := range rows {
-		rows[i].ScanComplete = false
-	}
-	return rows
-}
-
 // projectLists carries the bytes of the two sources that are also project lists, so the
 // listers do not read them a second time.
 //
 // That matters for ~/.claude.json in particular: it is the one source with a raised cap, and
 // decoding it twice would double the largest allocation this table makes per account per
-// query. The failed flags are separate from nil bytes because the two mean different things
+// query. The failure classes are separate from nil bytes because the two mean different things
 // to the caller -- a client that is not installed is silent, and a list file that exists and
-// could not be read costs the home its whole project inventory.
+// could not be read costs the account every project that list records.
 type projectLists struct {
-	claude, codex             []byte
-	claudeFailed, codexFailed bool
+	claude, codex               []byte
+	claudeFailure, codexFailure fsscan.ErrClass
 }
 
 // probeHome runs the home-rooted probe list, returning the rows, the captured project lists,
 // and whether it stopped short.
-func probeHome(ctx context.Context, home, user, appData string, deadline time.Time,
-	seen map[string]struct{}, probes []probe) ([]Server, projectLists, bool) {
+func probeHome(ctx context.Context, home string, homeStorage fsscan.ErrClass, user,
+	appData string, deadline time.Time, seen map[string]struct{}, probes []probe) ([]Server,
+	projectLists, bool) {
 	var out []Server
 	var lists projectLists
 	for _, src := range probes {
-		// Checked between sources, not just once per home. Each lookup is an open on a path
-		// that may be network-backed, and a cancelled query used to keep working through all
-		// of them.
-		if ctx.Err() != nil || time.Now().After(deadline) {
+		// Checked between sources, not just once per home: each lookup is an open on a path
+		// that may be network-backed, and a cancelled query stops at the next one.
+		if !fsscan.BudgetRemains(ctx, deadline) {
 			return out, lists, true
 		}
 		// snap keeps its configuration behind a `current` symlink, which the traversal
 		// refuses. Resolved to the revision directory here so the read has a real path to
 		// walk; a source that does not resolve is simply not installed for this user.
-		relPath, resolvable := resolveSnapPath(home, src.relPath)
+		relPath, resolvable := devclients.ResolveSnapPath(home, src.relPath)
 		if !resolvable {
 			continue
 		}
-		if redirected, usable := redirectAppSupport(relPath, appData, home); !usable {
+		if redirected, usable := devclients.RedirectAppSupport(relPath, appData, home); !usable {
 			continue
 		} else if redirected != "" {
 			relPath = redirected
@@ -1009,15 +948,24 @@ func probeHome(ctx context.Context, home, user, appData string, deadline time.Ti
 		// expected absence -- so the resolution above changed only the dedup key and the
 		// reported source_path while the file itself stayed undiscoverable.
 		data, readErr := fsscan.ReadBoundedUnder(home, relPath, src.readOpts())
+		// A configuration file a dotfile manager linked into place is followed one hop, under
+		// fsscan.ReadLinkTarget's rules; a link it declines keeps the refusal, which is silent
+		// for a config file and reported for a project list. source_path and the dedup key stay
+		// the link's path, which is where the client reads the file.
+		if fsscan.ClassifyError(readErr) == fsscan.ClassRefusedPath {
+			dir, name := filepath.Split(relPath)
+			data, readErr = fsscan.ReadLinkTarget(home, homeStorage, dir, name, src.readOpts(),
+				linkChecks(fsscan.ReadBoundedUnder), readErr)
+		}
 		// Captured before parsing and after the BOM strip, so the listers see the same bytes
 		// the extractor does. Keyed on the original relPath rather than the resolved one:
 		// the resolved spelling varies with the snap revision, and matching on it meant the
 		// project list was silently never captured on a snap install.
 		switch src.relPath {
-		case claudeProjectsRelPath:
-			lists.claude, lists.claudeFailed = capturedList(data, readErr)
-		case codexProjectsRelPath:
-			lists.codex, lists.codexFailed = capturedList(data, readErr)
+		case devclients.ClaudeListPath:
+			lists.claude, lists.claudeFailure = capturedList(data, readErr)
+		case devclients.CodexListPath:
+			lists.codex, lists.codexFailure = capturedList(data, readErr)
 		}
 		rows := finishProcessing(home, data, readErr, path, user, src.client, src.jsonc,
 			src.cap(), src.extract)
@@ -1030,18 +978,24 @@ func probeHome(ctx context.Context, home, user, appData string, deadline time.Ti
 	return out, lists, false
 }
 
-// capturedList reports the bytes of a project list and whether reading it failed in a way
-// that matters.
+// capturedList reports the bytes of a project list and, when reading it failed in a way that
+// matters, the failure class; ClassNone otherwise.
 //
-// Expected absence is neither: a host with no Claude Code installed has no ~/.claude.json,
-// which is the common case and says nothing about completeness. Anything else -- oversized,
-// permission denied, a refused hard link -- means the list exists and this scan could not
-// read it, so the account's project inventory is missing rather than empty.
-func capturedList(data []byte, readErr error) ([]byte, bool) {
+// Absence is not a failure: a host with no Claude Code installed has no ~/.claude.json, which
+// is the common case and says nothing about completeness. Anything else -- oversized,
+// permission denied, a refused hard link, or a symlink the read refuses -- means the list
+// exists and this scan could not read it, so the projects it records are missing rather than
+// absent. A refused symlink is reported here although it is silent for a config file: a
+// config file is one source, while the list is the record of every project-local one. The
+// refusal itself stays in force; the file is still not followed.
+func capturedList(data []byte, readErr error) ([]byte, fsscan.ErrClass) {
 	if readErr == nil {
-		return stripBOM(data), false
+		return devclients.StripBOM(data), fsscan.ClassNone
 	}
-	return nil, !fsscan.IsExpectedAbsent(readErr)
+	if class := fsscan.ClassifyError(readErr); class != fsscan.ClassAbsent {
+		return nil, class
+	}
+	return nil, fsscan.ClassNone
 }
 
 // probeGeneratedProfiles reaches the two configuration locations whose directory name the
@@ -1052,21 +1006,21 @@ func capturedList(data []byte, readErr error) ([]byte, bool) {
 // never inside a cloud-backed directory. Dropping them instead would have lost every
 // per-profile VS Code config and every Codex named profile on the host, in silence -- the
 // exact failure this table exists to prevent.
-func probeGeneratedProfiles(ctx context.Context, home, user, appData string,
-	deadline time.Time, seen map[string]struct{}) ([]Server, []warning) {
+func probeGeneratedProfiles(ctx context.Context, home string, homeStorage fsscan.ErrClass, user,
+	appData string, deadline time.Time, seen map[string]struct{}) ([]Server, []warning) {
 	var out []Server
 	var warnings []warning
 
 	// VS Code family: <appsupport>/<fork>/User/profiles/<generated-id>/mcp.json.
 	for _, root := range vscodeProfileDirs() {
-		if ctx.Err() != nil || time.Now().After(deadline) {
+		if !fsscan.BudgetRemains(ctx, deadline) {
 			return out, warnings
 		}
-		relPath, resolvable := resolveSnapPath(home, root.relPath)
+		relPath, resolvable := devclients.ResolveSnapPath(home, root.relPath)
 		if !resolvable {
 			continue
 		}
-		if redirected, usable := redirectAppSupport(relPath, appData, home); !usable {
+		if redirected, usable := devclients.RedirectAppSupport(relPath, appData, home); !usable {
 			continue
 		} else if redirected != "" {
 			relPath = redirected
@@ -1074,7 +1028,7 @@ func probeGeneratedProfiles(ctx context.Context, home, user, appData string,
 		// An absent profiles directory is the common case: most hosts have none of the five
 		// forks, and a fork with no secondary profile has no directory either. A listing
 		// that is short still yields its names; only a real failure yields none.
-		names, truncated, err := listCapped(home, relPath, maxProfileDirs)
+		names, truncated, err := fsscan.ListDirNamesCapped(home, relPath, maxProfileDirs)
 		if err != nil {
 			warnings = append(warnings, warning{
 				Code: warnProfileListUnreadable, Class: fsscan.ClassifyError(err)})
@@ -1086,15 +1040,13 @@ func probeGeneratedProfiles(ctx context.Context, home, user, appData string,
 		}
 		for _, name := range names {
 			// The client is carried from the directory being listed rather than inferred
-			// from the path. Inferring it broke whenever Windows Roaming AppData was
-			// redirected: the conventional root was no longer in the path, so a Cursor
-			// profile config was reported as client=unknown and vanished from the query an
-			// administrator would write.
+			// from the path: with Windows Roaming AppData redirected, the conventional root
+			// is not in the path, and an inferred client would be unknown.
 			probes := []probe{{
 				relPath: filepath.Join(relPath, name, "mcp.json"),
 				client:  root.client, jsonc: true, extract: extractEnvelopeSimple,
 			}}
-			rows, _, stopped := probeHome(ctx, home, user, "", deadline, seen, probes)
+			rows, _, stopped := probeHome(ctx, home, homeStorage, user, "", deadline, seen, probes)
 			out = append(out, rows...)
 			if stopped {
 				return out, warnings
@@ -1106,7 +1058,7 @@ func probeGeneratedProfiles(ctx context.Context, home, user, appData string,
 	// fixed path already covers. isCodexTOMLPath stays as the narrowing, for the reason it
 	// was written: `config.toml` is one of the most common basenames on a developer machine,
 	// so the `.codex` parent is what makes the match mean anything.
-	codexNames, codexTruncated, err := listCapped(home, ".codex", maxProfileDirs)
+	codexNames, codexTruncated, err := fsscan.ListDirNamesCapped(home, ".codex", maxProfileDirs)
 	if err != nil {
 		warnings = append(warnings, warning{
 			Code: warnProfileListUnreadable, Class: fsscan.ClassifyError(err)})
@@ -1124,7 +1076,7 @@ func probeGeneratedProfiles(ctx context.Context, home, user, appData string,
 		probes := []probe{{
 			relPath: relPath, client: "codex", jsonc: false, extract: extractCodexTOML,
 		}}
-		rows, _, stopped := probeHome(ctx, home, user, "", deadline, seen, probes)
+		rows, _, stopped := probeHome(ctx, home, homeStorage, user, "", deadline, seen, probes)
 		out = append(out, rows...)
 		if stopped {
 			return out, warnings
@@ -1135,9 +1087,9 @@ func probeGeneratedProfiles(ctx context.Context, home, user, appData string,
 
 // maxProfileDirs bounds one profile-directory listing.
 //
-// Smaller than maxWorkspaceDirs because these are live profiles a person created by hand,
-// not storage directories an editor accumulates: a host with more than a few hundred VS Code
-// profiles, or Codex named profiles, is not a host this cap is the problem on.
+// Smaller than devclients.MaxWorkspaceDirs because these are live profiles a person created by
+// hand, not storage directories an editor accumulates: a host with more than a few hundred
+// VS Code profiles, or Codex named profiles, is not a host this cap is the problem on.
 const maxProfileDirs = 200
 
 // probeProjects runs the project-rooted probe list inside each contained project.
@@ -1148,68 +1100,94 @@ const maxProfileDirs = 200
 // descriptor. That is what makes containment a guarantee about the bytes rather than a string
 // comparison that happened earlier -- a project directory that was inside the home when it
 // was checked and is a symlink by the time it is opened fails the open.
-func probeProjects(ctx context.Context, home, user string, deadline time.Time,
-	seen map[string]struct{}, projects []projectRef) ([]Server, bool) {
+//
+// stored holds the counts of .code-workspace files stored somewhere other than this machine's
+// disk, which are reported in the same rows as the projects stored that way.
+func probeProjects(ctx context.Context, home string, homeStorage fsscan.ErrClass, user string,
+	deadline time.Time, seen map[string]struct{}, projects []projectRef,
+	stored []warning) ([]Server, bool) {
 	var out []Server
 	refusals := make(map[warnCode]*warning)
+	// count adds a refusal's count, creating its warning the first time.
+	count := func(w warning) {
+		if existing, ok := refusals[w.Code]; ok {
+			existing.Count += w.Count
+			return
+		}
+		refusals[w.Code] = &w
+	}
+	for _, w := range stored {
+		count(w)
+	}
+	// The account-wide approval settings, read the first time a Claude project declares a
+	// server, because they govern only those servers.
+	var userSettings claudeApproval
+	userSettingsRead := false
 	for _, project := range projects {
-		if ctx.Err() != nil || time.Now().After(deadline) {
+		if !fsscan.BudgetRemains(ctx, deadline) {
 			return append(out, aggregatedRefusals(user, home, refusals)...), true
 		}
-		// The project's own settings files, read once per project rather than per probe, and
-		// only where they can bear on the answer.
-		//
-		// Gated on a Claude origin because approval is Claude's mechanism: for a project
-		// recorded only by Codex or a VS Code fork there is nothing these files could
-		// change, and reading them anyway touched files inside a project this pass has no
-		// question about -- before the configuration probes, so it was the first thing to
-		// reach a provider-backed file.
-		if _, fromClaude := project.Origins[originClaudeJSON]; fromClaude {
-			evidence, settingsWarnings := projectApprovalSettings(
-				home, project.Rel, project.TrustDialogAccepted)
-			project.Approval = project.Approval.overlay(evidence)
-			for _, w := range settingsWarnings {
-				out = append(out, diagnosticRow(user, project.Abs, "claude_code", w))
+		// Only the probes the clients that recorded this project actually load, rather than
+		// all four against every project: using one client's evidence that a directory is a
+		// project to justify reporting a different client's configuration in it is a claim
+		// the evidence does not support. Codex does not read project-scoped configuration for
+		// an untrusted project, so that file is not configuration there at all.
+		var probes []probe
+		for _, relPath := range project.probesFor() {
+			src, known := projectProbeFor[relPath]
+			if known && (src.client != "codex" || project.allowsCodexConfig()) {
+				probes = append(probes, src)
 			}
 		}
-		// Only the probes the clients that recorded this project actually load, rather than
-		// all four against every project. See projectRef.probesFor: using one client's
-		// evidence that a directory is a project to justify reporting a different client's
-		// configuration in it is a claim the evidence does not support.
-		for _, relPath := range project.probesFor() {
+		if len(probes) == 0 {
+			continue
+		}
+		// A project in a cloud provider's folder is decided from its path, before anything in
+		// it is opened, its settings files included, and counted once, as go_modules counts
+		// one: the count is of projects, not of the files their clients would load.
+		if underCloudStorage(project.Rel) {
+			count(warning{Code: warnProjectCloudPlaceholder, Count: 1})
+			continue
+		}
+		// A file in this project that a storage check refused, so the project is counted
+		// once however many of its files the check refuses.
+		storedElsewhere := map[warnCode]bool{}
+		approvalRead := false
+		for _, src := range probes {
 			// Between individual probes as well as between projects. A project contributes
 			// up to three reads, so checking only per project overruns by that much on the
 			// last project rather than stopping where the budget ran out.
-			if ctx.Err() != nil || time.Now().After(deadline) {
+			if !fsscan.BudgetRemains(ctx, deadline) {
 				return append(out, aggregatedRefusals(user, home, refusals)...), true
 			}
-			src, known := projectProbeFor[relPath]
-			if !known {
-				continue
-			}
-			// Codex does not read project-scoped configuration for an untrusted project, so
-			// that file is not configuration there at all.
-			if src.client == "codex" && !project.allowsCodexConfig() {
-				continue
-			}
+			relPath := src.relPath
 			path := filepath.Join(project.Abs, relPath)
 			if _, dup := seen[path]; dup {
 				continue
 			}
 			data, readErr := fsscan.ReadProjectFile(home, project.Rel, relPath,
 				src.readOpts())
+			// A linked project config is followed one hop, as a home config is.
+			if fsscan.ClassifyError(readErr) == fsscan.ClassRefusedPath {
+				dir, name := filepath.Split(filepath.Join(project.Rel, relPath))
+				data, readErr = fsscan.ReadLinkTarget(home, homeStorage, dir, name, src.readOpts(),
+					linkChecks(nil), readErr)
+			}
 			if readErr != nil {
 				// Absence is silent and everything else is counted. A recorded project that
 				// was deleted, or one with no MCP configuration, is the overwhelming
 				// majority -- three of this machine's thirty recorded projects no longer
 				// exist -- and a row each would be most of this table's output.
-				if w, report := projectRefusalWarning(readErr, src.cap()); report {
-					if existing, ok := refusals[w.Code]; ok {
-						existing.Count += w.Count
-					} else {
-						copied := w
-						refusals[w.Code] = &copied
+				w, report := projectRefusalWarning(readErr, src.cap())
+				switch {
+				case !report:
+				case w.Code == warnProjectCloudPlaceholder || w.Code == warnProjectUserspaceFS:
+					if !storedElsewhere[w.Code] {
+						storedElsewhere[w.Code] = true
+						count(w)
 					}
+				default:
+					count(w)
 				}
 				continue
 			}
@@ -1217,6 +1195,30 @@ func probeProjects(ctx context.Context, home, user string, deadline time.Time,
 				src.cap(), src.extract)
 			if rows == nil {
 				continue
+			}
+			// The approval settings bear only on the servers a .mcp.json declares, so they are
+			// read once, and only after that file was read and declares one: the account-wide
+			// file once per home, and the project's own files once per project. A project with
+			// no .mcp.json, or one whose files are stored somewhere other than this machine's
+			// disk, costs no settings read and gets no settings row. The account-wide settings
+			// are the lowest layer: merged under the project's recorded answers, which have no
+			// precedence over them, and overlaid by the project's own files.
+			if src.client == "claude_code" && !approvalRead && declaresServers(rows) {
+				approvalRead = true
+				if !userSettingsRead {
+					userSettingsRead = true
+					var userWarnings []warning
+					userSettings, userWarnings = userApprovalSettings(home)
+					for _, w := range userWarnings {
+						out = append(out, diagnosticRow(user, home, "", w))
+					}
+				}
+				evidence, settingsWarnings := projectApprovalSettings(
+					home, project.Rel, project.TrustDialogAccepted)
+				project.Approval = userSettings.merge(project.Approval).overlay(evidence)
+				for _, w := range settingsWarnings {
+					out = append(out, diagnosticRow(user, project.Abs, "claude_code", w))
+				}
 			}
 			// Approval is per server and comes from the project, which is why it is stamped
 			// here rather than inside the extractor: the extractor sees bytes and has no
@@ -1240,6 +1242,16 @@ func probeProjects(ctx context.Context, home, user string, deadline time.Time,
 		}
 	}
 	return append(out, aggregatedRefusals(user, home, refusals)...), false
+}
+
+// declaresServers reports whether rows hold a server rather than only diagnostics.
+func declaresServers(rows []Server) bool {
+	for i := range rows {
+		if rows[i].rawName != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // aggregatedRefusals turns the counted project-probe refusals into one row each.
@@ -1268,18 +1280,14 @@ func aggregatedRefusals(user, home string, refusals map[warnCode]*warning) []Ser
 
 // finishProcessing turns one file's bytes into rows, or into one diagnostic.
 //
-// Three of the four places user bytes used to reach the warning column are here. Each is now
-// a code plus structured detail:
+// Every failure is a code plus structured detail, never an error's text:
 //
-//   - a read failure was `"read: " + readErr.Error()`, which is the operating system's
-//     message and carries the path. It is now fsscan.ClassifyError's closed enum.
-//   - an unterminated JSONC comment was a fixed sentence already, and is now a shape.
-//   - a parse failure was `"parse: " + err.Error()`, which is the worst of the four: both
-//     encoding/json and BurntSushi/toml quote the input they failed on, so a malformed
-//     `env = { TOKEN = abc123 }` put the token in the column verbatim. parseWarning reads
-//     the position and nothing else.
-//
-// The fourth is parse.go's skipped-entry count, which was always just an integer.
+//   - a read failure is fsscan.ClassifyError's closed enum, because the operating system's
+//     message carries the path.
+//   - an unterminated JSONC comment is a shape.
+//   - a parse failure is parseWarning's position, because encoding/json and BurntSushi/toml
+//     quote the input they failed on, so a malformed `env = { TOKEN = abc123 }` would put the
+//     token in the column.
 func finishProcessing(home string, data []byte, readErr error, path, user, client string, jsonc bool, maxSize int64, extract func([]byte) ([]Server, error)) []Server {
 	if readErr != nil {
 		if fsscan.IsExpectedAbsent(readErr) {
@@ -1313,7 +1321,7 @@ func finishProcessing(home string, data []byte, readErr error, path, user, clien
 	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
 
 	if jsonc {
-		stripped, terminated := stripJSONC(data)
+		stripped, terminated := devclients.StripJSONC(data)
 		if !terminated {
 			row := diagnosticRow(user, path, client, warning{
 				Code: warnParseFailed, Shape: shapeUnterminatedComment})
@@ -1328,16 +1336,10 @@ func finishProcessing(home string, data []byte, readErr error, path, user, clien
 		row.Home = home
 		return []Server{row}
 	}
-	// Whether any row from this file reports a source-scope loss. If one does, every row
-	// from the file is an incomplete listing of it: the question scan_complete answers is
-	// "were all of this file's servers listed", and one undecodable sibling makes the answer
-	// no for the whole file rather than for the entry nobody could read.
-	complete := true
-	for i := range rows {
-		if !rows[i].Warning.empty() && rows[i].Warning.Code.scope() == scopeSource {
-			complete = false
-		}
-	}
+	// A source-scope loss on any row from this file makes every row from it an incomplete
+	// listing: the question scan_complete answers is "were all of this file's servers
+	// listed", and one undecodable sibling makes the answer no for the whole file.
+	complete := !hasScope(rows, scopeSource)
 	for i := range rows {
 		rows[i].User = user
 		rows[i].SourcePath = path
@@ -1534,6 +1536,9 @@ func extractClaudeCode(data []byte) ([]Server, error) {
 		// this into a parse warning row.
 		return nil, err
 	}
+	if devclients.NullDocument(data) {
+		return nil, devclients.ErrNullDocument
+	}
 	var out []Server
 	skipped := 0
 	// A malformed container counts as one skipped item even though it may have held many
@@ -1567,7 +1572,25 @@ func extractClaudeCode(data []byte) ([]Server, error) {
 		}
 		scoped := make(map[string]rawServerEntry, len(project.MCPServers))
 		skipped += decodeInto(scoped, project.MCPServers)
-		rows, _ := materialize(scoped, "projects["+projPath+"].mcpServers")
+		// A key longer than any recorded path the collector reads is left out of the context
+		// here, so it is not carried on every server row; publication then reports the path
+		// as dropped and keeps the section name.
+		contextPath := projPath
+		if len(contextPath) > devclients.MaxRecordedPathLen {
+			contextPath = ""
+		}
+		rows, _ := materialize(scoped, "projects["+contextPath+"].mcpServers")
+		if contextPath != projPath {
+			// The private context keeps a bounded digest of the key the published one left out.
+			// assignNamePlaceholders orders rows by name and private context, and two overlong
+			// keys declaring the same unpublishable name would otherwise tie and leave map order
+			// to decide which server gets which placeholder.
+			digest := sha256.Sum256([]byte(projPath))
+			discriminator := "projects[sha256:" + hex.EncodeToString(digest[:]) + "].mcpServers"
+			for index := range rows {
+				rows[index].rawContext = discriminator
+			}
+		}
 		out = append(out, rows...)
 	}
 	return append(out, skippedEntryWarning(skipped)...), nil
@@ -1581,6 +1604,9 @@ func extractGeminiSettings(data []byte) ([]Server, error) {
 	}
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return nil, err
+	}
+	if devclients.NullDocument(data) {
+		return nil, devclients.ErrNullDocument
 	}
 	entries := make(map[string]rawServerEntry, len(doc.MCPServers))
 	skipped := decodeInto(entries, doc.MCPServers)
@@ -1610,18 +1636,19 @@ func materialize(in map[string]rawServerEntry, ctx string) ([]Server, error) {
 		s := Server{
 			// SourceContext can include a project path the user controls
 			// (e.g., projects[/abs/path].mcpServers from ~/.claude.json).
-			// Apply redactSecret to catch token-shaped substrings in case a
+			// Apply redact.Secret to catch token-shaped substrings in case a
 			// project lives in a directory whose name contains a secret.
-			SourceContext: redactSecret(ctx),
+			SourceContext: redact.Secret(ctx),
 			// JSON map keys are attacker-controlled. A user could (deliberately
 			// or accidentally) place a token-shaped string as a server name
 			// in their MCP config. Redact before emit.
-			rawName:    name,
-			rawContext: ctx,
-			ServerName: redactSecret(name),
-			Command:    redactSecret(e.Command),
-			Args:       redactArgs(e.Args),
-			URL:        sanitizeRemoteURL(rawURL),
+			rawName:      name,
+			rawContext:   ctx,
+			ServerName:   redact.Secret(name),
+			Command:      redact.Secret(e.Command),
+			Args:         redactArgs(e.Args),
+			identityArgs: secretEach(e.Args),
+			URL:          sanitizeRemoteURL(rawURL),
 			// Inferred here, from the unsanitized URL, because sanitizeRemoteURL drops the
 			// path and the /sse convention lives in it. Doing this later in inferIdentity
 			// meant https://example.test/sse was always reported as http.
@@ -1632,7 +1659,7 @@ func materialize(in map[string]rawServerEntry, ctx string) ([]Server, error) {
 			s.Disabled = *e.Disabled
 		}
 		if len(e.Env) > 0 {
-			// Collected in map order and sorted at the emit boundary, not here:
+			// Collected in map order and sorted when the row is published, not here:
 			// redactedJSONStringArray sorts after redacting, which is the only place that
 			// can guarantee the column is stable for every JSON-array column at once.
 			// Sorting here as well would be redundant, and sorting *instead* of there would
@@ -1643,7 +1670,7 @@ func materialize(in map[string]rawServerEntry, ctx string) ([]Server, error) {
 			// unchanged server as removed and re-added on every run.
 			s.EnvKeys = make([]string, 0, len(e.Env))
 			for k := range e.Env {
-				// Gated here as well as at the row boundary, so the drop can be attributed
+				// Gated here as well as at publication, so the drop can be attributed
 				// to this source rather than reported as a bare count at the end. An env
 				// key is a C identifier in every shell and runtime, so a name that fails
 				// could not have been doing the job this column describes.

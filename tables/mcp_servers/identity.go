@@ -4,6 +4,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/macadmins/osquery-extension/pkg/redact"
 )
 
 // shellVarRe matches unresolved shell expansions such as ${HOME}, $HOME, %APPDATA%.
@@ -54,6 +56,9 @@ func inferIdentity(s *Server) {
 	// mutated; they are still surfaced verbatim to the operator.
 	exe, embedded := commandFields(s.Command, len(s.Args) > 0)
 	argTok := s.Args
+	if s.identityArgs != nil {
+		argTok = s.identityArgs
+	}
 	if len(embedded) > 0 {
 		// Redacted here because these arguments never passed through materialize, which is
 		// where the declared args array gets the same treatment. Without it the two forms
@@ -63,7 +68,7 @@ func inferIdentity(s *Server) {
 		// as the first package-shaped positional and copied it into package_name and
 		// requested_spec. An opaque secret is exactly what the final redactor cannot
 		// recognise, so it reached the row intact.
-		argTok = redactArgs(embedded)
+		argTok = secretEach(embedded)
 	}
 	// launcherName, not the plain filename: on Windows `npx` resolves to `npx.cmd`, and a
 	// config naming the resolved file is legal and common.
@@ -127,9 +132,9 @@ func (s *Server) noteWarning(w warning) {
 var launcherIdentity = map[string]func(s *Server, args []string){
 	"npx": func(s *Server, args []string) {
 		s.PackageManager = "npx"
-		cand, ver, unknown := npxIdentity(args)
-		if unknown {
-			s.noteWarning(warning{Code: warnUnknownLauncherOption})
+		cand, ver, code := npxIdentity(args)
+		if code != "" {
+			s.noteWarning(warning{Code: code})
 		}
 		if looksLikePackageSpec(cand) {
 			s.RequestedSpec = cand
@@ -139,26 +144,26 @@ var launcherIdentity = map[string]func(s *Server, args []string){
 	},
 	"bunx": func(s *Server, args []string) {
 		s.PackageManager = "bunx"
-		candidate, unknown := firstPositional(args)
-		assignIfClean(s, candidate, unknown, splitNPMSpec)
+		candidate, code := bunxIdentity(args)
+		assignIfClean(s, candidate, code, splitNPMSpec)
 	},
 	"uvx": func(s *Server, args []string) {
 		s.PackageManager = "uvx"
-		candidate, unknown := uvxIdentity(args)
-		assignIfClean(s, candidate, unknown, splitPyPISpec)
+		candidate, code := uvxIdentity(args)
+		assignIfClean(s, candidate, code, splitPyPISpec)
 	},
 	"uv": func(s *Server, args []string) {
 		s.PackageManager = "uv"
-		candidate, unknown := uvRunIdentity(args)
-		assignIfClean(s, candidate, unknown, splitPyPISpec)
+		candidate, code := uvRunIdentity(args)
+		assignIfClean(s, candidate, code, splitPyPISpec)
 	},
 	"pipx": func(s *Server, args []string) {
 		s.PackageManager = "pipx"
-		candidate, unknown := pipxIdentity(args)
-		assignIfClean(s, candidate, unknown, splitPyPISpec)
+		candidate, code := pipxIdentity(args)
+		assignIfClean(s, candidate, code, splitPyPISpec)
 	},
-	"docker": dockerIdentity,
-	"podman": dockerIdentity,
+	"docker": containerIdentity(dockerGlobalGrammar, dockerRunGrammar),
+	"podman": containerIdentity(podmanGlobalGrammar, podmanRunGrammar),
 	// python is the one launcher that claims no package manager unless its arguments say
 	// what is being run: `python` alone is a script host, not a package installer.
 	"python":  pythonIdentity,
@@ -174,13 +179,13 @@ var launcherIdentity = map[string]func(s *Server, args []string){
 // otherwise we'd leak URL credentials, file paths, etc. that the launcher happens to accept
 // as positional args. PackageName is set from the split result, which already rejects bad
 // shapes.
-// unknown is threaded in rather than inferred, because the two reasons an identity comes out
-// empty are indistinguishable from the result: a candidate that is not package-shaped means
-// the launcher was not asked to install a registry package, which is ordinary, and an
-// unrecognised option means this table could not tell, which is a finding.
-func assignIfClean(s *Server, cand string, unknown bool, splitter func(string) (string, string)) {
-	if unknown {
-		s.noteWarning(warning{Code: warnUnknownLauncherOption})
+// code is threaded in rather than inferred, because the reasons an identity comes out empty are
+// indistinguishable from the result: a candidate that is not package-shaped means the launcher
+// was not asked to install a registry package, which is ordinary, while an unrecognised option
+// or a repeated package option means this table could not tell, which is a finding.
+func assignIfClean(s *Server, cand string, code warnCode, splitter func(string) (string, string)) {
+	if code != "" {
+		s.noteWarning(warning{Code: code})
 	}
 	if !looksLikePackageSpec(cand) {
 		return
@@ -191,17 +196,24 @@ func assignIfClean(s *Server, cand string, unknown bool, splitter func(string) (
 	s.PinnedVersion = ver
 }
 
-func dockerIdentity(s *Server, args []string) {
-	s.PackageManager = "docker"
-	// Docker refs aren't package specs in the npm/pypi sense; splitDockerRef returns
-	// (name, version) for valid refs and "", "" otherwise. We accept whatever it produces.
-	//
-	// Validated against the reference grammar before anything is assigned. The old guard
-	// only excluded "://", so user:secret@reg/img was emitted verbatim as both
-	// requested_spec and package_name.
-	if ref := dockerRunIdentity(args); dockerRefRe.MatchString(ref) {
-		s.RequestedSpec = ref
-		s.PackageName, s.PinnedVersion = splitDockerRef(ref)
+// containerIdentity reports a container launcher, docker or podman, as the docker package
+// manager, and identifies the image by that launcher's own grammars: before its subcommand, and
+// for `run`. Each has its own, because the two disagree about options: podman's --passwd takes
+// no value, and read as Docker reads an unlisted credential-named option it took the image as
+// its value and published the container's command as the image.
+func containerIdentity(global, run launcherGrammar) func(*Server, []string) {
+	return func(s *Server, args []string) {
+		s.PackageManager = "docker"
+		// Validated against the reference grammar before anything is assigned, so a reference
+		// such as user:secret@reg/img is not published as requested_spec and package_name.
+		ref, unknown := containerRunIdentity(args, global, run)
+		if unknown {
+			s.noteWarning(warning{Code: warnUnknownLauncherOption})
+		}
+		if dockerRefRe.MatchString(ref) {
+			s.RequestedSpec = ref
+			s.PackageName, s.PinnedVersion = splitDockerRef(ref)
+		}
 	}
 }
 
@@ -227,11 +239,10 @@ func plainLauncher(name string) func(*Server, []string) {
 func guessRemoteTransport(u string, args []string) string {
 	parsed, err := url.Parse(u)
 	// Only an http or https endpoint may be guessed at. Falling through to "http" for
-	// anything else reported `wss://example.test/mcp` as transport=http, and a URL with no
-	// recoverable host as transport=http with no endpoint at all -- a row claiming a
-	// protocol its own config never named, which is what normalizeTransport was changed to
-	// stop doing for an explicitly declared unknown transport. The same answer is owed when
-	// the scheme rather than the type field is the thing this table does not support.
+	// anything else would report `wss://example.test/mcp` as transport=http, a protocol its
+	// own config never named; normalizeTransport answers "unknown" for an explicitly
+	// declared transport this table does not support, and the same answer is owed when the
+	// scheme is the unsupported part.
 	//
 	// "unknown" rather than empty: it is one of the four documented values of the column,
 	// and an empty transport drops out of every query that filters on it.
@@ -257,495 +268,411 @@ func guessRemoteTransport(u string, args []string) string {
 	return "http"
 }
 
-// runnerValueFlags are options whose *next* argument is a value rather than the package. A
-// scan that does not know this attributes the value instead: `uvx --python 3.12 real-server`
-// reported package_name=3.12 at medium confidence, which in an inventory is worse than an
-// empty answer, because nothing marks it as wrong.
+// optionKind is what a launcher does with the token after one of its own options.
+type optionKind int
+
+const (
+	// optionBoolean takes no value.
+	optionBoolean optionKind = iota + 1
+	// optionValue takes the next token as its value.
+	optionValue
+	// optionValueUnlessOption takes the next token as its value unless the token begins with a
+	// dash. npx reads every npm setting it does not list as taking a value this way.
+	optionValueUnlessOption
+	// optionPackage takes the next token as its value, and the value names the package to
+	// install, as npx's --package and uvx's --from do.
+	optionPackage
+	// optionCommand takes the next token as a command to run instead of a package, as npx's
+	// --call does, so a launcher given one installs no package unless an optionPackage names one.
+	optionCommand
+	// optionLocalPath takes no value and makes the operand a local file rather than a package, as
+	// pipx run's --path does, so the launcher installs nothing whatever else names a package.
+	optionLocalPath
+)
+
+// launcherGrammar is how one launcher reads its own options: whether each takes a separate value,
+// from the launcher's own source or CLI, so the token a value-taking option consumes is never
+// read as the package and a value-less option never swallows it.
 //
-// Only options that take a separate value need listing; the `--flag=value` form carries its
-// own value and is skipped by the dash prefix.
-//
-// Two rules govern what may be added here, both learned the hard way.
-//
-// An option whose value IS the package must never be listed. `uvx --from httpx httpx-cli`
-// names httpx as the package and httpx-cli as the command to run inside it, so listing
-// `--from` here would skip the package and report the command. Both launchers read it
-// explicitly instead -- uvxIdentity and uvRunIdentity -- and this map has to stay out of
-// their way. Leaving it to the generic positional scan was the earlier arrangement and it
-// was wrong: it worked only while the value happened to be package-shaped, and a Git spec
-// is not, so the scan walked past it and reported the command.
-//
-// A boolean must never be listed either, because it would consume the real package and
-// empty the identity. `--quiet`/`-q` and `--verbose`/`-v` are the trap: uv documents them
-// with an argument-looking `<COLOR_CHOICE>`-style signature in some renderings, and they are
-// counters that take nothing.
-//
-// KNOWN GAP: one map is shared by npx, uvx and pipx,
-// which do not share a grammar, and no launcher's grammar is modelled completely. Docker is
-// not among them: dockerRunIdentity enumerates the booleans instead and assumes everything
-// else consumes a value, which is the inversion that made its scan stable.
-// The decision this used to defer has been made: an unrecognised option fails closed.
-//
-// The gap was that all three scanners treated an unlisted flag as taking no value, so
-// `npx -y --pat <secret> pkg` made the secret the first operand and copied it into
-// package_name and requested_spec. An opaque credential is exactly what the final redactor
-// cannot recognise, so it reached the row intact. The two ways out were per-launcher arity --
-// correct, large, and permanently behind whatever options npm and uv added last month -- or
-// treating an unrecognised option as disqualifying.
-//
-// The second is now what happens: sawUnknownOption is set, the scan returns "", and the row
-// reports confidence=low with an empty identity triple and warnUnknownLauncherOption saying
-// why. The cost is real and is the point of recording it here: a legitimate unlisted boolean
-// -- some new `--quiet` -- now empties the identity for that row rather than being walked
-// past. That is a missing answer where the alternative is a confidently wrong one, and for a
-// column that may be a credential the missing answer is the only acceptable direction.
-//
-// dockerRunIdentity is unaffected and needed no change. It already inverts this, enumerating
-// the booleans and assuming everything else consumes a value, which is why its scan was the
-// stable one.
-var runnerValueFlags = map[string]struct{}{
-	"--python": {}, "-p": {}, "--with": {}, "--index": {}, "--index-url": {},
-	"--extra-index-url": {}, "--find-links": {}, "--constraint": {}, "-c": {},
-	"--registry": {}, "--cache-dir": {}, "--refresh-package": {}, "--prerelease": {},
-	"--resolution": {}, "--exclude-newer": {}, "--config-file": {}, "--directory": {},
-	"--project": {}, "--package": {},
-	// Added from the uv CLI reference after `uvx --color always real-server` was reported
-	// as package_name=always. Short spellings included because the separated form accepts
-	// either.
-	"--color": {}, "--index-strategy": {}, "--keyring-provider": {}, "--link-mode": {},
-	"--python-platform": {}, "--with-editable": {}, "--with-requirements": {}, "-w": {},
-	"--default-index": {}, "-i": {}, "-f": {}, "--config-setting": {},
-	"--config-settings": {}, "-C": {}, "--no-binary-package": {},
-	"--prerelease-package": {}, "--reinstall-package": {}, "--upgrade-package": {},
-	"-P": {}, "--upgrade-group": {}, "--allow-insecure-host": {}, "--trusted-host": {},
-	// pipx. This was in launcherBooleanFlags, so every scanner assumed it consumed nothing
-	// and read the arguments meant for pip as the launcher's first operand:
-	// `pipx run --pip-args <value> real-package` reported the value whenever it was
-	// name-shaped, which an opaque credential is. pipx documents --pip-args as taking the
-	// arguments to hand to pip, and those arguments are where an authenticated index URL or
-	// a token is passed, so the one token this option is most likely to carry is the one the
-	// final redactor cannot recognise. It reached package_name and requested_spec verbatim.
-	"--pip-args": {},
+// Each launcher has its own, because the launchers disagree about the same names: -f is
+// --find-links, a value, to uv, --force, which takes none, to npx, and not an option of bunx's;
+// -c is uv's --constraint and npx's --call; -p is uvx's --python and npx's --package; podman's
+// --passwd takes no value. One table shared between them published a launched server's argument
+// as the package whenever two of them disagreed. An option the table does not list ends the scan
+// with nothing identified, because whether it takes a value cannot be known.
+type launcherGrammar struct {
+	options map[string]optionKind
+	// dashValues says a value-taking option takes the next token even when it begins with a
+	// dash, as Docker's flag parser, npx's own list and bunx do. Otherwise the launcher refuses
+	// such a command line, as clap and argparse do, and the scan gives up rather than guess.
+	dashValues bool
+	// ignoreDashes says options are looked up without their leading dashes, because npx strips
+	// any number of them before it looks an option up.
+	ignoreDashes bool
+	// repeatedPackage is what the launcher does with its package option given more than once.
+	repeatedPackage packageRule
+	// credentialValues says an option the grammar does not list takes a value when its name
+	// announces a credential. Only npx: its own parser reads an option it does not list as
+	// taking the next token, so the name settles what the table cannot. The others refuse an
+	// option they do not know, or, as bunx does, ignore it and take no value, so reading
+	// podman's value-less --passwd as taking a value through Docker's table published the
+	// container's command as the image.
+	credentialValues bool
 }
 
-// firstPositional returns the launcher's first operand, and only if it is package-shaped.
-// Arguments consumed as a value by the option before them are skipped and are not operands.
-//
-// It does not look past that operand. An earlier version did, on the reasoning that a
-// credential URL appearing before the real package should not permanently mask inference --
-// but the example it cited, `--registry https://u:p@h pkg`, is handled by arity: --registry
-// is in runnerValueFlags, so its value is consumed and never reaches the grammar check. What
-// walking past actually did was cross the launcher boundary. `npx ./server.js real-package`
-// reported real-package, which is an argument to the script npx ran, not something npx
-// installed -- the same mistake as reading the launched program's --package, --from or -m.
-// The first operand is the package or there is no package.
-//
-// The launchers that take a subcommand need the same scan starting one token later, so there
-// is one implementation and this names the no-subcommand case. Two byte-identical copies of
-// the loop lived here before, which is one copy too many for a scan that decides what lands
-// in package_name: a guard added to either would have protected only its own callers.
-func firstPositional(args []string) (string, bool) {
-	return firstOperandAfter(args, "")
+// packageRule is what a launcher does with its package option given more than once.
+type packageRule int
+
+const (
+	// packageLast: the last one counts, as bunx's -p and pipx's --spec do.
+	packageLast packageRule = iota
+	// packageOnce: the launcher refuses the command line, as uv does for a repeated --from.
+	packageOnce
+	// packageAll: every one is installed, as npx's --package does, so differing ones name no
+	// single package.
+	packageAll
+)
+
+// newGrammar builds a launcherGrammar with settings' parsing rules from one space-separated list
+// of option names per kind.
+func newGrammar(settings launcherGrammar, lists map[optionKind]string) launcherGrammar {
+	grammar := settings
+	grammar.options = map[string]optionKind{}
+	for kind, list := range lists {
+		for _, name := range strings.Fields(list) {
+			grammar.options[name] = kind
+		}
+	}
+	return grammar
 }
 
-func npxIdentity(args []string) (spec, ver string, unknown bool) {
-	// Honor `--package <name>` and `--package=<name>` explicitly when present.
-	//
-	// The scan covers every argument including the last. Only the two-token form has to look
-	// ahead, so only that branch is guarded; bounding the whole loop at len(args)-1 meant an
-	// inline `--package=pkg@1.2.3` in final position was never seen.
-	//
-	// Bounded at the first positional, because past that point the options belong to the
-	// program npx launched rather than to npx. `npx real-package --package evil` reported
-	// evil: the server's own --package option, read as though npx had been asked to install
-	// it. Whatever a launched MCP server chooses to call its flags is outside this table's
-	// control, so the scan has to stop where the launcher's grammar does.
-	if value, found := launcherOptionValue(args, npxGrammar, npxPackageFlags); found {
-		spec = value
-		_, ver = splitNPMSpec(spec)
-		return
+// kindOf returns how grammar reads the option name, and false for one it does not list.
+func (grammar launcherGrammar) kindOf(name string) (optionKind, bool) {
+	key := name
+	if grammar.ignoreDashes {
+		key = strings.TrimLeft(name, "-")
 	}
-	// The full list, not the option prefix: the package npx runs *is* the first positional,
-	// so the fallback has to see past where the option walk stops.
-	spec, unknown = firstPositional(args)
-	_, ver = splitNPMSpec(spec)
-	return
+	if kind, known := grammar.options[key]; known {
+		return kind, true
+	}
+	if grammar.credentialValues && redact.IsSecretFlagName(name) {
+		return optionValue, true
+	}
+	return 0, false
 }
 
-// uvxIdentity resolves `uvx`, where --from names the package and the trailing token names
-// the command inside it.
-//
-// firstPositional was doing this, and it was right only while the package happened to be
-// package-shaped: `uvx --from httpx httpx-cli` reported httpx because the option was skipped
-// as a flag and its value was simply the first positional. Give --from a value the grammar
-// rejects -- `uvx --from git+https://github.com/acme/mcp-suite.git actual-server`, the
-// Git-backed form Astral documents -- and the scan walked past it and reported
-// actual-server, the command the package exports, as the package itself.
-//
-// When --from is present it *is* the identity. If its value cannot be represented, the
-// identity is empty: assignIfClean rejects it and nothing after it is consulted.
-func uvxIdentity(args []string) (string, bool) {
-	if value, found := launcherOptionValue(args, uvGrammar, uvFromFlag); found {
-		return value, false
-	}
-	return firstPositional(args)
+// isOption reports whether argument is an option. A lone dash is an operand: by convention it
+// names standard input, and read as an option it took the token after it as its value, so
+// `docker run - arg secret` named secret as the image.
+func isOption(argument string) bool {
+	return len(argument) > 1 && argument[0] == '-'
 }
 
-// uvRunIdentity resolves `uv run --from <pkg>` and `uv tool run <pkg>`.
+// launcherScan is what a launcher's own options say: the value of the first option naming the
+// package, the first operand and where it is, whether an option names a command to run instead
+// of a package, and whether the scan could not tell where the options end.
 //
-// Both halves used to cross the boundary. The --from search now stops at the first operand,
-// and the tool-run fallback no longer rescans the whole vector for the words: it searched
-// for any adjacent `tool run` anywhere, so `uv run actual-command tool run fake-package`
-// found the pair inside the launched command's own arguments and reported fake-package. The
-// other direction was broken too -- subcommands were recognised only at argument zero, so
-// `uv --color always run --from real-package command` lost the identity to a global option.
-func uvRunIdentity(args []string) (string, bool) {
-	rest, toolRun, found := uvSubcommandArgs(args)
-	if !found {
-		// Either there is no run subcommand, or an unrecognised global option before it
-		// may have consumed the subcommand word. uvSubcommandArgs collapses those into one
-		// answer, and the second is a refusal rather than an absence -- reported as such,
-		// because the whole point of the fail-closed change is that an undecidable scan
-		// says so instead of returning a confident nothing.
-		_, unknown := skipLeadingOptions(args, uvGrammar)
-		return "", unknown
-	}
-	if value, ok := launcherOptionValue(rest, uvGrammar, uvFromFlag); ok {
-		return value, false
-	}
-	if toolRun {
-		// `uv tool run <pkg>`: the package is the first operand of the subcommand.
-		return firstPositional(rest)
-	}
-	// Plain `uv run <cmd>` runs a command from the project environment. That names no
-	// package, and reporting the command as one is the confusion this function exists to
-	// avoid.
-	return "", false
+// The operand names a package only when it is package-shaped. A script path, a tarball or a URL
+// means the launcher was not asked to install a registry package, and everything after it
+// belongs to whatever it was asked to run, so packageOperand is empty for one.
+type launcherScan struct {
+	// packageValues are the values of every option naming the package, in order.
+	packageValues []string
+	operand       string
+	operandIndex  int
+	// endOfOptions says the operand came after `--`.
+	endOfOptions bool
+	command      bool
+	// localPath says an option made the operand a local file, so nothing names a package.
+	localPath bool
+	unknown   bool
 }
 
-// uvSubcommandArgs skips uv's global options and the one top-level subcommand path,
-// returning what follows it. found is false when neither `run` nor `tool run` is reached
-// before the first operand, so a later occurrence among the launched command's arguments is
-// never mistaken for the subcommand.
-func uvSubcommandArgs(args []string) (rest []string, toolRun, found bool) {
-	index, unknown := skipLeadingOptions(args, uvGrammar)
-	if unknown {
-		// An unrecognised global option before the subcommand may have consumed the
-		// subcommand word itself, so `run` appearing at this index proves nothing. Reporting
-		// not-found empties the identity, which is the fail-closed direction the KNOWN GAP
-		// above now resolves to.
-		return nil, false, false
-	}
-	switch {
-	case index+1 < len(args) && args[index] == "tool" && args[index+1] == "run":
-		return args[index+2:], true, true
-	case index < len(args) && args[index] == "run":
-		return args[index+1:], false, true
-	}
-	return nil, false, false
-}
-
-// skipLeadingOptions returns the index of the first argument that is not one of the
-// launcher's own options, consuming the value of any option that takes one.
-//
-// unknown reports that an option this table does not recognise was seen, which makes the
-// operand that follows unreliable: an unrecognised option may or may not consume it.
-func skipLeadingOptions(args []string, grammar launcherGrammar) (index int, unknown bool) {
-	for index < len(args) {
+// scanLauncher walks args from the start by grammar and stops at the first operand, where the
+// launched program's own arguments begin. `--` ends the options, so the token after it is the
+// operand whatever it looks like. A value-taking option consumes the next token, so
+// `--pip-args -i real-pkg secret` names no package from pip's arguments. unknown reports an
+// option the grammar does not list, or a value beginning with a dash where the launcher refuses
+// one: either way whether the next token is an operand cannot be decided, and an empty identity
+// at low confidence is honest where a credential reported as a package name is not.
+func scanLauncher(args []string, grammar launcherGrammar) launcherScan {
+	var scan launcherScan
+	for index := 0; index < len(args); index++ {
 		argument := args[index]
-		if argument == "--" || !strings.HasPrefix(argument, "-") {
-			return index, unknown
-		}
-		name, _, hasInline := strings.Cut(argument, "=")
-		if hasInline {
-			// The inline form carries its own value and consumes nothing, so an
-			// unrecognised one is harmless: whatever follows is still an operand.
-			index++
-			continue
-		}
-		_, takesValue := grammar.valueFlags[name]
-		if !takesValue {
-			_, takesValue = runnerValueFlags[name]
-		}
-		if takesValue {
-			index += 2
-			continue
-		}
-		if !knownLauncherOption(name) {
-			unknown = true
-		}
-		index++
-	}
-	return index, unknown
-}
-
-// knownLauncherOption reports whether this table knows what a separated option does with the
-// token after it. An option it does not know is what makes the scan fail closed.
-//
-// Four sources, and each is a different kind of knowledge:
-//
-//   - launcherBooleanFlags: takes no value, so the next token is an operand.
-//   - runnerValueFlags: takes a value, so the next token is not.
-//   - launcherPackageFlags: takes a value and that value IS the package, which is why these
-//     must not be in runnerValueFlags -- consuming `--from httpx` would report the command
-//     `httpx-cli` as the package instead of the package `httpx`.
-//   - isSecretFlagName: the option's own name announces that it carries a value. Arity is
-//     known here without a list, which is the point: runnerValueFlags can never be complete,
-//     and a credential-named option is exactly the one whose value must not be read as an
-//     operand. firstOperandAfter and launcherOptionValue both consume those values; this
-//     stops the same options being counted as unknown and emptying the identity they were
-//     about to protect.
-//
-// Being explicit about all four matters because the fail-closed behaviour fires on anything
-// absent from them, and an option like `-y` appears in essentially every real MCP config for
-// a scoped package. Leaving one out makes the refusal fire on the common case rather than on
-// the unusual one.
-func knownLauncherOption(name string) bool {
-	if _, ok := launcherBooleanFlags[name]; ok {
-		return true
-	}
-	if _, ok := runnerValueFlags[name]; ok {
-		return true
-	}
-	if _, ok := launcherPackageFlags[name]; ok {
-		return true
-	}
-	return isSecretFlagName(name)
-}
-
-// launcherPackageFlags are the options whose value names the package to install.
-//
-// The union of the three per-launcher sets below, which exist separately because each
-// scanner asks for its own. This set answers a different question -- "is this option known
-// at all" -- and keeping it derived from the same names means a new one cannot be known to
-// one and unknown to the other.
-var launcherPackageFlags = map[string]struct{}{
-	"--package": {}, "-p": {}, "--from": {}, "--spec": {},
-}
-
-// launcherBooleanFlags are the value-less options of npx, uvx, uv and pipx.
-//
-// Shared the same way runnerValueFlags is, and with the same caveat: these launchers do not
-// share a grammar, and an option that is boolean for one and value-taking for another would
-// be wrong here. What this comment used to claim is that the direction of error is the safe
-// one. It is the opposite: a value-taking option listed here does not empty the identity, it
-// hands the option's value to the operand scan and publishes it as the package. --pip-args
-// was listed and pipx documents it as taking a value, which is the defect that moved it to
-// runnerValueFlags.
-//
-// Every remaining entry was re-checked against its own launcher's reference for the same
-// class of error. npm's -y, --yes, --no, --no-install, the cache-preference switches and -q
-// take nothing -- -q is a --loglevel shorthand, so it carries its own value rather than
-// consuming the next token. uv's entries are counters and negations, and where uv has a
-// value-taking relative it is a separately spelled option rather than the same name with an
-// argument: --refresh against --refresh-package, --no-binary against --no-binary-package,
-// --no-build against --no-build-package, --no-cache against --cache-dir. pipx leaves
-// --force, --include-deps, --system-site-packages and --no-cache-dir, none of which takes a
-// value.
-//
-// An option whose arity is not certain belongs in runnerValueFlags rather than here, because
-// consuming one token too many yields an empty identity and a warning, while consuming one
-// too few can publish a credential as a package name.
-var launcherBooleanFlags = map[string]struct{}{
-	// npx
-	"-y": {}, "--yes": {}, "--no": {}, "--no-install": {}, "--prefer-online": {},
-	"--prefer-offline": {}, "--offline": {}, "--ignore-existing": {}, "-q": {},
-	// uv / uvx
-	"--quiet": {}, "--verbose": {}, "-v": {}, "--native-tls": {}, "--no-cache": {},
-	"-n": {}, "--no-progress": {}, "--offline-mode": {}, "--isolated": {},
-	"--no-config": {}, "--preview": {}, "--system": {}, "--no-managed-python": {},
-	"--no-python-downloads": {}, "--help": {}, "-h": {}, "--version": {}, "-V": {},
-	"--frozen": {}, "--locked": {}, "--no-sync": {}, "--refresh": {}, "--upgrade": {},
-	"-U": {}, "--reinstall": {}, "--compile-bytecode": {}, "--no-build": {},
-	"--no-binary": {}, "--no-build-isolation": {}, "--no-sources": {}, "--no-dev": {},
-	"--all-extras": {}, "--no-editable": {}, "--exact": {}, "--inexact": {},
-	// pipx
-	"--force": {}, "--include-deps": {}, "--system-site-packages": {},
-	"--no-cache-dir": {},
-}
-
-func pipxIdentity(args []string) (string, bool) {
-	// Bounded like the others: `pipx run server --spec evil` names the server's option.
-	if value, found := launcherOptionValue(args, pipxGrammar, pipxSpecFlag); found {
-		return value, false
-	}
-	// `pipx run --python 3.12 actual-server` returned 3.12: the scan skipped flags but not
-	// the values they consume, and 3.12 is name-shaped so no grammar rejects it either.
-	return firstOperandAfter(args, "run")
-}
-
-// firstOperandAfter returns the first positional argument following subcommand, skipping any
-// argument consumed as a value by the option before it, and requiring the result to be
-// package-shaped.
-//
-// One scanner for the launchers that take a subcommand. pipx and uv each had their own
-// partial version before: pipx skipped flags but not their values, and uv indexed blindly to
-// run+2. Arity comes from runnerValueFlags, which they share. Docker went the other way and
-// kept its own parser -- a hand-written list of value-taking options needed an addition every
-// time one produced a wrong image, so dockerRunIdentity enumerates the booleans instead.
-// unknown reports that the scan declined because an option this table does not recognise
-// appeared before the operand, as distinct from declining because the operand was not
-// package-shaped. The two look identical in the result -- an empty identity -- and call for
-// different rows: one says "this launcher was not asked to install a package", which is
-// ordinary, and the other says "this table could not tell", which is a finding.
-func firstOperandAfter(args []string, subcommand string) (operand string, unknown bool) {
-	started := subcommand == ""
-	sawUnknownOption := false
-	for i, argument := range args {
-		if !started {
-			if argument == subcommand {
-				started = true
-			}
-			continue
-		}
-		if strings.HasPrefix(argument, "-") {
-			// An option this table does not recognise, in the separated form, may consume
-			// the token after it. That token is then not an operand, and reading it as one
-			// is how `npx -y --pat <secret> pkg` reported the secret as the package. Noted
-			// rather than acted on here, because the loop has to reach the operand before
-			// there is anything to refuse.
-			name, _, hasInline := strings.Cut(argument, "=")
-			if !hasInline && argument != "--" {
-				if _, takesValue := runnerValueFlags[name]; !takesValue {
-					if !knownLauncherOption(name) {
-						sawUnknownOption = true
-					}
-				}
-			}
-			continue
-		}
-		if i > 0 {
-			if _, consumed := runnerValueFlags[args[i-1]]; consumed {
-				continue
-			}
-			// A value belonging to an option whose *name* says it carries a credential.
-			// runnerValueFlags cannot be complete -- every launcher keeps adding options,
-			// and the entries here were each added after a wrong package name was seen --
-			// so the arity list alone lets `uvx --auth-token opaquevalue real-server`
-			// report the token as the package. An opaque value is exactly what redactSecret
-			// cannot recognise on its way out, and package_name is emitted verbatim.
-			//
-			// Skipping the whole dangerous subset needs no arity knowledge: the option
-			// named it. redactArgs already refuses the same values for the same reason.
-			if isSecretFlagName(args[i-1]) {
-				continue
-			}
-		}
-		// An unrecognised option was seen before this token, so whether this is an operand
-		// or that option's value cannot be decided. Fail closed: an empty identity at low
-		// confidence is honest, and a credential reported as a package name is not.
-		if sawUnknownOption {
-			return "", true
-		}
-		// The first operand decides it. Not package-shaped -- a URL, a script path, a
-		// tarball -- means this launcher was not asked to install a registry package,
-		// and everything after it belongs to whatever it was asked to run.
-		if looksLikePackageSpec(argument) {
-			return argument, false
-		}
-		return "", false
-	}
-	// Ran out of arguments without reaching an operand. If an unrecognised option was seen
-	// on the way, that is still why nothing was identified.
-	return "", sawUnknownOption
-}
-
-// dockerRunIdentity returns the image reference from a `docker run` invocation.
-//
-// Option arity is decided by listing the *boolean* options and assuming everything else takes
-// a value. That is the inversion of the obvious approach and the reason it works: docker run
-// has dozens of value-bearing options and the list of them kept needing additions, each found
-// only when it produced a wrong package name -- --pull, then --cap-add, then --publish. The
-// boolean set is small, stable, and its members are the ones a reader can actually recall.
-//
-// Values that satisfy the image grammar are what made the previous approach fail silently
-// rather than loudly: `--publish 8080:80` reads as a tagged reference, `--memory 512m` and
-// `--dns 1.1.1.1` as one-component ones. No grammar distinguishes those from an image, because
-// they are valid images.
-//
-// An unrecognised option is therefore assumed to consume its next token. That can swallow the
-// real image and yield nothing, which is the intended direction of error: an empty identity at
-// low confidence is honest, a confident wrong one is not.
-func dockerRunIdentity(args []string) string {
-	sawRun := false
-	for i := 0; i < len(args); i++ {
-		argument := args[i]
-		if !sawRun {
-			if argument == "run" {
-				sawRun = true
-			}
-			continue
-		}
 		if argument == "--" {
-			// Everything after this is the image and the container's command.
-			if i+1 < len(args) && dockerRefRe.MatchString(args[i+1]) {
-				return args[i+1]
+			scan.operandIndex, scan.endOfOptions = index+1, true
+			if index+1 < len(args) {
+				scan.operand = args[index+1]
 			}
-			return ""
+			return scan
 		}
-		if strings.HasPrefix(argument, "-") {
-			if strings.Contains(argument, "=") {
-				continue // the inline form carries its own value
-			}
-			if _, isBoolean := dockerBooleanFlags[argument]; isBoolean {
-				continue
-			}
-			// A handful of options take a value that can legitimately begin with a dash,
-			// so for those the next token is consumed unconditionally.
-			if _, negatable := dockerNegatableValueFlags[argument]; negatable {
-				i++
-				continue
-			}
-			// A grouped short-option cluster. `docker run -it image` is the most common
-			// invocation of the lot, and "-it" is in neither flag table, so the generic rule
-			// below consumed the image and returned nothing at low confidence.
-			if consumesNext, recognised := dockerShortCluster(argument); recognised {
-				if consumesNext && i+1 < len(args) {
-					i++
-				}
-				continue
-			}
-			// Otherwise: assumed to consume the next token, but never when that token is
-			// itself an option. A boolean missing from the list below would otherwise
-			// swallow the following option and hand back *its* value as the image:
-			// `docker run --sig-proxy --publish 8080:80 img` skipped --publish and returned
-			// 8080:80. An option is not a value, so declining to consume one costs nothing
-			// and repairs the whole chain.
-			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
-				i++
-			}
+		if !isOption(argument) {
+			scan.operand, scan.operandIndex = argument, index
+			return scan
+		}
+		name, value, hasInline := strings.Cut(argument, "=")
+		kind, known := grammar.kindOf(name)
+		switch {
+		case !known && hasInline:
+			// The inline form carries its own value and consumes nothing, so an option this
+			// table does not list is harmless here: whatever follows is still an operand.
+			continue
+		case !known:
+			scan.unknown = true
+			return scan
+		case (kind == optionBoolean || kind == optionLocalPath) && hasInline:
+			// A value-less option given a value: uv and pipx refuse the command line, and npx
+			// puts the value back as an operand, so `npx -y=./script.js secret` runs the script.
+			scan.unknown = true
+			return scan
+		case kind == optionBoolean:
+			continue
+		case kind == optionLocalPath:
+			scan.localPath = true
 			continue
 		}
-		if dockerRefRe.MatchString(argument) {
-			return argument
+		if !hasInline {
+			next := index + 1
+			if next >= len(args) {
+				scan.operandIndex = len(args)
+				return scan
+			}
+			following := args[next]
+			switch {
+			case following == "--":
+				// The launchers disagree about whether an option takes `--` as its value -- npm's
+				// parser never does, and ends the options there -- so neither reading is safe.
+				scan.unknown = true
+				return scan
+			case isOption(following) && redact.IsSecretFlagName(name):
+				// A credential option followed by an option: the credential is missing or begins
+				// with a dash, and either way the token after it is not the package.
+				scan.unknown = true
+				return scan
+			case isOption(following) && kind == optionValueUnlessOption:
+				continue
+			case isOption(following) && (!grammar.dashValues || kind == optionPackage):
+				// No package name begins with a dash, so a package option's value that does
+				// is another option, whatever the launcher would make of it.
+				scan.unknown = true
+				return scan
+			}
+			value, index = following, next
 		}
-		// A positional that is not reference-shaped means the arity assumptions and reality
-		// have diverged. Stop, rather than keep looking and risk returning the container's
-		// command as the image.
-		return ""
+		switch kind {
+		case optionPackage:
+			scan.packageValues = append(scan.packageValues, value)
+		case optionCommand:
+			scan.command = true
+		}
+	}
+	scan.operandIndex = len(args)
+	return scan
+}
+
+// packageOperand is the first operand when it is package-shaped, and empty otherwise.
+func (scan launcherScan) packageOperand() string {
+	if looksLikePackageSpec(scan.operand) {
+		return scan.operand
 	}
 	return ""
 }
 
-// dockerShortCluster interprets a single-dash short-option group such as -it or -itv.
+// identityFrom is the package a scan names, by grammar, and the warning when it cannot name one
+// it is sure of: unknown_launcher_option when the scan could not tell where the options end, and
+// identity_dropped when the package option was given more than once and the launcher would not
+// run exactly one package from it. The package option's value names the package; with none, the
+// first operand does, unless an option names a command to run instead.
+func identityFrom(scan launcherScan, grammar launcherGrammar) (string, warnCode) {
+	values := scan.packageValues
+	switch {
+	case scan.unknown:
+		return "", warnUnknownLauncherOption
+	case scan.localPath:
+		return "", ""
+	case len(values) == 0 && scan.command:
+		return "", ""
+	case len(values) == 0:
+		return scan.packageOperand(), ""
+	case len(values) == 1:
+		return values[0], ""
+	}
+	switch grammar.repeatedPackage {
+	case packageLast:
+		return values[len(values)-1], ""
+	case packageAll:
+		for _, value := range values[1:] {
+			if value != values[0] {
+				return "", warnIdentityDropped
+			}
+		}
+		return values[0], ""
+	}
+	return "", warnIdentityDropped
+}
+
+// npxIdentity resolves `npx`. The package is what --package names, or else the first operand;
+// with --call and no --package, npx runs a command and installs nothing. A script path or URL
+// as the first operand is not package-shaped and names nothing, and everything after the first
+// operand belongs to whatever npx was asked to run: `npx real-package --package evil` names
+// real-package.
+func npxIdentity(args []string) (spec, ver string, code warnCode) {
+	spec, code = identityFrom(scanLauncher(args, npxGrammar), npxGrammar)
+	_, ver = splitNPMSpec(spec)
+	return spec, ver, code
+}
+
+// bunxIdentity resolves `bunx`, which reads its options as npx does: --package names the
+// package and the first operand is then the binary to run. `bunx -p @scope/pkg cmd` named cmd.
+func bunxIdentity(args []string) (string, warnCode) {
+	return identityFrom(scanLauncher(args, bunxGrammar), bunxGrammar)
+}
+
+// uvxIdentity resolves `uvx`, where --from names the package and the first operand names the
+// command inside it. `uvx --from git+https://github.com/acme/mcp-suite.git actual-server` is the
+// Git-backed form Astral documents: the package is the Git spec, which is not representable, so
+// the identity is empty rather than the command.
+func uvxIdentity(args []string) (string, warnCode) {
+	return identityFrom(scanLauncher(args, uvToolRunGrammar), uvToolRunGrammar)
+}
+
+// uvRunIdentity resolves `uv tool run <pkg>` as uvx, past uv's global options. `uv run` runs a
+// command from the project environment and names no package; its options are still read, so one
+// this table does not know is reported. uv's `run` takes no --from: uv refuses that command line.
+// The subcommand is read only in its own position, so in `uv run actual-command tool run
+// fake-package` the pair among the launched command's arguments is not read.
+func uvRunIdentity(args []string) (string, warnCode) {
+	global := scanLauncher(args, uvGlobalGrammar)
+	index := global.operandIndex
+	switch {
+	case global.unknown:
+		return "", warnUnknownLauncherOption
+	case global.endOfOptions:
+		return "", ""
+	case index+1 < len(args) && args[index] == "tool" && args[index+1] == "run":
+		return uvxIdentity(args[index+2:])
+	case index < len(args) && args[index] == "run" &&
+		scanLauncher(args[index+1:], uvRunGrammar).unknown:
+		return "", warnUnknownLauncherOption
+	}
+	return "", ""
+}
+
+// pipxIdentity resolves `pipx run`, where --spec names the package and the first operand names
+// the app. The subcommand is read only in pipx's own position, after its global options, so the
+// same word among another subcommand's arguments or the launched program's is not read as it:
+// `pipx install foo run secret` and `pipx --unknown run secret` name nothing.
+func pipxIdentity(args []string) (string, warnCode) {
+	global := scanLauncher(args, pipxGlobalGrammar)
+	index := global.operandIndex
+	switch {
+	case global.unknown:
+		return "", warnUnknownLauncherOption
+	case global.endOfOptions || index >= len(args) || args[index] != "run":
+		return "", ""
+	}
+	return identityFrom(scanLauncher(args[index+1:], pipxRunGrammar), pipxRunGrammar)
+}
+
+// containerRunIdentity returns the image reference from a `docker run` or `podman run`
+// invocation: the first operand after the launcher's own options and run's, when it is
+// reference-shaped.
 //
-// Docker's flag parser (pflag) walks a cluster left to right: a boolean shorthand yields to
-// the next character, while the first value-taking one takes the rest of the cluster as its
-// value (-p8080:80) or, when it ends the cluster, the next token (-p 8080:80).
+// Every option is looked up in the launcher's run grammar, from its own source or help. One it
+// does not list
+// ends the scan with nothing identified and unknown set, because whether it takes a value cannot
+// be known, and guessing either way crosses from the image into the container's command: a
+// boolean read as taking a value consumed the image, so `docker run --use-api-socket alpine:3
+// opaquesecret123` published the command's argument as the image. Values that satisfy the image
+// grammar are why a guess fails silently rather than loudly: `--publish 8080:80` reads as a tagged
+// reference, `--memory 512m` and `--dns 1.1.1.1` as one-component ones.
+func containerRunIdentity(args []string, global, run launcherGrammar) (ref string, unknown bool) {
+	start, isRun, unknown := containerRunArgs(args, global)
+	if !isRun {
+		return "", unknown
+	}
+	for i := start; i < len(args); i++ {
+		argument := args[i]
+		if argument == "--" {
+			// Everything after this is the image and the container's command.
+			if i+1 < len(args) && dockerRefRe.MatchString(args[i+1]) {
+				return args[i+1], false
+			}
+			return "", false
+		}
+		if !isOption(argument) {
+			// The first operand is the image. One that is not reference-shaped names nothing,
+			// and what follows is the container's command.
+			if dockerRefRe.MatchString(argument) {
+				return argument, false
+			}
+			return "", false
+		}
+		name, _, hasInline := strings.Cut(argument, "=")
+		kind, known := run.kindOf(name)
+		switch {
+		case hasInline:
+			// The inline form carries its own value and consumes nothing.
+		case known && kind == optionBoolean:
+		case known:
+			// The launchers' flag parser takes the next token as the value whatever it looks
+			// like, which --oom-score-adj -100 and --pids-limit -1 need.
+			i++
+		default:
+			// A grouped short-option cluster such as -it, the most common invocation of all.
+			consumesNext, recognised := shortCluster(run, argument)
+			if !recognised {
+				return "", true
+			}
+			if consumesNext {
+				i++
+			}
+		}
+	}
+	return "", false
+}
+
+// containerRunArgs returns the index just past the run subcommand, `run` or `container run`,
+// found in the subcommand's own position: after the launcher's global options, by global. A
+// `run` anywhere was accepted, so `docker exec c run secret` published secret as the image.
+// isRun is false when that position holds anything else; unknown also reports a global option
+// the table does not list, since it may consume the next token.
+func containerRunArgs(args []string, grammar launcherGrammar) (index int, isRun, unknown bool) {
+	global := scanLauncher(args, grammar)
+	index = global.operandIndex
+	switch {
+	case global.unknown:
+		return 0, false, true
+	case global.endOfOptions:
+		return 0, false, false
+	case index < len(args) && args[index] == "run":
+		return index + 1, true, false
+	case index+1 < len(args) && args[index] == "container" && args[index+1] == "run":
+		return index + 2, true, false
+	}
+	return 0, false, false
+}
+
+// shortCluster interprets a single-dash short-option group such as -it or -itv by grammar's
+// one-letter options.
 //
-// recognised is false when the group holds a character that is not a known `docker run`
-// shorthand, which leaves the caller's conservative consume-the-next-token default in charge
-// rather than guessing. That keeps an unfamiliar cluster failing toward an empty identity.
-func dockerShortCluster(argument string) (consumesNext, recognised bool) {
+// The container launchers' flag parser (pflag) walks a cluster left to right: a value-less
+// shorthand yields to the next character, while the first value-taking one takes the rest of
+// the cluster as its value (-p8080:80) or, when it ends the cluster, the next token
+// (-p 8080:80).
+//
+// recognised is false when the group holds a character the grammar does not list, and the
+// caller then identifies nothing.
+func shortCluster(grammar launcherGrammar, argument string) (consumesNext, recognised bool) {
 	if len(argument) < 2 || argument[0] != '-' || strings.HasPrefix(argument, "--") {
 		return false, false
 	}
 	group := argument[1:]
 	for index := 0; index < len(group); index++ {
-		switch {
-		case strings.IndexByte(dockerBooleanShorts, group[index]) >= 0:
+		switch grammar.options["-"+group[index:index+1]] {
+		case optionBoolean:
 			continue
-		case strings.IndexByte(dockerValueShorts, group[index]) >= 0:
+		case optionValue:
 			return index == len(group)-1, true
 		default:
 			return false, false
@@ -754,180 +681,235 @@ func dockerShortCluster(argument string) (consumesNext, recognised bool) {
 	return false, true
 }
 
-// dockerBooleanShorts and dockerValueShorts are the single-character `docker run`
-// shorthands, split by whether they take a value. Case matters: -P is --publish-all and
-// takes none, while -p is --publish and takes one. Only shorthands belong here; the long
-// forms stay in the maps below.
-const (
-	dockerBooleanShorts = "ditqP"
-	dockerValueShorts   = "acehlmpuvw"
-)
-
-// dockerBooleanFlags are the `docker run` options that take no value. Everything else is
-// assumed to consume its next argument.
-//
-// Enumerating these rather than their complement is what makes the scan stable: this set
-// changes rarely, while the value-bearing set is large and grew three times during review.
-var dockerBooleanFlags = map[string]struct{}{
-	"-d": {}, "--detach": {},
-	"-i": {}, "--interactive": {},
-	"-t": {}, "--tty": {},
-	"--rm": {}, "--privileged": {}, "--init": {}, "--read-only": {},
-	"-q": {}, "--quiet": {}, "--no-healthcheck": {}, "--oom-kill-disable": {},
-	"--publish-all": {}, "-P": {}, "--help": {}, "--disable-content-trust": {},
-	// --sig-proxy is documented with a default of true and takes no value in the common
-	// form. Omitting it is what produced the chained-option failure above.
-	"--sig-proxy": {}, "--no-trunc": {},
-}
-
-// dockerNegatableValueFlags take a value that can begin with a dash, so the general rule of
-// never consuming an option-looking token would leave their value unconsumed.
-//
-// --oom-score-adj accepts -1000 to 1000, and --pids-limit and --memory-swap use -1 for
-// unlimited. Getting this wrong fails in both directions: classifying --oom-score-adj as
-// boolean made `--oom-score-adj 100 myorg/s:1` report 100 as the image, and merely removing it
-// from the boolean set left `--oom-score-adj -100 myorg/s:1` returning nothing, because -100
-// was then read as an option that consumed the image.
-var dockerNegatableValueFlags = map[string]struct{}{
-	"--oom-score-adj": {}, "--pids-limit": {}, "--memory-swap": {}, "--kernel-memory": {},
-	"--blkio-weight": {}, "--cpu-period": {}, "--cpu-quota": {},
-}
-
-// launcherGrammar is the little that has to be known about a launcher's command line to walk
-// its own options without straying into the launched program's.
-//
-// An index into the argument list is not enough, which is how the first attempt at this went
-// wrong: the caller rescanned the prefix without knowing which tokens had been consumed as
-// values, so `python -c -m evilmod` reported evilmod -- the argument of -c, read a second
-// time as though it were python's own -m. The walk has to be the thing that answers the
-// question, not a boundary handed to something that asks it again.
-type launcherGrammar struct {
-	// subcommandPaths are the subcommand words that may precede the options, longest first
-	// and matched only at the start, so a later occurrence is the operand it actually is.
-	subcommandPaths [][]string
-	// valueFlags take a separate value, consumed whatever it looks like -- including when
-	// it begins with a dash, which is what `-c -m` needs.
-	valueFlags map[string]struct{}
-}
-
+// The launchers' grammars, each from the launcher's own source or CLI: npm 12.2.1's
+// bin/npx-cli.js and config definitions, uv 0.13.3's clap definitions in crates/uv-cli, pipx
+// 1.18.4's argparse definitions in src/pipx/main.py, bun 1.4.3's src/runtime/cli/bunx_command.rs,
+// Docker 29.8.2's `docker --help` and `docker run --help`, and podman 6.1.4's flag definitions in
+// cmd/podman/root.go, cmd/podman/containers/run.go and cmd/podman/common. A launcher adding a
+// value-less option after these versions costs that option's rows their identity, with
+// unknown_launcher_option saying so, and adding the option here repairs it.
 var (
-	npxGrammar = launcherGrammar{}
-	// No subcommandPaths: uv's top-level shape is parsed by uvSubcommandArgs, which has to
-	// tell a subcommand in its own position from the same word among the launched
-	// command's arguments. This grammar describes only what follows it.
-	uvGrammar = launcherGrammar{
-		valueFlags: map[string]struct{}{"--from": {}},
-	}
-	pipxGrammar = launcherGrammar{
-		subcommandPaths: [][]string{{"run"}},
-		valueFlags:      map[string]struct{}{"--spec": {}},
-	}
-
-	// pythonLongValueFlags are the interpreter's long options that take a separate value.
-	// The short options cluster and are read character by character instead; see
-	// pythonShortCluster.
-	pythonLongValueFlags = map[string]struct{}{"--check-hash-based-pycs": {}}
-
-	npxPackageFlags = map[string]struct{}{"--package": {}, "-p": {}}
-	uvFromFlag      = map[string]struct{}{"--from": {}}
-	pipxSpecFlag    = map[string]struct{}{"--spec": {}}
+	// npx, from npm 12.2.1: bin/npx-cli.js decides which options take a value, from npm's config
+	// definitions and shorthands, before npm exec reads the command line.
+	npxGrammar = newGrammar(launcherGrammar{dashValues: true, ignoreDashes: true,
+		credentialValues: true, repeatedPackage: packageAll}, map[optionKind]string{
+		optionBoolean: `
+		? B D E H O P S a all allow-same-version allow-scripts-pending allow-scripts-pin
+		allow-unused-patches always-spawn audit bin-links browser bypass-2fa color commit-hooks
+		d dangerously-allow-all-scripts dd ddd desc description dev diff-ignore-all-space
+		diff-name-only diff-no-prefix diff-text dry-run engine-strict expect-results f force
+		foreground-scripts format-package-lock fund g git-tag-version global global-style h
+		help if-present ignore-existing ignore-extension ignore-patch-failures ignore-scripts
+		include-attestations include-staged include-workspace-root init-private install-links
+		iwr json keep-edit-dir l legacy-bundling legacy-peer-deps link local long no no-install
+		offline omit-lockfile-registry-resolved optional package-lock package-lock-only
+		packages-all parseable porcelain prefer-dedupe prefer-offline prefer-online production
+		progress provenance q quiet read-only readonly rebuild-bundle s save save-bundle
+		save-dev save-exact save-optional save-peer save-prod shell-auto-fallback
+		sign-git-commit sign-git-tag silent strict-allow-scripts strict-npmrc strict-peer-deps
+		strict-ssl timing unicode update-notifier usage v verbose version versions workspaces
+		workspaces-update ws y yes`,
+		optionValue: `
+		cache n node-arg npm shell userconfig`,
+		optionValueUnlessOption: `
+		C L _auth access allow-directory allow-file allow-git allow-remote allow-scripts also
+		audit-level auth-type before ca cache-max cache-min cafile cert cidr cpu depth diff
+		diff-dst-prefix diff-src-prefix diff-unified edit-dir editor enjoy-by
+		expect-result-count expires extension-file fetch-retries fetch-retry-factor
+		fetch-retry-maxtimeout fetch-retry-mintimeout fetch-timeout git global-ignore-file
+		globalconfig heading https-proxy include init-author-email init-author-name
+		init-author-url init-license init-module init-type init-version install-strategy key
+		libc local-address location lockfile-version loglevel logs-dir logs-max m maxsockets
+		message min-release-age min-release-age-exclude name node-gyp node-options noproxy omit
+		only orgs orgs-permission os otp pack-destination packages
+		packages-and-scopes-permission password patches-dir prefix preid provenance-file proxy
+		reg registry replace-registry-host save-prefix sbom-format sbom-type scope scopes
+		script-shell searchexclude searchlimit searchopts searchstaleness tag
+		tag-version-prefix to token-description umask user-agent viewer w which workspace`,
+		optionPackage: `
+		p package`,
+		optionCommand: `
+		c call`,
+	})
+	// uvx, and `uv tool run` after its subcommand.
+	uvToolRunGrammar = newGrammar(launcherGrammar{repeatedPackage: packageOnce},
+		map[optionKind]string{
+			optionBoolean: `
+		--allow-python-downloads --binary --build --build-isolation --compile
+		--compile-bytecode --force-reinstall --help --isolated --lfs --managed-python
+		--native-tls --no-binary --no-build --no-build-isolation --no-cache --no-cache-dir
+		--no-color --no-compile --no-compile-bytecode --no-config --no-env-file --no-index
+		--no-installer-metadata --no-managed-python --no-native-tls --no-offline --no-preview
+		--no-progress --no-python-downloads --no-refresh --no-reinstall
+		--no-require-build-hashes --no-sources --no-system-certs --no-upgrade --offline --pre
+		--preview --quiet --refresh --reinstall --require-build-hashes --show-resolution
+		--show-settings --system-certs --upgrade --verbose --version -U -V -h -n -q -v`,
+			optionValue: `
+		--allow-insecure-host --build-constraint --build-constraints --cache-dir --color
+		--config-file --config-setting --config-settings --config-settings-package --constraint
+		--constraints --default-index --directory --env-file --exclude-newer
+		--exclude-newer-package --extra-index-url --find-links --fork-strategy
+		--generate-shell-completion --index --index-strategy --index-url --keyring-provider
+		--link-mode --no-binary-package --no-build-isolation-package --no-build-package
+		--no-sources-package --override --overrides --prerelease --prerelease-package
+		--preview-feature --preview-features --project --python --python-fetch
+		--python-platform --python-preference --refresh-package --reinstall-package
+		--resolution --torch-backend --trusted-host --upgrade-group --upgrade-package --with
+		--with-editable --with-requirements -C -P -b -c -f -i -p -w`,
+			optionPackage: `
+		--from`,
+		})
+	// `uv run`, after its subcommand.
+	uvRunGrammar = newGrammar(launcherGrammar{}, map[optionKind]string{
+		optionBoolean: `
+		--active --all-extras --all-packages --allow-python-downloads --binary --build
+		--build-isolation --compile --compile-bytecode --editable --exact --force-reinstall
+		--frozen --gui-script --help --inexact --isolated --locked --managed-python --module
+		--native-tls --no-active --no-all-extras --no-binary --no-build --no-build-isolation
+		--no-cache --no-cache-dir --no-color --no-compile --no-compile-bytecode --no-config
+		--no-editable --no-env-file --no-exact --no-frozen --no-index --no-installer-metadata
+		--no-locked --no-managed-python --no-native-tls --no-offline --no-preview --no-progress
+		--no-project --no-python-downloads --no-refresh --no-reinstall
+		--no-require-build-hashes --no-sources --no-sync --no-system-certs --no-upgrade
+		--no_workspace --offline --pre --preview --quiet --refresh --reinstall
+		--require-build-hashes --script --show-resolution --show-settings --system-certs
+		--upgrade --verbose --version -U -V -h -m -n -q -s -v`,
+		optionValue: `
+		--allow-insecure-host --cache-dir --color --config-file --config-setting
+		--config-settings --config-settings-package --default-index --directory --env-file
+		--exclude-newer --exclude-newer-package --extra --extra-index-url --find-links
+		--fork-strategy --index --index-strategy --index-url --keyring-provider --link-mode
+		--max-recursion-depth --no-binary-package --no-build-isolation-package
+		--no-build-package --no-editable-package --no-extra --no-sources-package --package
+		--prerelease --prerelease-package --preview-feature --preview-features --project
+		--python --python-fetch --python-platform --python-preference --refresh-package
+		--reinstall-package --resolution --trusted-host --upgrade-group --upgrade-package
+		--with --with-editable --with-requirements -C -P -f -i -p -w`,
+	})
+	// uv before its subcommand.
+	uvGlobalGrammar = newGrammar(launcherGrammar{}, map[optionKind]string{
+		optionBoolean: `
+		--allow-python-downloads --help --isolated --managed-python --native-tls --no-cache
+		--no-cache-dir --no-color --no-config --no-installer-metadata --no-managed-python
+		--no-native-tls --no-offline --no-preview --no-progress --no-python-downloads
+		--no-system-certs --offline --preview --quiet --show-settings --system-certs --verbose
+		--version -V -h -n -q -v`,
+		optionValue: `
+		--allow-insecure-host --cache-dir --color --config-file --directory --preview-feature
+		--preview-features --project --python-fetch --python-preference --trusted-host`,
+	})
+	// `docker run`, after its subcommand, with four hidden aliases Docker still accepts:
+	// --disable-content-trust, --net, --net-alias, --dns-opt and --kernel-memory.
+	dockerRunGrammar = newGrammar(launcherGrammar{dashValues: true}, map[optionKind]string{
+		optionBoolean: `
+		--detach --disable-content-trust --help --init --interactive --no-healthcheck
+		--oom-kill-disable --privileged --publish-all --quiet --read-only --rm --sig-proxy
+		--tty --use-api-socket -P -d -i -q -t`,
+		optionValue: `
+		--add-host --annotation --attach --blkio-weight --blkio-weight-device --cap-add
+		--cap-drop --cgroup-parent --cgroupns --cidfile --cpu-count --cpu-percent --cpu-period
+		--cpu-quota --cpu-rt-period --cpu-rt-runtime --cpu-shares --cpus --cpuset-cpus
+		--cpuset-mems --detach-keys --device --device-cgroup-rule --device-read-bps
+		--device-read-iops --device-write-bps --device-write-iops --dns --dns-opt --dns-option
+		--dns-search --domainname --entrypoint --env --env-file --expose --gpus --group-add
+		--health-cmd --health-interval --health-retries --health-start-interval
+		--health-start-period --health-timeout --hostname --io-maxbandwidth --io-maxiops --ip
+		--ip6 --ipc --isolation --kernel-memory --label --label-file --link --link-local-ip
+		--log-driver --log-opt --mac-address --memory --memory-reservation --memory-swap
+		--memory-swappiness --mount --name --net --net-alias --network --network-alias
+		--oom-score-adj --pid --pids-limit --platform --publish --pull --restart --runtime
+		--security-opt --shm-size --stop-signal --stop-timeout --storage-opt --sysctl --tmpfs
+		--ulimit --umask --user --userns --uts --volume --volume-driver --volumes-from
+		--workdir -a -c -e -h -l -m -p -u -v -w`,
+	})
+	// docker before its subcommand.
+	dockerGlobalGrammar = newGrammar(launcherGrammar{}, map[optionKind]string{
+		optionBoolean: `
+		--debug --tls --tlsverify --version -D -v`,
+		optionValue: `
+		--config --context --host --log-level --tlscacert --tlscert --tlskey -H -c -l`,
+	})
+	// podman before its subcommand: the root command's own flags and its persistent ones.
+	podmanGlobalGrammar = newGrammar(launcherGrammar{dashValues: true}, map[optionKind]string{
+		optionBoolean: `
+		--debug --help --noout --remote --syslog --trace --transient-store -D -r`,
+		optionValue: `
+		--cdi-spec-dir --cgroup-manager --config --conmon --connection --context --cpu-profile
+		--default-mounts-file --events-backend --hooks-dir --host --identity --imagestore
+		--log-level --max-workers --memory-profile --module --namespace --network-backend
+		--network-config-dir --out --pull-option --registries-conf --root --runroot --runtime
+		--runtime-flag --ssh --storage-driver --storage-opt --tls-ca --tls-cert --tls-details
+		--tls-key --tmpdir --url --volumepath -H -c`,
+	})
+	// `podman run`, after its subcommand: run's, create's and the network flags, the persistent
+	// ones, and the aliases podman's AliasFlags maps onto them.
+	podmanRunGrammar = newGrammar(launcherGrammar{dashValues: true}, map[optionKind]string{
+		optionBoolean: `
+		--detach --disable-content-trust --env-host --help --http-proxy --init --interactive
+		--no-healthcheck --no-hostname --no-hosts --oom-kill-disable --passwd --privileged
+		--publish-all --quiet --read-only --read-only-tmpfs --replace --rm --rmi --rootfs
+		--sig-proxy --syslog --trace --transient-store --tty --unsetenv-all -P -d -i -q -t`,
+		optionValue: `
+		--add-host --annotation --arch --attach --authfile --blkio-weight --blkio-weight-device
+		--cap-add --cap-drop --cdi-spec-dir --cert-dir --cgroup-conf --cgroup-manager
+		--cgroup-parent --cgroupns --cgroups --chrootdirs --cidfile --conmon --conmon-pidfile
+		--cpu-period --cpu-profile --cpu-quota --cpu-rt-period --cpu-rt-runtime --cpu-shares
+		--cpus --cpuset-cpus --cpuset-mems --creds --decryption-key --default-mounts-file
+		--detach-keys --device --device-cgroup-rule --device-read-bps --device-read-iops
+		--device-write-bps --device-write-iops --dns --dns-opt --dns-option --dns-search
+		--entrypoint --env --env-file --env-merge --events-backend --expose --gidmap --gpus
+		--group-add --group-entry --health-cmd --health-interval --health-log-destination
+		--health-max-log-count --health-max-log-size --health-on-failure --health-retries
+		--health-start-period --health-startup-cmd --health-startup-interval
+		--health-startup-retries --health-startup-success --health-startup-timeout
+		--health-timeout --healthcheck-command --healthcheck-interval --healthcheck-retries
+		--healthcheck-start-period --healthcheck-timeout --hooks-dir --hostname --hosts-file
+		--hostuser --image-volume --imagestore --init-path --ip --ip6 --ipc --kernel-memory
+		--label --label-file --log-driver --log-level --log-opt --mac-address --max-workers
+		--memory --memory-profile --memory-reservation --memory-swap --memory-swappiness
+		--mount --name --namespace --net --network --network-alias --network-backend
+		--network-config-dir --oom-score-adj --os --override-arch --override-os
+		--override-variant --passwd-entry --personality --pid --pidfile --pids-limit --platform
+		--pod --pod-id-file --preserve-fds --publish --pull --pull-option --rdt-class
+		--registries-conf --requires --restart --retry --retry-delay --root --runroot --runtime
+		--runtime-flag --sdnotify --seccomp-policy --secret --security-opt --shm-size
+		--shm-size-systemd --signature-policy --stop-signal --stop-timeout --storage-driver
+		--storage-opt --subgidname --subuidname --sysctl --systemd --timeout --tmpdir --tmpfs
+		--tz --uidmap --ulimit --umask --unsetenv --user --userns --uts --variant --volume
+		--volumepath --volumes-from --workdir -a -c -e -h -l -m -p -u -v -w`,
+	})
+	// pipx before its subcommand.
+	pipxGlobalGrammar = newGrammar(launcherGrammar{}, map[optionKind]string{
+		optionBoolean: `
+		--global --help --quiet --skip-maintenance --verbose --version -h -q -v`,
+	})
+	// `pipx run`, after its subcommand.
+	pipxRunGrammar = newGrammar(launcherGrammar{}, map[optionKind]string{
+		optionBoolean: `
+		--editable --fetch-missing-python --global --help --no-cache --no-path-check
+		--pypackages --quiet --refresh --skip-maintenance --system-site-packages --verbose
+		--version -e -h -q -v`,
+		optionValue: `
+		--backend --cooldown --fetch-python --index-url --pip-args --python --python-args
+		--with -i`,
+		optionPackage: `
+		--spec`,
+		optionLocalPath: `
+		--path`,
+	})
+	// bunx. bunx itself ignores an option it does not know, so failing closed on one is
+	// stricter than bunx is.
+	bunxGrammar = newGrammar(launcherGrammar{dashValues: true}, map[optionKind]string{
+		optionBoolean: `
+		--bun --no-install --revision --silent --verbose --version -b -v`,
+		optionPackage: `
+		--package -p`,
+	})
 )
 
-// launcherOptionValue walks a launcher's own options and returns the value assigned to the
-// first option in want, stopping where the launcher's options stop.
-//
-// Every scanner in this file used to read the whole argument list, so an option belonging to
-// the launched server was indistinguishable from one belonging to the launcher: an MCP
-// server free to accept --package, --from or --spec had its argument reported as what was
-// installed. Three things end the launcher's options, and each was a way through before it
-// was handled -- a bare positional, `--`, and a value that happens to look like an option.
-func launcherOptionValue(args []string, grammar launcherGrammar, want map[string]struct{}) (string, bool) {
-	index := consumeSubcommands(args, grammar.subcommandPaths)
-	for index < len(args) {
-		argument := args[index]
-		switch {
-		case argument == "--":
-			// Everything after this is an operand by definition.
-			return "", false
-		case strings.HasPrefix(argument, "-"):
-			name, inlineValue, hasInline := strings.Cut(argument, "=")
-			if _, wanted := want[name]; wanted {
-				if hasInline {
-					return inlineValue, true
-				}
-				if index+1 < len(args) {
-					return args[index+1], true
-				}
-				return "", false
-			}
-			if hasInline {
-				// The inline form carries its own value and consumes nothing.
-				index++
-				continue
-			}
-			_, takesValue := grammar.valueFlags[name]
-			if !takesValue {
-				_, takesValue = runnerValueFlags[name]
-			}
-			if takesValue {
-				index += 2
-				continue
-			}
-			// A credential-named option announces its own arity, so its value is consumed
-			// with it. This read `index++`, treating the option as value-less, and the value
-			// then reached the default branch below as a bare positional -- which ends the
-			// walk, because a positional is where the launched program begins. So any such
-			// option *before* the wanted one hid it completely:
-			// `npx --auth-token <secret> --package real-pkg` never reached --package, and the
-			// operand fallback skipped the real package as a consumed value, so the row came
-			// back with no identity at all.
-			//
-			// Not a leak in either direction, since a value is not an option name and could
-			// never have been returned as one -- but a lost identity, and inconsistent with
-			// firstOperandAfter, which does skip these values. knownLauncherOption already
-			// documents the arity as known from the name; this was the scanner not honouring
-			// it.
-			if isSecretFlagName(name) {
-				index += 2
-				continue
-			}
-			if !knownLauncherOption(name) {
-				// An unrecognised separated option. The wanted option may lie past the
-				// token it might consume, so the scan cannot be trusted to have reached
-				// it -- and an option named like a credential is exactly the case where a
-				// wrong answer is a leak. Stop rather than guess.
-				return "", false
-			}
-			index++
-		default:
-			// A positional that is not a subcommand: the launched program begins here.
-			return "", false
-		}
-	}
-	return "", false
-}
-
-// consumeSubcommands returns how many leading arguments are subcommand words, matching the
-// longest declared path. Only at the start, so a later occurrence of the same word is the
-// operand it actually is.
-func consumeSubcommands(args []string, paths [][]string) int {
-	for _, path := range paths {
-		if len(path) > len(args) {
-			continue
-		}
-		matched := true
-		for offset, word := range path {
-			if args[offset] != word {
-				matched = false
-				break
-			}
-		}
-		if matched {
-			return len(path)
-		}
-	}
-	return 0
-}
+// pythonLongValueFlags are the interpreter's long options that take a separate value. The short
+// options cluster and are read character by character instead; see pythonShortCluster.
+var pythonLongValueFlags = map[string]struct{}{"--check-hash-based-pycs": {}}
 
 // CPython's single-dash options cluster, and the cluster decides what the rest of the
 // command line means. Verified against python3 3.9.6 rather than read off the grammar:
@@ -1001,12 +983,10 @@ func pythonShortCluster(group string) (string, pythonClusterOutcome) {
 // pythonModule returns the module named by -m, which python accepts only among its own
 // options: everything after the module or script belongs to that program.
 //
-// Read here rather than through the generic option walk for two reasons, and the second was
-// a false positive rather than a gap. CPython attaches a short option's argument to the
-// option itself, so `-mhttp.server` is one token and went unreported. And it clusters them,
-// so `-ucprint(9) -m evilmod` hid a -c inside a group this used to skip as a boolean: the
-// scan continued and reported evilmod, the argv of the command python actually ran. A
-// comment here claimed the parser failed toward an empty answer. For clusters it did not.
+// Read here rather than through the generic option walk, for two reasons. CPython attaches a
+// short option's argument to the option itself, so `-mhttp.server` is one token. And it
+// clusters them, so `-ucprint(9) -m evilmod` holds a -c inside a group: skipping the group as
+// a boolean would report evilmod, while python runs the -c program.
 func pythonModule(args []string) string {
 	for index := 0; index < len(args); index++ {
 		argument := args[index]

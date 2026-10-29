@@ -6,6 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/macadmins/osquery-extension/pkg/fsscan"
+	"github.com/macadmins/osquery-extension/pkg/testutil"
 )
 
 // A settings file that exists but was refused must not be read as "never enabled".
@@ -32,7 +35,7 @@ func TestRefusedSettingsDoNotReadAsNeverEnabled(t *testing.T) {
 	if err := os.Symlink(target, filepath.Join(home, ".claude", "settings.json")); err != nil {
 		t.Fatal(err)
 	}
-	writeTestFile(t, filepath.Join(home, ".claude", "plugins", "cache", "mp", "p",
+	testutil.WriteFile(t, filepath.Join(home, ".claude", "plugins", "cache", "mp", "p",
 		"1.0.0", ".mcp.json"), `{"mcpServers":{"srv":{"command":"npx","args":["x"]}}}`)
 	writeInstalledPlugins(t, home, map[string]string{"p@mp": "1.0.0"})
 
@@ -53,10 +56,10 @@ func TestRefusedSettingsDoNotReadAsNeverEnabled(t *testing.T) {
 	}
 
 	// And end to end. The explanation is carried by a diagnostic row rather than stamped on
-	// every plugin row: a row holds one warning, so repeating a home-scoped cause on each of
+	// every plugin row: a row holds one warning, so repeating a user-scope cause on each of
 	// them would duplicate the diagnostic and crowd out whatever that row's own finding was.
-	// What the server row must carry is scan_complete = 0, which is what stops it being
-	// selected as trustworthy.
+	// The server row carries approval_state = 'unknown', and stays complete, because every
+	// server its file declares is listed.
 	var found, explained bool
 	for _, row := range discoverForTest("alice", home) {
 		if row.Warning.Code == warnPluginSettingsUnreadable {
@@ -69,9 +72,9 @@ func TestRefusedSettingsDoNotReadAsNeverEnabled(t *testing.T) {
 		if row.Approval != approvalUnknown {
 			t.Errorf("row approval = %q, want %q", row.Approval, approvalUnknown)
 		}
-		if row.ScanComplete {
-			t.Error("scan_complete = 1 on a row whose account's enablement could not be " +
-				"read, so the row would be selected as trustworthy")
+		if !row.ScanComplete {
+			t.Error("scan_complete = 0 on a row whose own file was read in full; an " +
+				"unreadable settings file leaves approval_state unknown and the listing complete")
 		}
 	}
 	if !found {
@@ -86,10 +89,10 @@ func TestRefusedSettingsDoNotReadAsNeverEnabled(t *testing.T) {
 // A refused orphan marker must not count as a marker that is not there.
 func TestRefusedOrphanMarkerIsNotTreatedAsAbsent(t *testing.T) {
 	home := t.TempDir()
-	writeTestFile(t, filepath.Join(home, ".claude", "settings.json"),
+	testutil.WriteFile(t, filepath.Join(home, ".claude", "settings.json"),
 		`{"enabledPlugins":{"p@mp":true}}`)
 	version := filepath.Join(home, ".claude", "plugins", "cache", "mp", "p", "1.0.0")
-	writeTestFile(t, filepath.Join(version, ".mcp.json"),
+	testutil.WriteFile(t, filepath.Join(version, ".mcp.json"),
 		`{"mcpServers":{"srv":{"command":"npx"}}}`)
 	outside := filepath.Join(home, "marker-target")
 	if err := os.WriteFile(outside, []byte("2026-01-01T00:00:00Z"), 0o644); err != nil {
@@ -110,10 +113,10 @@ func TestRefusedOrphanMarkerIsNotTreatedAsAbsent(t *testing.T) {
 // A refused manifest is a manifest that exists, so its declarations are unlisted.
 func TestRefusedManifestIsReported(t *testing.T) {
 	home := t.TempDir()
-	writeTestFile(t, filepath.Join(home, ".claude", "settings.json"),
+	testutil.WriteFile(t, filepath.Join(home, ".claude", "settings.json"),
 		`{"enabledPlugins":{"p@mp":true}}`)
 	version := filepath.Join(home, ".claude", "plugins", "cache", "mp", "p", "1.0.0")
-	writeTestFile(t, filepath.Join(version, ".mcp.json"),
+	testutil.WriteFile(t, filepath.Join(version, ".mcp.json"),
 		`{"mcpServers":{"srv":{"command":"npx"}}}`)
 	target := filepath.Join(home, "manifest-target.json")
 	if err := os.WriteFile(target, []byte(`{"name":"p","mcpServers":{"hidden":{"command":"uvx"}}}`),
@@ -137,5 +140,100 @@ func TestRefusedManifestIsReported(t *testing.T) {
 	if !reported {
 		t.Error("a manifest that exists and was refused produced no diagnostic, so its " +
 			"declarations read as a plugin that declares nothing")
+	}
+}
+
+// TestARefusedPluginCacheIsReported: a plugin cache reached through a symlink is reported as a
+// listing that failed, not read as a host with no plugins.
+func TestARefusedPluginCacheIsReported(t *testing.T) {
+	home := t.TempDir()
+	elsewhere := t.TempDir()
+	testutil.WriteFile(t, filepath.Join(elsewhere, "mp", "p", "1.0.0", ".mcp.json"),
+		`{"mcpServers":{"srv":{"command":"npx"}}}`)
+	if err := os.MkdirAll(filepath.Join(home, ".claude", "plugins"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, filepath.Join(home, ".claude", "plugins", "cache")); err != nil {
+		t.Fatal(err)
+	}
+	var reported bool
+	for _, row := range discoverForTest("alice", home) {
+		if row.ServerName == "srv" {
+			t.Error("a server behind a symlinked plugin cache was read")
+		}
+		if row.Warning.Code == warnPluginListUnreadable && row.Warning.Class == fsscan.ClassRefusedPath {
+			reported = true
+		}
+	}
+	if !reported {
+		t.Error("a symlinked plugin cache produced no plugin_list_unreadable row")
+	}
+}
+
+// A project list the read refuses because it is a symlink is reported, not read as absence.
+// The list is the only record of the projects it names, so without a row the servers found
+// through the other sources would read as the account's whole inventory.
+func TestARefusedProjectListIsReported(t *testing.T) {
+	for _, refused := range []string{".claude.json", ".codex"} {
+		t.Run(refused, func(t *testing.T) {
+			home := t.TempDir()
+			elsewhere := t.TempDir()
+			target := filepath.Join(elsewhere, refused)
+			if refused == ".claude.json" {
+				testutil.WriteFile(t, target, `{"projects":{}}`)
+			} else {
+				testutil.WriteFile(t, filepath.Join(target, "config.toml"), "")
+			}
+			if err := os.Symlink(target, filepath.Join(home, refused)); err != nil {
+				t.Fatal(err)
+			}
+			var reported, profilesLost bool
+			for _, row := range withoutStandingNotes(discoverForTest("alice", home)) {
+				switch row.Warning.Code {
+				case warnProjectListUnreadable:
+					reported = true
+				case warnProfileListUnreadable:
+					profilesLost = row.Warning.Class == fsscan.ClassRefusedPath
+				}
+			}
+			if !reported {
+				t.Error("a symlinked project list produced no diagnostic, so the projects it " +
+					"records read as never recorded")
+			}
+			// A symlinked ~/.codex also loses Codex's named profiles, a second thing, so it is
+			// a second row.
+			if refused == ".codex" && !profilesLost {
+				t.Error("a symlinked ~/.codex did not report its named profiles as unlisted")
+			}
+		})
+	}
+}
+
+// TestARefusedPluginConfigIsReportedAsItsOwnFile: a plugin's root .mcp.json that a read check
+// refuses, here a hard link, is reported as a home config is, source_unreadable with the reason
+// and the file's path, not with a sentence about project configuration files.
+func TestARefusedPluginConfigIsReportedAsItsOwnFile(t *testing.T) {
+	home := t.TempDir()
+	testutil.WriteFile(t, filepath.Join(home, ".claude", "settings.json"), `{"enabledPlugins":{"p@mp":true}}`)
+	config := filepath.Join(home, ".claude", "plugins", "cache", "mp", "p", "1.0.0", ".mcp.json")
+	testutil.WriteFile(t, config, `{"mcpServers":{"srv":{"command":"npx"}}}`)
+	if err := os.Link(config, filepath.Join(home, "second-link.json")); err != nil {
+		t.Skipf("hard links unavailable here: %v", err)
+	}
+	writeInstalledPlugins(t, home, map[string]string{"p@mp": "1.0.0"})
+
+	var reported bool
+	for _, row := range discoverForTest("alice", home) {
+		switch {
+		case row.ServerName == "srv":
+			t.Error("a hard-linked plugin config was read")
+		case row.Warning.Code == warnProjectRefused || row.Warning.Code == warnProjectUserspaceFS:
+			t.Errorf("the plugin config was reported as a project file: %s", row.Warning.render())
+		case row.Warning.Code == warnSourceUnreadable:
+			reported = row.SourcePath == config && row.Warning.Class == fsscan.ClassHardLink
+		}
+	}
+	if !reported {
+		t.Error("no source_unreadable row with reason=hard_link names the plugin config")
 	}
 }

@@ -12,7 +12,7 @@
 //  2. Restrict bounded fields to known-safe shapes (e.g., URL → scheme+host;
 //     command → basename only; package_name → validated via package-spec
 //     regex).
-//  3. Apply this package's redactSecret as defense-in-depth on any remaining
+//  3. Apply this package's Secret as defense-in-depth on any remaining
 //     string that originated from user-controlled input. It catches the
 //     well-known token shapes (GitHub, AWS, JWT, OpenAI, Anthropic, …).
 package redact
@@ -39,11 +39,10 @@ const RedactedMark = "[REDACTED]"
 // directory named task-tracker-frontend-app mangled every source_path that contained it.
 // disk-, risk- and desk- do the same.
 //
-// The boundary excludes alphanumerics only. It used to exclude "-" and "_" as well, which
-// was too wide in the dangerous direction: a real key written after an ordinary separator
-// -- server-sk-..., MY_sk-... -- was left in the clear, which is the one outcome this
-// package exists to prevent. Every false positive above is blocked by the character before
-// "sk" being a letter, so separators can safely delimit a token.
+// The boundary excludes alphanumerics only, not "-" or "_": a real key written after an
+// ordinary separator -- server-sk-..., MY_sk-... -- must still be redacted. Every false
+// positive above is blocked by the character before "sk" being a letter, so separators can
+// safely delimit a token.
 //
 // The other prefixes are distinctive enough that matching mid-string is a feature rather
 // than a hazard, so they are deliberately left unanchored.
@@ -62,6 +61,31 @@ var knownTokenRe = regexp.MustCompile(strings.Join([]string{
 	`AIza[0-9A-Za-z_-]{35}`,
 	`eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`, // JWT
 }, "|"))
+
+// distinctiveTokenRe is the subset of knownTokenRe whose prefixes ordinary identifiers do not
+// share. It leaves out the bare sk- prefix and gitlab-<word>-, which match repository names
+// such as sk-payments-service-client and gitlab-ci-pipeline-exporter-tools, and keeps the
+// Anthropic and OpenAI forms of sk-, which carry a second distinctive prefix. A value checked
+// against this pattern is one that already passed a grammar, such as a Go module path, where
+// rewriting is not an option and a false positive loses a real value.
+//
+// The sk- forms keep knownTokenRe's left boundary, so a word that merely ends in "sk", such as
+// task-proj-..., is not taken for a key, and every value this pattern matches String redacts.
+var distinctiveTokenRe = regexp.MustCompile(strings.Join([]string{
+	`(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}`,
+	`github_pat_[A-Za-z0-9_]{20,}`,
+	`glpat-[A-Za-z0-9_-]{20,}`,
+	`xox[abprs]-[A-Za-z0-9-]{10,}`,
+	`(?:^|[^A-Za-z0-9])sk-(?:ant|proj)-[A-Za-z0-9_-]{20,}`,
+	`AKIA[0-9A-Z]{16}`,
+	`ASIA[0-9A-Z]{16}`,
+	`AIza[0-9A-Za-z_-]{35}`,
+	`eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`, // JWT
+}, "|"))
+
+// ContainsDistinctiveToken reports whether s contains a credential format that ordinary
+// identifiers do not share. Every format it matches, String also redacts.
+func ContainsDistinctiveToken(s string) bool { return distinctiveTokenRe.MatchString(s) }
 
 // String returns s with any known-token-shape substrings replaced with
 // the [REDACTED] marker. Idempotent.

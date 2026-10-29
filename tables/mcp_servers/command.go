@@ -19,9 +19,8 @@ import (
 // an embedded invocation appears without one. So the shape is read from the field itself,
 // and the array only decides who owns the arguments. That decision lives in one function,
 // commandFieldsFor, and both the command_basename column and identity inference take their
-// answer from it -- they used to decide separately, the column splitting on whitespace and
-// inference splitting again on its own rules, which is how one config could report basename
-// "Program" alongside package_manager "".
+// answer from it, so one config cannot report basename "Program" alongside an empty
+// package_manager.
 
 // containsWhitespace reports whether s holds any Unicode space character.
 //
@@ -279,7 +278,7 @@ func splitCommandFields(goos, tail string) ([]string, bool) {
 		return nil, false
 	}
 	if quote != 0 {
-		// An unterminated quote. Where the argument ends is unknowable, so every boundary
+		// An unterminated quote. Where the argument ends is unknowable, so every split
 		// after it is a guess, and a guess here is what puts part of a secret in a column.
 		return nil, false
 	}

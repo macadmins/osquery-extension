@@ -1,0 +1,42 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "go_modules",
+    srcs = [
+        "discover.go",
+        "go_modules.go",
+        "parse.go",
+        "warnings.go",
+    ],
+    importpath = "github.com/macadmins/osquery-extension/tables/go_modules",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/devclients",
+        "//pkg/fsscan",
+        "//pkg/redact",
+        "//pkg/utils",
+        "@com_github_osquery_osquery_go//plugin/table",
+        "@org_golang_x_mod//modfile",
+        "@org_golang_x_mod//module",
+        "@org_golang_x_mod//semver",
+    ],
+)
+
+go_test(
+    name = "go_modules_test",
+    srcs = [
+        "bench_test.go",
+        "go_modules_test.go",
+        "parse_test.go",
+        "refusal_unix_test.go",
+        "refusal_windows_test.go",
+    ],
+    embed = [":go_modules"],
+    deps = [
+        "//pkg/devclients",
+        "//pkg/fsscan",
+        "//pkg/testutil",
+        "//pkg/utils",
+        "@com_github_osquery_osquery_go//plugin/table",
+    ],
+)

@@ -7,12 +7,14 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/macadmins/osquery-extension/pkg/utils"
 	"github.com/macadmins/osquery-extension/tables/alt_system_info"
 	"github.com/macadmins/osquery-extension/tables/chromeuserprofiles"
 	"github.com/macadmins/osquery-extension/tables/crowdstrike_falcon"
 	"github.com/macadmins/osquery-extension/tables/energyimpact"
 	"github.com/macadmins/osquery-extension/tables/fileline"
 	"github.com/macadmins/osquery-extension/tables/filevaultusers"
+	gomodules "github.com/macadmins/osquery-extension/tables/go_modules"
 	"github.com/macadmins/osquery-extension/tables/localnetworkpermissions"
 	macosprofiles "github.com/macadmins/osquery-extension/tables/macos_profiles"
 	"github.com/macadmins/osquery-extension/tables/macosrsr"
@@ -84,17 +86,23 @@ func main() {
 	// If there were windows only tables, they would go here
 	// }
 
-	// mcp_servers is not darwin-only: pkg/fsscan has a symlink-refusing backend for POSIX
-	// (iterated openat with O_NOFOLLOW) and for Windows (os.Root plus a reparse-point check
-	// and a post-open identity re-check), and the per-user config locations resolve per OS.
-	// Platforms with neither backend report unsupported rather than degrading, so the table
-	// is registered where it can answer safely and left unregistered where it cannot.
+	// mcp_servers and go_modules are not darwin-only: pkg/fsscan has a symlink-refusing
+	// backend for POSIX (iterated openat with O_NOFOLLOW) and for Windows (os.Root plus a
+	// reparse-point check and a post-open identity re-check), and the per-user client
+	// locations in pkg/devclients resolve per OS. Platforms with neither backend report
+	// unsupported rather than degrading, so these tables are registered where they can answer
+	// safely and left unregistered where they cannot.
 	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" || runtime.GOOS == "linux" {
 		plugins = append(plugins, table.NewPlugin(
 			"mcp_servers", mcpservers.MCPServersColumns(),
-			func(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
+			utils.RecoverPanics("mcp_servers", func(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
 				return mcpservers.MCPServersGenerate(ctx, queryContext, *flSocketPath)
-			}))
+			})))
+		plugins = append(plugins, table.NewPlugin(
+			"go_modules", gomodules.GoModulesColumns(),
+			utils.RecoverPanics("go_modules", func(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
+				return gomodules.GoModulesGenerate(ctx, queryContext, *flSocketPath)
+			})))
 	}
 
 	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {

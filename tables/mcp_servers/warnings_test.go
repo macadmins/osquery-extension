@@ -45,7 +45,7 @@ func TestWarnCodesAreExhaustivelyClassified(t *testing.T) {
 			t.Errorf("code %q has a sentence too short to be useful: %q", code, sentence)
 		}
 		switch classified[code] {
-		case scopeDescriptive, scopeSource, scopeHome:
+		case scopeDescriptive, scopeSource, scopePlugin, scopeUser:
 		default:
 			t.Errorf("code %q has no scope", code)
 		}
@@ -67,10 +67,10 @@ func TestWarnCodesAreExhaustivelyClassified(t *testing.T) {
 
 // No user byte reaches the warning column, over a corpus built to leak one.
 //
-// This is the strong form of the Ask-2 assertion and the reason the catalogue exists. Each
-// case is a real file shape that used to put its own bytes in the column: the TOML parser
-// quotes the token it failed on, encoding/json names the offending value, and the read path
-// carried the operating system's message with the path in it.
+// The warning column holds a sentence chosen by code, never an error message, which is why the
+// catalogue exists. Each case is a real input whose error message carries its own bytes: the
+// TOML parser quotes the token it failed on, encoding/json names the offending value, and the
+// operating system's read error carries the path.
 //
 // Asserted as the absence of the secret bytes rather than as the presence of a marker,
 // because the value is supposed never to enter the column at all. A marker would mean it got
@@ -86,8 +86,8 @@ func TestWarningColumnCarriesNoInputBytes(t *testing.T) {
 		run  func() warning
 	}{
 		{
-			// The case the review named. `env = { TOKEN = <bare> }` is invalid TOML, and
-			// ParseError.Message is the field carrying `found "..."`.
+			// `env = { TOKEN = <bare> }` is invalid TOML, and ParseError.Message is the
+			// field carrying `found "..."`.
 			name: "TOML carrying a token in an unquoted value",
 			run: func() warning {
 				doc := "[mcp_servers.x]\ncommand = \"npx\"\nenv = { TOKEN = " + secret + " }\n"
@@ -266,18 +266,21 @@ func TestEveryWarningCodeHasASentence(t *testing.T) {
 		warnRosterUnreachable, warnRosterQueryFailed, warnRosterAccountUnnamed,
 		warnAccountNotInRoster, warnAccountNonLogin, warnAccountNoHome, warnAccountHomeMissing,
 		warnAccountHomeUnstattable, warnAccountHomeRedirected, warnAccountHomeNotDirectory,
-		warnAccountsHomeUnusable, warnHomeUnreadable, warnBudgetExhaustedPreHome,
+		warnAccountHomeNotAbsolute, warnAccountsHomeUnusable, warnHomeUnreadable, warnBudgetExhaustedPreHome,
 		warnCancelledPreHome, warnBudgetExhaustedOpening, warnBudgetExhaustedInHome,
 		warnCancelledInHome, warnAppDataUndetermined, warnAppDataRedirectedOut,
 		warnProfileListUnreadable, warnProjectListUnreadable, warnProjectListTruncated,
 		warnProjectOutsideHome, warnProjectMalformed, warnProjectRemoteOrigin,
-		warnProjectCloudPlaceholder, warnProjectUserspaceFS, warnProjectRefused,
+		warnProjectCloudPlaceholder, warnProjectUserspaceFS, warnProjectOnNetworkFS,
+		warnProjectRefused,
 		warnProjectUntrusted, warnProjectTrustUnknown, warnApprovalSettingsUnreadable,
 		warnWorkspaceListUnreadable, warnWorkspaceListTruncated, warnWorkspaceRecordUnreadable,
-		warnWorkspaceRecordMalformed, warnPluginListUnreadable, warnPluginListTruncated,
+		warnWorkspaceRecordMalformed, warnWorkspaceRecordsOlder, warnPluginListUnreadable,
+		warnPluginListTruncated,
 		warnPluginSettingsUnreadable, warnPluginRecordsUnreadable, warnPluginSuperseded,
 		warnPluginManifestUnreadable, warnPluginManifestUnsupported, warnPluginManifestTruncated,
-		warnPluginManifestMissing, warnPluginManifestInvalid, warnPluginShadowedDecl, warnPluginSelectionUnknown,
+		warnPluginManifestExhausted, warnPluginManifestMissing, warnPluginManifestInvalid,
+		warnPluginManifestPathTooLong, warnPluginShadowedDecl, warnPluginSelectionUnknown,
 		warnSourceUnreadable, warnSourceTooLarge, warnParseFailed, warnEntriesSkipped,
 		warnCommandBasenameDropped, warnServerNameUnrepresentable, warnSourceContextPathDropped,
 		warnURLEndpointDropped, warnEnvKeyDropped, warnEnvHeaderLiteral, warnIdentityDropped,

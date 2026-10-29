@@ -7,47 +7,51 @@ import (
 	"reflect"
 	"sort"
 	"testing"
+
+	"github.com/macadmins/osquery-extension/pkg/devclients"
+	"github.com/macadmins/osquery-extension/pkg/testutil"
 )
 
 // One client's evidence that a directory is a project does not license reporting another
 // client's configuration in it.
 //
-// Every project used to be probed with all four project-rooted filenames, so a directory
-// known only to Codex produced a vscode row because a dormant .vscode/mcp.json happened to
-// sit in it. Nothing established that VS Code had ever opened the directory, let alone that
-// it would load that file. The provenance a project was discovered with now decides which
-// files are probed inside it.
+// The origin a project was discovered with decides which files are probed inside it. Probing
+// every project with all four project-rooted filenames would report a vscode row for a
+// directory known only to Codex, because a dormant .vscode/mcp.json sits in it, with nothing
+// to show that VS Code ever opened the directory.
 func TestProjectProbesFollowDiscoveringClient(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
-		origins []originCode
+		origins []devclients.Origin
 		want    []string
 	}{
-		{"claude only", []originCode{originClaudeJSON}, []string{".mcp.json"}},
+		{"claude only", []devclients.Origin{devclients.OriginClaudeJSON}, []string{".mcp.json"}},
 		// One origin per editor. Sharing the workspaceStorage layout establishes nothing
-		// about which editor opened a project: a single origin for the whole family meant a
-		// project recorded only under Code emitted a client=cursor row from a dormant
+		// about which editor opened a project: with one origin for the whole family, a
+		// project recorded only under Code would emit a client=cursor row from a dormant
 		// .cursor/mcp.json with no Cursor history on the host at all.
-		{"vscode workspace only", []originCode{originVSCodeWorkspace}, []string{
+		{"vscode workspace only", []devclients.Origin{devclients.OriginVSCodeWorkspace}, []string{
 			filepath.Join(".vscode", "mcp.json")}},
-		{"cursor workspace only", []originCode{originCursorWorkspace}, []string{
+		{"cursor workspace only", []devclients.Origin{devclients.OriginCursorWorkspace}, []string{
 			filepath.Join(".cursor", "mcp.json")}},
 		// Windsurf records workspaces the same way and has no project-scoped path this
 		// table reads, so its provenance licenses nothing. Asserted rather than left
 		// implicit, because "no probes" is the easy thing to turn accidentally into "all
 		// probes" by adding a map entry.
-		{"windsurf workspace only", []originCode{originWindsurfWorkspace}, nil},
+		{"windsurf workspace only", []devclients.Origin{devclients.OriginWindsurfWorkspace}, nil},
 		// Both forks recorded it, so both files are in scope.
-		{"vscode and cursor", []originCode{originVSCodeWorkspace, originCursorWorkspace},
+		{"vscode and cursor",
+			[]devclients.Origin{devclients.OriginVSCodeWorkspace, devclients.OriginCursorWorkspace},
 			[]string{filepath.Join(".cursor", "mcp.json"), filepath.Join(".vscode", "mcp.json")}},
-		{"codex only", []originCode{originCodexTOML}, []string{
+		{"codex only", []devclients.Origin{devclients.OriginCodexTOML}, []string{
 			filepath.Join(".codex", "config.toml")}},
 		// Recorded by two clients: both clients' files, and no others.
-		{"claude and codex", []originCode{originClaudeJSON, originCodexTOML}, []string{
-			".mcp.json", filepath.Join(".codex", "config.toml")}},
+		{"claude and codex",
+			[]devclients.Origin{devclients.OriginClaudeJSON, devclients.OriginCodexTOML},
+			[]string{".mcp.json", filepath.Join(".codex", "config.toml")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ref := projectRef{Origins: map[originCode]struct{}{}}
+			ref := projectRef{Origins: map[devclients.Origin]struct{}{}}
 			for _, o := range tc.origins {
 				ref.Origins[o] = struct{}{}
 			}
@@ -65,13 +69,13 @@ func TestProjectProbesFollowDiscoveringClient(t *testing.T) {
 // End to end: a Codex-only project with a dormant .vscode/mcp.json produces no vscode row.
 func TestCodexOnlyProjectDoesNotActivateVSCodeConfig(t *testing.T) {
 	home := t.TempDir()
-	writeTestFile(t, filepath.Join(home, "code", "repo", ".codex", "config.toml"),
+	testutil.WriteFile(t, filepath.Join(home, "code", "repo", ".codex", "config.toml"),
 		"[mcp_servers.codex_server]\ncommand = \"npx\"\n")
 	// Present on disk, belonging to no client's project history.
-	writeTestFile(t, filepath.Join(home, "code", "repo", ".vscode", "mcp.json"),
+	testutil.WriteFile(t, filepath.Join(home, "code", "repo", ".vscode", "mcp.json"),
 		`{"mcpServers":{"dormant_vscode":{"command":"npx","args":["x"]}}}`)
-	writeTestFile(t, filepath.Join(home, ".codex", "config.toml"),
-		"[projects.\""+filepath.Join(home, "code", "repo")+"\"]\ntrust_level = \"trusted\"\n")
+	testutil.WriteFile(t, filepath.Join(home, ".codex", "config.toml"),
+		codexProjectTable(filepath.Join(home, "code", "repo"))+"trust_level = \"trusted\"\n")
 
 	var names []string
 	for _, row := range serversOnly(discoverForTest("alice", home)) {
@@ -87,24 +91,25 @@ func TestCodexOnlyProjectDoesNotActivateVSCodeConfig(t *testing.T) {
 // Deduplication keeps every client's provenance rather than whichever was seen first.
 func TestMergeKeepsAllProvenance(t *testing.T) {
 	fromCodex := []projectRef{{Rel: "code/repo",
-		Origins:    map[originCode]struct{}{originCodexTOML: {}},
+		Origins:    map[devclients.Origin]struct{}{devclients.OriginCodexTOML: {}},
 		TrustKnown: true, Trusted: true, Approval: claudeApproval{Known: true}}}
 	fromClaude := []projectRef{{Rel: "code/repo",
-		Origins:  map[originCode]struct{}{originClaudeJSON: {}},
-		Approval: claudeApproval{Certain: approvalEvidence{Enabled: []string{"github"}}, Known: true}}}
+		Origins:  map[devclients.Origin]struct{}{devclients.OriginClaudeJSON: {}},
+		Approval: claudeApproval{Certain: approvalEvidence{Enabled: nameSetOf("github")}, Known: true}}}
 
 	merged, _ := mergeProjects(fromCodex, fromClaude)
 	if len(merged) != 1 {
 		t.Fatalf("merged = %+v, want one project", merged)
 	}
-	for _, origin := range []originCode{originClaudeJSON, originCodexTOML} {
+	agents := []devclients.Origin{devclients.OriginClaudeJSON, devclients.OriginCodexTOML}
+	for _, origin := range agents {
 		if _, ok := merged[0].Origins[origin]; !ok {
 			t.Errorf("origin %q was lost in dedup; its probes would not run", origin)
 		}
 	}
 	// Codex's list was read first and carries no approvals; keeping it as-is lost them.
-	if !reflect.DeepEqual(merged[0].Approval.Certain.Enabled, []string{"github"}) {
-		t.Errorf("Approved = %v, want [github]", merged[0].Approval.Certain.Enabled)
+	if !reflect.DeepEqual(merged[0].Approval.Certain.Enabled.sorted(), []string{"github"}) {
+		t.Errorf("Approved = %v, want [github]", merged[0].Approval.Certain.Enabled.sorted())
 	}
 	// And the trust Codex supplied survives a merge with a list that has none to report.
 	if !merged[0].TrustKnown || !merged[0].Trusted {
@@ -131,10 +136,10 @@ func TestCodexTrustGatesProjectConfig(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
 			project := filepath.Join(home, "code", "repo")
-			writeTestFile(t, filepath.Join(project, ".codex", "config.toml"),
+			testutil.WriteFile(t, filepath.Join(project, ".codex", "config.toml"),
 				"[mcp_servers.project_server]\ncommand = \"npx\"\n")
-			writeTestFile(t, filepath.Join(home, ".codex", "config.toml"),
-				"[projects.\""+project+"\"]\n"+tc.trust)
+			testutil.WriteFile(t, filepath.Join(home, ".codex", "config.toml"),
+				codexProjectTable(project)+tc.trust)
 
 			var found bool
 			var codes []warnCode
@@ -173,10 +178,10 @@ func TestUnreadableApprovalIsUnknown(t *testing.T) {
 	t.Run("malformed claude project entry", func(t *testing.T) {
 		home := t.TempDir()
 		project := filepath.Join(home, "code", "repo")
-		writeTestFile(t, filepath.Join(project, ".mcp.json"),
+		testutil.WriteFile(t, filepath.Join(project, ".mcp.json"),
 			`{"mcpServers":{"srv":{"command":"npx","args":["x"]}}}`)
 		// The entry is a string where an object belongs, so it cannot be decoded.
-		writeTestFile(t, filepath.Join(home, ".claude.json"),
+		testutil.WriteFile(t, filepath.Join(home, ".claude.json"),
 			`{"projects":{"`+filepath.ToSlash(project)+`":"not-an-object"}}`)
 
 		var got approvalState
@@ -192,8 +197,8 @@ func TestUnreadableApprovalIsUnknown(t *testing.T) {
 
 	t.Run("malformed plugin settings", func(t *testing.T) {
 		home := t.TempDir()
-		writeTestFile(t, filepath.Join(home, ".claude", "settings.json"), `{ not json`)
-		writeTestFile(t, filepath.Join(home, ".claude", "plugins", "cache", "mp", "p",
+		testutil.WriteFile(t, filepath.Join(home, ".claude", "settings.json"), `{ not json`)
+		testutil.WriteFile(t, filepath.Join(home, ".claude", "plugins", "cache", "mp", "p",
 			"1.0.0", ".mcp.json"), `{"mcpServers":{"orphan":{"command":"npx","args":["x"]}}}`)
 		writeInstalledPlugins(t, home, map[string]string{"p@mp": "1.0.0"})
 
@@ -213,7 +218,7 @@ func TestUnreadableApprovalIsUnknown(t *testing.T) {
 		// Absence is evidence: a user who has never enabled a plugin has no file, so an
 		// installed plugin really is not enabled. This must not become unknown.
 		home := t.TempDir()
-		writeTestFile(t, filepath.Join(home, ".claude", "plugins", "cache", "mp", "p",
+		testutil.WriteFile(t, filepath.Join(home, ".claude", "plugins", "cache", "mp", "p",
 			"1.0.0", ".mcp.json"), `{"mcpServers":{"never":{"command":"npx","args":["x"]}}}`)
 		writeInstalledPlugins(t, home, map[string]string{"p@mp": "1.0.0"})
 
@@ -238,12 +243,12 @@ func TestUnreadableApprovalIsUnknown(t *testing.T) {
 func TestHomeSettingsLocalIsNotAGlobalOverride(t *testing.T) {
 	home := t.TempDir()
 	// The user file enables the plugin.
-	writeTestFile(t, filepath.Join(home, ".claude", "settings.json"),
+	testutil.WriteFile(t, filepath.Join(home, ".claude", "settings.json"),
 		`{"enabledPlugins":{"p@mp":true}}`)
 	// A project-local file that happens to sit in the home disables it. It must be ignored.
-	writeTestFile(t, filepath.Join(home, ".claude", "settings.local.json"),
+	testutil.WriteFile(t, filepath.Join(home, ".claude", "settings.local.json"),
 		`{"enabledPlugins":{"p@mp":false}}`)
-	writeTestFile(t, filepath.Join(home, ".claude", "plugins", "cache", "mp", "p",
+	testutil.WriteFile(t, filepath.Join(home, ".claude", "plugins", "cache", "mp", "p",
 		"1.0.0", ".mcp.json"), `{"mcpServers":{"srv":{"command":"npx","args":["x"]}}}`)
 	writeInstalledPlugins(t, home, map[string]string{"p@mp": "1.0.0"})
 
@@ -267,7 +272,7 @@ func TestHomeSettingsLocalIsNotAGlobalOverride(t *testing.T) {
 func TestDescriptiveWarningsKeepScanComplete(t *testing.T) {
 	home := t.TempDir()
 	// An env key that is not a C identifier is dropped, with warnEnvKeyDropped.
-	writeTestFile(t, filepath.Join(home, ".cursor", "mcp.json"),
+	testutil.WriteFile(t, filepath.Join(home, ".cursor", "mcp.json"),
 		`{"mcpServers":{"srv":{"command":"npx","args":["x"],"env":{"not a key":"v"}}}}`)
 
 	var checked bool
@@ -305,7 +310,7 @@ func TestOversizeReportsTheRealCap(t *testing.T) {
 	for i := range big {
 		big[i] = 'x'
 	}
-	writeTestFile(t, filepath.Join(project, ".mcp.json"), string(big))
+	testutil.WriteFile(t, filepath.Join(project, ".mcp.json"), string(big))
 	recorded, err := json.Marshal(map[string]any{
 		"projects": map[string]any{project: map[string]any{}}})
 	if err != nil {
@@ -361,7 +366,7 @@ func TestDescriptiveCodesKeepScanCompleteEndToEnd(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
-			writeTestFile(t, filepath.Join(home, tc.rel), tc.body)
+			testutil.WriteFile(t, filepath.Join(home, tc.rel), tc.body)
 
 			var checked bool
 			for _, row := range withoutStandingNotes(discoverForTest("alice", home)) {
@@ -412,9 +417,9 @@ func TestOneForkHistoryDoesNotActivateAnotherFork(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
 			project := filepath.Join("code", "repo")
-			writeTestFile(t, filepath.Join(home, project, ".vscode", "mcp.json"),
+			testutil.WriteFile(t, filepath.Join(home, project, ".vscode", "mcp.json"),
 				`{"mcpServers":{"vscode_server":{"command":"npx","args":["x"]}}}`)
-			writeTestFile(t, filepath.Join(home, project, ".cursor", "mcp.json"),
+			testutil.WriteFile(t, filepath.Join(home, project, ".cursor", "mcp.json"),
 				`{"mcpServers":{"cursor_server":{"command":"uvx","args":["y"]}}}`)
 			recordVSCodeWorkspace(t, home, tc.fork, project)
 
@@ -433,21 +438,18 @@ func TestOneForkHistoryDoesNotActivateAnotherFork(t *testing.T) {
 	}
 }
 
-// A project outside the home does not also report a trust problem.
-//
-// Trust was counted while iterating the Codex file, before containment decided whether the
-// project is inside the scanned home -- so an out-of-home entry produced both
-// project_outside_home and project_trust_unknown, and the second is home-scope, which flipped
-// an unrelated healthy row to scan_complete = 0. A project explicitly beyond the discovery
-// boundary must not degrade the inventory that is inside it.
+// A project outside the home does not also report a trust problem. Trust is counted from the
+// projects containment admitted, because it is a question only for a project this table would
+// inspect, and an out-of-home entry is reported once, as project_outside_home.
 func TestOutOfScopeProjectsDoNotReportTrustProblems(t *testing.T) {
 	home := t.TempDir()
 	// A healthy in-scope source whose row must stay complete.
-	writeTestFile(t, filepath.Join(home, ".cursor", "mcp.json"),
+	testutil.WriteFile(t, filepath.Join(home, ".cursor", "mcp.json"),
 		`{"mcpServers":{"healthy":{"command":"npx","args":["x"]}}}`)
 	// Two Codex entries outside the home, neither carrying trust.
-	writeTestFile(t, filepath.Join(home, ".codex", "config.toml"),
-		"[projects.\"/outside/no-trust\"]\n[projects.\"/elsewhere/also-none\"]\n")
+	testutil.WriteFile(t, filepath.Join(home, ".codex", "config.toml"),
+		codexProjectTable(testutil.AbsPath("outside", "no-trust"))+
+			codexProjectTable(testutil.AbsPath("elsewhere", "also-none")))
 
 	var sawOutside, sawTrust, checkedHealthy bool
 	for _, row := range withoutStandingNotes(discoverForTest("alice", home)) {
@@ -491,9 +493,9 @@ func TestUntrustedProjectCannotApproveItsOwnServers(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
 			project := filepath.Join(home, "code", "repo")
-			writeTestFile(t, filepath.Join(project, ".mcp.json"),
+			testutil.WriteFile(t, filepath.Join(project, ".mcp.json"),
 				`{"mcpServers":{"srv":{"command":"npx","args":["x"]}}}`)
-			writeTestFile(t, filepath.Join(project, ".claude", "settings.json"),
+			testutil.WriteFile(t, filepath.Join(project, ".claude", "settings.json"),
 				`{"enableAllProjectMcpServers":true}`)
 			recorded, err := json.Marshal(map[string]any{"projects": map[string]any{
 				project: map[string]any{"hasTrustDialogAccepted": tc.accepted}}})
@@ -525,11 +527,11 @@ func TestUntrustedProjectCannotApproveItsOwnServers(t *testing.T) {
 func TestApprovalSettingsReadOnlyForClaudeProjects(t *testing.T) {
 	home := t.TempDir()
 	project := filepath.Join("code", "repo")
-	writeTestFile(t, filepath.Join(home, project, ".cursor", "mcp.json"),
+	testutil.WriteFile(t, filepath.Join(home, project, ".cursor", "mcp.json"),
 		`{"mcpServers":{"cursor_server":{"command":"npx","args":["x"]}}}`)
 	// A settings file that would grant approval if it were consulted. It must not be, and
 	// the row's approval must stay not_applicable because Cursor has no approval step.
-	writeTestFile(t, filepath.Join(home, project, ".claude", "settings.json"),
+	testutil.WriteFile(t, filepath.Join(home, project, ".claude", "settings.json"),
 		`{"enableAllProjectMcpServers":true}`)
 	recordVSCodeWorkspace(t, home, "Cursor", project)
 

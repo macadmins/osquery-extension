@@ -11,6 +11,10 @@ go_library(
         "cloudfile_darwin.go",
         "cloudfile_other.go",
         "doc.go",
+        "followlink.go",
+        "networkfs_darwin.go",
+        "networkfs_linux.go",
+        "networkfs_other.go",
         "openbeneath.go",
         "platform_unix.go",
         "platform_unsupported.go",
@@ -75,14 +79,18 @@ go_test(
         "descriptorguard_unix_test.go",
         "errclass_test.go",
         "openbeneath_test.go",
+        "platform_windows_test.go",
         "project_symlink_unix_test.go",
         "project_test.go",
+        "readlink_unix_test.go",
         "timeout_test.go",
         "users_test.go",
         "userspacefs_test.go",
     ],
     embed = [":fsscan"],
-    deps = select({
+    deps = [
+        "//pkg/testutil",
+    ] + select({
         "@io_bazel_rules_go//go/platform:aix": [
             "@org_golang_x_sys//unix",
         ],
@@ -115,6 +123,9 @@ go_test(
         ],
         "@io_bazel_rules_go//go/platform:solaris": [
             "@org_golang_x_sys//unix",
+        ],
+        "@io_bazel_rules_go//go/platform:windows": [
+            "@org_golang_x_sys//windows",
         ],
         "//conditions:default": [],
     }),

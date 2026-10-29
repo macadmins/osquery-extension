@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+
+	"github.com/macadmins/osquery-extension/pkg/devclients"
 )
 
 // rawServerEntry is the union of fields any MCP client uses per-server. Env values are
@@ -58,6 +60,10 @@ func extractEnvelope(raw []byte) (envelopeEntries, int, error) {
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &top); err != nil {
 		return out, 0, err
+	}
+	// Only null decodes into a nil map without an error.
+	if top == nil {
+		return out, 0, devclients.ErrNullDocument
 	}
 	out.MCPServers = map[string]rawServerEntry{}
 	out.Servers = map[string]rawServerEntry{}

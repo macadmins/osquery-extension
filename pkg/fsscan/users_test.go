@@ -108,12 +108,11 @@ func TestHomesFromUsers(t *testing.T) {
 	}
 }
 
-// TestSharedHomesKeepEveryAccount pins the association that deduplication used to destroy.
+// TestSharedHomesKeepEveryAccount: every account that shares a home keeps its own entry.
 //
-// Accounts legitimately share a home. Dropping all but the first made `WHERE user = 'other'`
-// return nothing, because the other account had claimed the directory before the constraint
-// was consulted -- indistinguishable from that account having no configuration. Sorting made
-// that outcome deterministic without making it correct.
+// Accounts legitimately share a home. Keeping only the first account per directory would make
+// `WHERE user = 'other'` return nothing, which is indistinguishable from that account having
+// no configuration.
 func TestSharedHomesKeepEveryAccount(t *testing.T) {
 	dir := t.TempDir()
 	shared := filepath.Join(dir, "shared")
@@ -266,5 +265,73 @@ func TestHomesFromUsersKeepsNamelessRowsThroughTheFilter(t *testing.T) {
 	}
 	if len(got.Skipped) != 1 || got.Skipped[0].Name != "" || got.Skipped[0].ID != "777" {
 		t.Fatalf("skipped = %+v, want the nameless account alone", got.Skipped)
+	}
+}
+
+// TestAccountsSharingAUIDHaveAFixedOrder: POSIX lets several accounts share a uid, and osquery
+// promises no row order, so accounts with equal identities are ordered by name, whatever order
+// the users table returned them in.
+func TestAccountsSharingAUIDHaveAFixedOrder(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"toor", "root"} {
+		if err := os.MkdirAll(filepath.Join(dir, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	toor := map[string]string{"uid": "0", "username": "toor", "directory": filepath.Join(dir, "toor"), "shell": "/bin/sh"}
+	root := map[string]string{"uid": "0", "username": "root", "directory": filepath.Join(dir, "root"), "shell": "/bin/sh"}
+	first := homesFromUsers([]map[string]string{toor, root}, nil, os.Lstat)
+	second := homesFromUsers([]map[string]string{root, toor}, nil, os.Lstat)
+	if !reflect.DeepEqual(first.Homes, second.Homes) || len(first.Homes) != 2 || first.Homes[0].Name != "root" {
+		t.Errorf("homes = %+v and %+v, want root then toor both times", first.Homes, second.Homes)
+	}
+}
+
+// TestUIDsAreOrderedNumericallyAndHomesCleaned: uids sort as numbers, so 501 comes before 1000
+// rather than after it as text, and a home the users table spells with a trailing separator is
+// cleaned once, so every later comparison sees one spelling.
+func TestUIDsAreOrderedNumericallyAndHomesCleaned(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"alice", "build"} {
+		if err := os.MkdirAll(filepath.Join(dir, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	build := map[string]string{"uid": "1000", "username": "build", "directory": filepath.Join(dir, "build"), "shell": "/bin/sh"}
+	alice := map[string]string{"uid": "501", "username": "alice", "directory": filepath.Join(dir, "alice") + string(filepath.Separator), "shell": "/bin/sh"}
+	got := homesFromUsers([]map[string]string{build, alice}, nil, os.Lstat)
+	if len(got.Homes) != 2 || got.Homes[0].Name != "alice" || got.Homes[0].Path != filepath.Join(dir, "alice") {
+		t.Errorf("homes = %+v, want alice first, with her home cleaned", got.Homes)
+	}
+}
+
+// TestARelativeOrDotDotHomeIsOmitted: a home with a ".." component is refused before it is
+// cleaned, so /x/empty/../root does not become another account's /x/root, and a relative home is
+// refused rather than resolved against osqueryd's working directory. Both are unusable homes, and
+// the stat is never reached, which the failing stat function proves.
+func TestARelativeOrDotDotHomeIsOmitted(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "root"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rows := []map[string]string{
+		{"uid": "1", "username": "climber", "directory": dir + string(filepath.Separator) + "empty" +
+			string(filepath.Separator) + ".." + string(filepath.Separator) + "root", "shell": "/bin/sh"},
+		{"uid": "2", "username": "relative", "directory": "home" + string(filepath.Separator) + "relative", "shell": "/bin/sh"},
+		{"uid": "3", "username": "dot", "directory": ".", "shell": "/bin/sh"},
+	}
+	statted := 0
+	countingStat := func(path string) (os.FileInfo, error) { statted++; return os.Lstat(path) }
+	got := homesFromUsers(rows, nil, countingStat)
+	if len(got.Homes) != 0 || statted != 0 {
+		t.Errorf("homes = %+v after %d stats, want none and no stat", got.Homes, statted)
+	}
+	if len(got.Skipped) != 3 {
+		t.Fatalf("skipped = %+v, want three omissions", got.Skipped)
+	}
+	for _, omission := range got.Skipped {
+		if omission.Code != OmittedHomeNotAbsolute || !omission.HomeUnusable {
+			t.Errorf("omission = %+v, want home_not_absolute and unusable", omission)
+		}
 	}
 }

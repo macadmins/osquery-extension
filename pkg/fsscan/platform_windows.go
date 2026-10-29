@@ -7,16 +7,19 @@ package fsscan
 // planted at a probed configuration path was refused rather than followed, producing no row
 // and no warning, which is the designed silent-absence result.
 //
-// KNOWN GAP: not continuously exercised. There is no Windows CI job, so `go vet` and
-// cross-compilation are the only automated checks that ever see this file, and the
-// coverage gate cannot measure it at all. Nothing has stress-tested the post-open identity
-// re-check against a path genuinely being replaced mid-traversal; that race is reasoned
-// about rather than demonstrated.
+// The windows-latest job in native-tests.yml runs the Windows-only tests against this file:
+// junctions at every component and as the base, a directory symlink, a path through a
+// regular file, hard links and the cloud attribute. The coverage gate, which runs on Ubuntu,
+// cannot measure it. KNOWN GAP: nothing has stress-tested the post-open identity re-check
+// against a path genuinely being replaced mid-traversal; that race is reasoned about rather
+// than demonstrated.
 
 import (
 	"errors"
 	"fmt"
 	"os"
+	"syscall"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -52,6 +55,37 @@ import (
 // symlink, a mount point) and was refused rather than followed. It is the Windows counterpart
 // of ELOOP from an O_NOFOLLOW open.
 var reparsePointRefused = errors.New("fsscan: path component is a reparse point")
+
+// errNotDirectory is what a path that should be a directory and is not reports on this
+// platform; isRefusedOrNotDirectory classifies it as a refusal.
+var errNotDirectory error = windows.ERROR_DIRECTORY
+
+// openBaseDir opens baseDir itself, with the checks openBeneathComponents applies to its base:
+// a base that is a reparse point is refused, and one replaced between the check and the open
+// is refused too.
+func openBaseDir(baseDir string) (*os.File, error) {
+	before, err := os.Lstat(baseDir)
+	if err != nil {
+		return nil, fmt.Errorf("openbeneath: stat base %q: %w", baseDir, err)
+	}
+	if redirectsElsewhere(before.Mode()) {
+		return nil, fmt.Errorf("openbeneath: %w: base %q", reparsePointRefused, baseDir)
+	}
+	dir, err := os.Open(baseDir)
+	if err != nil {
+		return nil, fmt.Errorf("openbeneath: open base %q: %w", baseDir, err)
+	}
+	after, err := dir.Stat()
+	if err != nil || !os.SameFile(before, after) {
+		_ = dir.Close()
+		if err != nil {
+			return nil, fmt.Errorf("openbeneath: stat base %q: %w", baseDir, err)
+		}
+		return nil, fmt.Errorf("openbeneath: %w: base %q changed between check and open",
+			reparsePointRefused, baseDir)
+	}
+	return dir, nil
+}
 
 // openBeneathComponents opens relPath under baseDir without letting any component escape
 // baseDir.
@@ -107,6 +141,14 @@ func openBeneathComponents(baseDir, relPath string, components []string) (*os.Fi
 		if err != nil {
 			return nil, err
 		}
+		// An intermediate component that is a file. Opening it as a root fails with
+		// ERROR_PATH_NOT_FOUND, which matches fs.ErrNotExist and would read as absence; the
+		// POSIX backend reports ENOTDIR here, which is a refusal. ERROR_DIRECTORY is the
+		// errno isRefusedOrNotDirectory recognizes, so both platforms report it the same way.
+		if !before.IsDir() {
+			return nil, fmt.Errorf("openbeneath: %q (component %d of %q) is not a directory: %w",
+				component, i, relPath, windows.ERROR_DIRECTORY)
+		}
 		next, err := current.OpenRoot(component)
 		if err != nil {
 			return nil, fmt.Errorf("openbeneath: open %q (component %d of %q): %w",
@@ -157,6 +199,12 @@ func openBeneathComponents(baseDir, relPath string, components []string) (*os.Fi
 // lstatNoReparse stats one component against the handle of its immediate parent and refuses
 // it if it is a reparse point. Junctions need no privilege to create on Windows, which is
 // why they and not symlinks are the shape this is written against.
+//
+// A reparse point a storage provider placed is refused as ErrCloudPlaceholder, which callers
+// report, rather than as a link, which IsExpectedAbsent treats as absence: every Cloud Files
+// placeholder is a reparse point, so outside the folders cloudPrefixesFor names, a project a
+// provider holds was dropped with no warning. Decided before the component is opened, so a
+// RECALL_ON_OPEN placeholder is refused without the open that starts its download.
 func lstatNoReparse(root *os.Root, name string, index int, relPath string) (os.FileInfo, error) {
 	info, err := root.Lstat(name)
 	if err != nil {
@@ -164,6 +212,14 @@ func lstatNoReparse(root *os.Root, name string, index int, relPath string) (os.F
 			name, index, relPath, err)
 	}
 	if info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+		var attributes uint32
+		if data, ok := info.Sys().(*syscall.Win32FileAttributeData); ok {
+			attributes = data.FileAttributes
+		}
+		if providerReparsePoint(info.Mode(), attributes) {
+			return nil, fmt.Errorf("openbeneath: %w: %q (component %d of %q) is a provider's "+
+				"reparse point", ErrCloudPlaceholder, name, index, relPath)
+		}
 		return nil, fmt.Errorf("openbeneath: %w: %q (component %d of %q)",
 			reparsePointRefused, name, index, relPath)
 	}
@@ -260,16 +316,42 @@ const cloudPlaceholderFlags = windows.FILE_ATTRIBUTE_RECALL_ON_OPEN |
 // be the thing that went there. A handle cannot be redirected after it is held. The link
 // count in checkDescriptor is read from the same call for the same reason.
 //
-// KNOWN GAP: inspecting a handle means the file is already open, and
-// FILE_ATTRIBUTE_RECALL_ON_OPEN is by definition the attribute whose provider starts
-// fetching at CreateFile. os.Root exposes no way to pass FILE_FLAG_OPEN_NO_RECALL, so that
-// one attribute is now detected after the cost it exists to avoid has been incurred;
-// RECALL_ON_DATA_ACCESS and OFFLINE are still caught before any byte is read. See the
-// ordering note in ReadProjectFile.
+// Inspecting a handle means the file is already open, and FILE_ATTRIBUTE_RECALL_ON_OPEN is the
+// attribute whose provider starts fetching at CreateFile. A Cloud Files placeholder is a
+// reparse point, which lstatNoReparse refuses before the open, so what reaches this check with
+// that attribute is a file that carries it without being one. See the ordering note in
+// ReadProjectFile.
 func IsCloudPlaceholder(file *os.File) (bool, error) {
 	var info windows.ByHandleFileInformation
 	if err := windows.GetFileInformationByHandle(windows.Handle(file.Fd()), &info); err != nil {
 		return false, err
 	}
 	return info.FileAttributes&cloudPlaceholderFlags != 0, nil
+}
+
+// readLinkAt is not implemented on Windows, so a symlinked module file stays refused there. Go
+// 1.25's os.Root.Readlink reads a link through a handle opened relative to its parent, which
+// would serve, but reaching it needs an os.Root for the link's directory rather than the
+// *os.File OpenBeneath returns, and containment rules for the target forms POSIX does not have:
+// a rooted "\shared\go.sum" or a drive-relative "D:go.sum" is not absolute to filepath.IsAbs,
+// so joining it to the link's directory would name the wrong file.
+func readLinkAt(*os.File, string) (string, error) {
+	return "", errUnsupported
+}
+
+// entryStat reads the modification time and file type of entry, which dir's ReadDir returned.
+// On Windows the directory listing carries each entry's times and attributes, so DirEntry.Info
+// answers from the handle os.Root opened rather than by a second lookup by path. Go reports a
+// junction as os.ModeIrregular without os.ModeDir, and a symlink as os.ModeSymlink; listedKind
+// reports a provider's reparse point that is not a directory as a file.
+func entryStat(_ *os.File, entry os.DirEntry) (time.Time, os.FileMode, bool) {
+	info, err := entry.Info()
+	if err != nil {
+		return time.Time{}, 0, false
+	}
+	var attributes uint32
+	if data, ok := info.Sys().(*syscall.Win32FileAttributeData); ok {
+		attributes = data.FileAttributes
+	}
+	return info.ModTime(), listedKind(info.Mode(), attributes), true
 }
