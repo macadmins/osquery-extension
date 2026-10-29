@@ -1,0 +1,7 @@
+<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Wired-AutoConfig' Guid='{b92cf7fd-dc10-4c6b-a72d-1613bf25e597}'/><EventID>15502</EventID><Version>0</Version><Level>4</Level><Task>0</Task><Opcode>0</Opcode><Keywords>0x8000000000000000</Keywords><TimeCreated SystemTime='2026-10-03T07:40:42.9842918Z'/><EventRecordID>87</EventRecordID><Correlation/><Execution ProcessID='22160' ThreadID='17964'/><Channel>Microsoft-Windows-Wired-AutoConfig/Operational</Channel><Computer>DESKTOP-TEST01</Computer><Security UserID='S-1-5-18'/></System><EventData><Data Name='InterfaceGuid'>{77b9b334-d6f7-4314-a0b4-9bc86bd8fe97}</Data><Data Name='InterfaceDescription'>Realtek Gaming USB 2.5GbE Family Controller</Data><Data Name='ProfileType'>0</Data><Data Name='ProfileContent'>
+	AutoConfig Version: 1
+	802.1x: Enabled
+	802.1x: Not Enforced
+	EAP type: Microsoft: Smart Card or other certificate (EAP-TLS)
+	802.1X auth credential: Machine credential
+	Cache user information: Yes</Data></EventData></Event>

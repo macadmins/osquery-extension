@@ -10,6 +10,7 @@ import (
 	"github.com/macadmins/osquery-extension/tables/alt_system_info"
 	"github.com/macadmins/osquery-extension/tables/chromeuserprofiles"
 	"github.com/macadmins/osquery-extension/tables/crowdstrike_falcon"
+	"github.com/macadmins/osquery-extension/tables/dot1x"
 	"github.com/macadmins/osquery-extension/tables/energyimpact"
 	"github.com/macadmins/osquery-extension/tables/fileline"
 	"github.com/macadmins/osquery-extension/tables/filevaultusers"
@@ -80,9 +81,12 @@ func main() {
 	}
 
 	// Platform specific tables
-	// if runtime.GOOS == "windows" {
-	// If there were windows only tables, they would go here
-	// }
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		dot1xPlugins := []osquery.OsqueryPlugin{
+			table.NewPlugin("dot1x", dot1x.Dot1XStatusColumns(), dot1x.Dot1XStatusGenerate),
+		}
+		plugins = append(plugins, dot1xPlugins...)
+	}
 
 	// mcp_servers is not darwin-only: pkg/fsscan has a symlink-refusing backend for POSIX
 	// (iterated openat with O_NOFOLLOW) and for Windows (os.Root plus a reparse-point check
