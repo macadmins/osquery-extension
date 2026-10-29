@@ -2219,7 +2219,8 @@ func TestPodmanReadsItsOwnOptions(t *testing.T) {
 // option before the scan read it, so a `--` or a dash-led argument there read as an ordinary
 // value: `npx --key -c sh` named sh, the command npx's --call runs, and `npx --key -- -y <secret>`
 // named the secret. Also an inline value on a value-less option, which npx puts back as an
-// operand, and a repeated package option, which each launcher treats its own way.
+// operand, a repeated package option, which each launcher treats its own way, and pipx run's
+// --path, which makes the operand a local script, so `pipx run --path test.py` names no package.
 func TestIdentityThroughParsing(t *testing.T) {
 	const secret = "opaquesecret123"
 	for _, testCase := range []struct {
@@ -2235,6 +2236,9 @@ func TestIdentityThroughParsing(t *testing.T) {
 		{"npx", `["-p","a-pkg","-p","a-pkg","cmd"]`, "a-pkg", ""},
 		{"bunx", `["-p","old-pkg","-p","new-pkg","cmd"]`, "new-pkg", ""},
 		{"pipx", `["run","--spec","old-pkg","--spec","new-pkg","app"]`, "new-pkg", ""},
+		{"pipx", `["run","--path","test.py"]`, "", ""},
+		{"pipx", `["run","--spec","real-pkg","--path","test.py"]`, "", ""},
+		{"pipx", `["run","--path=yes","test.py"]`, "", warnUnknownLauncherOption},
 		{"uvx", `["--from","a-pkg","--from","b-pkg","cmd"]`, "", warnIdentityDropped},
 		{"uvx", `["--token","-q","--from","` + secret + `"]`, "", warnUnknownLauncherOption},
 		{"uvx", `["--quiet=true","real-pkg"]`, "", warnUnknownLauncherOption},
@@ -2249,6 +2253,9 @@ func TestIdentityThroughParsing(t *testing.T) {
 		if row["package_name"] != testCase.want || rows[0].Warning.Code != testCase.code {
 			t.Errorf("%s %s: package_name %q, warning %q; want %q, %q", testCase.command,
 				testCase.args, row["package_name"], rows[0].Warning.Code, testCase.want, testCase.code)
+		}
+		if testCase.want == "" && row["requested_spec"] != "" {
+			t.Errorf("%s %s: requested_spec %q, want empty", testCase.command, testCase.args, row["requested_spec"])
 		}
 		for column, value := range row {
 			if strings.Contains(value, secret) {

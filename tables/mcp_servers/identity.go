@@ -285,6 +285,9 @@ const (
 	// optionCommand takes the next token as a command to run instead of a package, as npx's
 	// --call does, so a launcher given one installs no package unless an optionPackage names one.
 	optionCommand
+	// optionLocalPath takes no value and makes the operand a local file rather than a package, as
+	// pipx run's --path does, so the launcher installs nothing whatever else names a package.
+	optionLocalPath
 )
 
 // launcherGrammar is how one launcher reads its own options: whether each takes a separate value,
@@ -380,7 +383,9 @@ type launcherScan struct {
 	// endOfOptions says the operand came after `--`.
 	endOfOptions bool
 	command      bool
-	unknown      bool
+	// localPath says an option made the operand a local file, so nothing names a package.
+	localPath bool
+	unknown   bool
 }
 
 // scanLauncher walks args from the start by grammar and stops at the first operand, where the
@@ -415,12 +420,15 @@ func scanLauncher(args []string, grammar launcherGrammar) launcherScan {
 		case !known:
 			scan.unknown = true
 			return scan
-		case kind == optionBoolean && hasInline:
+		case (kind == optionBoolean || kind == optionLocalPath) && hasInline:
 			// A value-less option given a value: uv and pipx refuse the command line, and npx
 			// puts the value back as an operand, so `npx -y=./script.js secret` runs the script.
 			scan.unknown = true
 			return scan
 		case kind == optionBoolean:
+			continue
+		case kind == optionLocalPath:
+			scan.localPath = true
 			continue
 		}
 		if !hasInline {
@@ -480,6 +488,8 @@ func identityFrom(scan launcherScan, grammar launcherGrammar) (string, warnCode)
 	switch {
 	case scan.unknown:
 		return "", warnUnknownLauncherOption
+	case scan.localPath:
+		return "", ""
 	case len(values) == 0 && scan.command:
 		return "", ""
 	case len(values) == 0:
@@ -876,7 +886,7 @@ var (
 	// `pipx run`, after its subcommand.
 	pipxRunGrammar = newGrammar(launcherGrammar{}, map[optionKind]string{
 		optionBoolean: `
-		--editable --fetch-missing-python --global --help --no-cache --no-path-check --path
+		--editable --fetch-missing-python --global --help --no-cache --no-path-check
 		--pypackages --quiet --refresh --skip-maintenance --system-site-packages --verbose
 		--version -e -h -q -v`,
 		optionValue: `
@@ -884,6 +894,8 @@ var (
 		--with -i`,
 		optionPackage: `
 		--spec`,
+		optionLocalPath: `
+		--path`,
 	})
 	// bunx. bunx itself ignores an option it does not know, so failing closed on one is
 	// stricter than bunx is.
