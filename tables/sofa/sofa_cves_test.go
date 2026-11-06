@@ -9,11 +9,11 @@ import (
 
 func TestSofaUnpatchedCVEsColumns(t *testing.T) {
 	assert.Equal(t, []table.ColumnDefinition{
-		table.TextColumn("os_version"),
+		table.TextColumn("os_version", table.AdditionalColumn()),
 		table.TextColumn("cve"),
 		table.TextColumn("patched_version"),
 		table.TextColumn("actively_exploited"),
-		table.TextColumn("url"),
+		table.TextColumn("url", table.AdditionalColumn()),
 	}, SofaUnpatchedCVEsColumns())
 }
 

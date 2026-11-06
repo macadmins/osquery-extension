@@ -109,11 +109,14 @@ func MCPServersColumns() []table.ColumnDefinition {
 		table.TextColumn("approval_state"),
 		table.TextColumn("source_path"),
 		table.TextColumn("source_context"),
-		table.TextColumn("user"),
+		table.TextColumn("user", table.IndexColumn(), table.OptimizedColumn()),
 		// The uid column of osquery's users table, as core osquery's per-user tables publish it,
 		// so `JOIN users USING (uid)` works. On Windows osquery fills it with the last component
-		// of the SID, which two accounts can share; user_id holds the whole SID.
-		table.BigIntColumn("uid"),
+		// of the SID, which two accounts can share; user_id holds the whole SID. OptimizedColumn
+		// alone keeps osquery from indexing it, as --extensions_default_index does a column with
+		// no options: the scan does not narrow by uid, so an index would make `JOIN users USING
+		// (uid)` one full scan per users row, where SQLite otherwise matches uid after one scan.
+		table.BigIntColumn("uid", table.OptimizedColumn()),
 		table.TextColumn("user_id"),
 		// 1 when every server declared in source_path was listed and, for a server a Claude Code
 		// plugin declares, every source that plugin version's manifest declares was read. A

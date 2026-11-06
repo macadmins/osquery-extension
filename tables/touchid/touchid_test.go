@@ -402,3 +402,22 @@ func TestColumns(t *testing.T) {
 	wantUsr := []string{"uid", "fingerprints_registered", "touchid_unlock", "touchid_applepay", "effective_unlock", "effective_applepay"}
 	assert.Equal(t, wantUsr, columnNames(TouchIDUserConfigColumns()))
 }
+
+// TestTheUIDColumnIsIndexed: uid is the constraint that limits which accounts are read, declared as
+// an indexed and optimized column, so a change to the declaration fails here.
+func TestTheUIDColumnIsIndexed(t *testing.T) {
+	want := map[string]table.ColumnDefinition{
+		"uid": table.IntegerColumn("uid", table.IndexColumn(), table.OptimizedColumn()),
+	}
+	for _, column := range TouchIDUserConfigColumns() {
+		if expected, declared := want[column.Name]; declared {
+			if column != expected {
+				t.Errorf("%s column = %+v, want %+v", column.Name, column, expected)
+			}
+			delete(want, column.Name)
+		}
+	}
+	if len(want) != 0 {
+		t.Errorf("columns %v are missing", want)
+	}
+}

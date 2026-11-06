@@ -1575,3 +1575,24 @@ func TestRowBytesBoundsTheEncodedRow(t *testing.T) {
 			len(expanding))
 	}
 }
+
+// TestTheAccountAndPathColumnsAreIndexed: user and project_path are the constraints the scan
+// narrows by, declared as indexed and optimized columns, so a change to the declaration fails here.
+func TestTheAccountAndPathColumnsAreIndexed(t *testing.T) {
+	want := map[string]table.ColumnDefinition{
+		"user":         table.TextColumn("user", table.IndexColumn(), table.OptimizedColumn()),
+		"project_path": table.TextColumn("project_path", table.IndexColumn(), table.OptimizedColumn()),
+		"uid":          table.BigIntColumn("uid", table.OptimizedColumn()),
+	}
+	for _, column := range GoModulesColumns() {
+		if expected, declared := want[column.Name]; declared {
+			if column != expected {
+				t.Errorf("%s column = %+v, want %+v", column.Name, column, expected)
+			}
+			delete(want, column.Name)
+		}
+	}
+	if len(want) != 0 {
+		t.Errorf("columns %v are missing", want)
+	}
+}

@@ -66,9 +66,9 @@ func UnifiedLogColumns() []table.ColumnDefinition {
 		table.TextColumn("sender_program_counter"),
 		table.TextColumn("parent_activity_identifier"),
 		table.TextColumn("time_zone_name"),
-		table.TextColumn("predicate"),
-		table.TextColumn("last"),
-		table.TextColumn("log_level"),
+		table.TextColumn("predicate", table.AdditionalColumn()),
+		table.TextColumn("last", table.AdditionalColumn()),
+		table.TextColumn("log_level", table.AdditionalColumn()),
 	}
 }
 

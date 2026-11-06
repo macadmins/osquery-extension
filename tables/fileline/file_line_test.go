@@ -14,7 +14,7 @@ import (
 func TestFileLineColumns(t *testing.T) {
 	assert.Equal(t, []table.ColumnDefinition{
 		table.TextColumn("line"),
-		table.TextColumn("path"),
+		table.TextColumn("path", table.RequiredColumn()),
 	}, FileLineColumns())
 }
 

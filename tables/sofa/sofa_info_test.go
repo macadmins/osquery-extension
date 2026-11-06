@@ -100,8 +100,8 @@ func TestSofaSecurityReleaseInfoColumns(t *testing.T) {
 		table.TextColumn("security_info"),
 		table.IntegerColumn("unique_cves_count"),
 		table.IntegerColumn("days_since_previous_release"),
-		table.TextColumn("os_version"),
-		table.TextColumn("url"),
+		table.TextColumn("os_version", table.AdditionalColumn()),
+		table.TextColumn("url", table.AdditionalColumn()),
 	}, SofaSecurityReleaseInfoColumns())
 }
 

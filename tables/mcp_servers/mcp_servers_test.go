@@ -982,3 +982,23 @@ func TestAnOmittedAccountKeepsItsUID(t *testing.T) {
 		t.Errorf("rows = %+v, want one account_home_missing row carrying uid 502", rows)
 	}
 }
+
+// TestTheAccountColumnIsIndexed: user is the constraint the scan narrows by, declared as an indexed
+// and optimized column, so a change to the declaration fails here.
+func TestTheAccountColumnIsIndexed(t *testing.T) {
+	want := map[string]table.ColumnDefinition{
+		"user": table.TextColumn("user", table.IndexColumn(), table.OptimizedColumn()),
+		"uid":  table.BigIntColumn("uid", table.OptimizedColumn()),
+	}
+	for _, column := range MCPServersColumns() {
+		if expected, declared := want[column.Name]; declared {
+			if column != expected {
+				t.Errorf("%s column = %+v, want %+v", column.Name, column, expected)
+			}
+			delete(want, column.Name)
+		}
+	}
+	if len(want) != 0 {
+		t.Errorf("columns %v are missing", want)
+	}
+}

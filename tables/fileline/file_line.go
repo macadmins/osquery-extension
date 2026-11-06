@@ -21,7 +21,7 @@ type FileLine struct {
 func FileLineColumns() []table.ColumnDefinition {
 	return []table.ColumnDefinition{
 		table.TextColumn("line"),
-		table.TextColumn("path"),
+		table.TextColumn("path", table.RequiredColumn()),
 	}
 }
 
