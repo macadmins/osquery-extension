@@ -41,7 +41,7 @@ func serversOnly(rows []Server) []Server {
 // roaming-application-data row and fail a count or a no-warning assertion for a reason that
 // has nothing to do with discovery. See withoutStandingNotes.
 func discoverForTest(user, home string) []Server {
-	rows := discoverForHome(context.Background(), fsscan.UserHome{Name: user, Path: home},
+	rows := discoverForHome(context.Background(), fsscan.UserHome{Name: user, ID: ownerID(), Path: home},
 		time.Now().Add(fsscan.WalkTimeout()))
 	return withoutStandingNotes(rows)
 }
@@ -661,7 +661,7 @@ func TestDiscoverForHomeReportsAnExhaustedBudget(t *testing.T) {
 		{"expires during pass 1", 1 * time.Nanosecond},
 	} {
 		rows := withoutStandingNotes(discoverForHome(context.Background(),
-			fsscan.UserHome{Name: "alice", Path: home}, time.Now().Add(testCase.budget)))
+			fsscan.UserHome{Name: "alice", ID: ownerID(), Path: home}, time.Now().Add(testCase.budget)))
 		var diagnostics int
 		for _, row := range rows {
 			if row.Warning.empty() {
@@ -705,7 +705,7 @@ func TestHomeOpenIsChargedAgainstTheDeadline(t *testing.T) {
 	// A deadline already past when the function is entered. Under a duration this arrived as
 	// a positive budget and the whole home was walked.
 	rows := withoutStandingNotes(discoverForHome(context.Background(),
-		fsscan.UserHome{Name: "alice", Path: home}, time.Now().Add(-time.Second)))
+		fsscan.UserHome{Name: "alice", ID: ownerID(), Path: home}, time.Now().Add(-time.Second)))
 	if len(rows) == 0 {
 		t.Fatal("an exhausted deadline produced no row at all, which reads as an account " +
 			"with no configuration")

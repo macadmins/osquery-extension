@@ -24,7 +24,22 @@ import (
 	"github.com/macadmins/osquery-extension/pkg/utils"
 )
 
-// roster answers the users query with one login account per home.
+// wantUID is the uid column the test account publishes.
+var wantUID, _ = testutil.Account()
+
+// ownerID is the owner the test account's files carry, in the form readOpts takes: the whole
+// SID on Windows and the uid on POSIX.
+func ownerID() string {
+	uid, uuid := testutil.Account()
+	if uuid != "" {
+		return uuid
+	}
+	return uid
+}
+
+// roster answers the users query with one login account per home. Every account is the account
+// running the test, because the files under its home belong to that account and a different
+// identity would make the table refuse them.
 func roster(homes map[string]string) utils.OsqueryClienter {
 	names := make([]string, 0, len(homes))
 	for name := range homes {
@@ -32,9 +47,10 @@ func roster(homes map[string]string) utils.OsqueryClienter {
 	}
 	sort.Strings(names)
 	var rows []map[string]string
-	for index, name := range names {
+	uid, uuid := testutil.Account()
+	for _, name := range names {
 		rows = append(rows, map[string]string{
-			"uid": strconv.Itoa(501 + index), "username": name,
+			"uid": uid, "uuid": uuid, "username": name,
 			"directory": homes[name], "shell": "/bin/zsh",
 		})
 	}
@@ -56,8 +72,9 @@ func TestACancelledQueryAfterTheRosterReportsEachAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(rows) != 1 || !strings.HasPrefix(rows[0]["warning"], warnSentences[warnCancelledPreHome]) ||
-		rows[0]["user"] != "alice" || rows[0]["uid"] != "501" {
-		t.Errorf("rows = %v, want one cancelled_before_home row for alice carrying uid 501", rows)
+		rows[0]["user"] != "alice" || rows[0]["uid"] != wantUID {
+		t.Errorf("rows = %v, want one cancelled_before_home row for alice carrying uid %s", rows,
+			wantUID)
 	}
 }
 
@@ -214,7 +231,7 @@ func TestDiscoversModulesFromEveryClientList(t *testing.T) {
 		t.Errorf("modules =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 	for _, r := range rows {
-		if r["user"] != "alice" || r["uid"] != "501" || r["user_id"] != "501" {
+		if r["user"] != "alice" || r["uid"] != wantUID || r["user_id"] != ownerID() {
 			t.Errorf("row identity = %q %q %q", r["user"], r["uid"], r["user_id"])
 		}
 		if r["module_path"] == "github.com/direct/one" {
@@ -541,7 +558,7 @@ func TestReadFailureClassification(t *testing.T) {
 		{os.ErrNotExist, "", false},
 		{fsscan.ErrUserspaceFilesystem, warnSourceUserspaceFS, true},
 		{fsscan.ErrHardLink, warnProjectRefused, true},
-		{fsscan.ErrForeignOwner, warnProjectRefused, true},
+		{fsscan.ErrOwnerMismatch, warnProjectRefused, true},
 		{fsscan.ErrTooLarge, warnSourceTooLarge, true},
 		{fsscan.ErrNotRegular, warnSourceUnreadable, true},
 		{os.ErrPermission, warnSourceUnreadable, true},
@@ -609,8 +626,8 @@ func TestRowLimitIsReported(t *testing.T) {
 		t.Errorf("alice warnings = %v", got)
 	}
 	if len(byUser["bob"]) != 1 || !strings.HasPrefix(byUser["bob"][0]["warning"], warnSentences[warnRowLimitPreHome]) ||
-		byUser["bob"][0]["uid"] != "502" {
-		t.Errorf("bob rows = %v, want one row_limit_reached_before_home carrying uid 502", byUser["bob"])
+		byUser["bob"][0]["uid"] != wantUID {
+		t.Errorf("bob rows = %v, want one row_limit_reached_before_home carrying uid %s", byUser["bob"], wantUID)
 	}
 }
 
@@ -710,8 +727,10 @@ func TestASharedHomeIsReusedAfterTheDeadline(t *testing.T) {
 	project := filepath.Join(home, "svc")
 	claudeList(t, home, project)
 	testutil.WriteFile(t, filepath.Join(project, "go.mod"), "module x\n\nrequire github.com/a/b v1.0.0\n")
-	alice := fsscan.UserHome{Name: "alice", ID: "501", Path: home}
-	build := fsscan.UserHome{Name: "build", ID: "502", Path: home}
+	alice := fsscan.UserHome{Name: "alice", ID: ownerID(), Path: home}
+	// build is another account sharing the home; on Windows the cache is per account, so build
+	// has an identity of its own. No file is read for it, so the owner check does not apply.
+	build := fsscan.UserHome{Name: "build", ID: distinctID(2), Path: home}
 	other := fsscan.UserHome{Name: "other", ID: "503", UID: "503", Path: filepath.Join(t.TempDir(), "other")}
 	scanned := map[string][]row{}
 
@@ -726,7 +745,7 @@ func TestASharedHomeIsReusedAfterTheDeadline(t *testing.T) {
 		if len(second) != 1 || second[0].Warning.Code != warnBudgetExhaustedPreHome {
 			t.Errorf("second account rows = %+v, want its own scan refused by the deadline", second)
 		}
-	} else if moduleRows(second) != 1 || second[0].User != "build" || second[0].UserID != "502" {
+	} else if moduleRows(second) != 1 || second[0].User != "build" || second[0].UserID != build.ID {
 		t.Errorf("second account rows = %+v, want the cached row labeled for build", second)
 	}
 	if rows := rowsForHome(context.Background(), other, expired, limits, limits, nil, scanned); len(rows) != 1 ||
@@ -824,7 +843,7 @@ func TestTheAgentListsRespectTheBudget(t *testing.T) {
 	note := func(w warning) { noted = append(noted, w) }
 
 	collector := devclients.NewCollector(home, devclients.MaxProjects)
-	if addAgentLists(context.Background(), home, fsscan.ClassNone, time.Now().Add(-time.Second), collector, note) {
+	if addAgentLists(context.Background(), home, ownerID(), fsscan.ClassNone, time.Now().Add(-time.Second), collector, note) {
 		t.Error("the lists were read after the deadline")
 	}
 	if len(collector.Projects()) != 0 || len(noted) != 1 || noted[0].Code != warnBudgetExhaustedInHome {
@@ -833,7 +852,7 @@ func TestTheAgentListsRespectTheBudget(t *testing.T) {
 
 	noted = nil
 	collector = devclients.NewCollector(home, devclients.MaxProjects)
-	if !addAgentLists(context.Background(), home, fsscan.ClassNone, time.Now().Add(time.Minute), collector, note) ||
+	if !addAgentLists(context.Background(), home, ownerID(), fsscan.ClassNone, time.Now().Add(time.Minute), collector, note) ||
 		len(collector.Projects()) != 1 || len(noted) != 0 {
 		t.Errorf("projects %v notes %+v, want the Claude project and no notes", collector.Projects(), noted)
 	}
@@ -991,7 +1010,7 @@ func TestABudgetStopBetweenFilesMarksThatProjectIncomplete(t *testing.T) {
 		}
 		return false, nil
 	}
-	account := fsscan.UserHome{Name: "alice", ID: "501", Path: home}
+	account := fsscan.UserHome{Name: "alice", ID: ownerID(), Path: home}
 	limits := outputLimits{rows: maxRows, bytes: maxOutputBytes}
 	rows := discoverHome(ctx, account, time.Now().Add(time.Hour), limits, limits, nil)
 	if moduleRows(rows) == 0 {
@@ -1091,7 +1110,7 @@ func TestOutputSizeIsBounded(t *testing.T) {
 	}
 	unlimited := discoverWithin(context.Background(), roster(homes), nil, nil,
 		outputLimits{rows: maxRows, bytes: maxOutputBytes})
-	alice := fsscan.UserHome{Name: "alice", UID: "501", ID: "501"}
+	alice := fsscan.UserHome{Name: "alice", UID: wantUID, ID: ownerID()}
 	var oneRow int
 	for _, r := range unlimited {
 		if r.User == "alice" && r.Entry.Path != "" {
@@ -1221,7 +1240,7 @@ func TestBothCapsAreReportedWhenBothAreSpent(t *testing.T) {
 	}
 	unlimited := discoverWithin(context.Background(), roster(homes), nil, nil,
 		outputLimits{rows: maxRows, bytes: maxOutputBytes})
-	alice := fsscan.UserHome{Name: "alice", UID: "501", ID: "501"}
+	alice := fsscan.UserHome{Name: "alice", UID: wantUID, ID: ownerID()}
 	var oneRow int
 	for _, r := range unlimited {
 		if r.User == "alice" && r.Entry.Path != "" {
@@ -1278,10 +1297,17 @@ func TestACompleteSharedHomeIsReusedAfterACap(t *testing.T) {
 	project := filepath.Join(other, "svc")
 	claudeList(t, other, project)
 	testutil.WriteFile(t, filepath.Join(project, "go.mod"), goMod)
-	// alice (501), bob (502) and carol (503) in that order; alice and carol share an empty home,
-	// and bob's project spends the one-row cap.
-	homes := map[string]string{"alice": shared, "bob": other, "carol": shared}
-	found := discoverWithin(context.Background(), roster(homes), nil, nil, outputLimits{rows: 1, bytes: maxOutputBytes})
+	// alice, bob and carol in that order; alice and carol are two accounts sharing an empty home,
+	// and bob's project, read under the account running the test, spends the one-row cap. The
+	// roster is ordered by identity, so alice's sorts just before bob's and carol's just after.
+	mine, mySID := testutil.Account()
+	aliceUID, aliceSID, carolUID, carolSID := identitiesAround(mine, mySID)
+	clienter := &utils.MockOsqueryClienter{Data: map[string][]map[string]string{fsscan.UsersQuery: {
+		{"uid": aliceUID, "uuid": aliceSID, "username": "alice", "directory": shared, "shell": "/bin/zsh"},
+		{"uid": mine, "uuid": mySID, "username": "bob", "directory": other, "shell": "/bin/zsh"},
+		{"uid": carolUID, "uuid": carolSID, "username": "carol", "directory": shared, "shell": "/bin/zsh"},
+	}}}
+	found := discoverWithin(context.Background(), clienter, nil, nil, outputLimits{rows: 1, bytes: maxOutputBytes})
 	var carol []row
 	for _, r := range found {
 		if r.User == "carol" {

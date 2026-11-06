@@ -878,9 +878,10 @@ func TestASharedHomeIsReportedForBothAccountsAfterTheBudgetIsGone(t *testing.T) 
 		t.Fatal(err)
 	}
 	// Two accounts, one home, distinct identities.
+	uid, uuid := testutil.Account()
 	roster := rosterFrom(
-		map[string]string{"uid": "501", "uuid": "", "username": "alice", "directory": home, "shell": "/bin/zsh"},
-		map[string]string{"uid": "502", "uuid": "", "username": "bob", "directory": home, "shell": "/bin/zsh"},
+		map[string]string{"uid": uid, "uuid": uuid, "username": "alice", "directory": home, "shell": "/bin/zsh"},
+		map[string]string{"uid": uid, "uuid": uuid, "username": "bob", "directory": home, "shell": "/bin/zsh"},
 	)
 	// Enough recorded projects that probing them outlasts the budget, so the deadline is
 	// gone by the time the second account is considered but the first has already been

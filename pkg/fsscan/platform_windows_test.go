@@ -3,6 +3,7 @@
 package fsscan
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -188,5 +189,62 @@ func TestExpandProfileVars(t *testing.T) {
 		if got := expandProfileVars(tc.raw, profile); got != tc.want {
 			t.Errorf("expandProfileVars(%q) = %q, want %q", tc.raw, got, tc.want)
 		}
+	}
+}
+
+// TestPrivilegedOwner: LocalSystem, BUILTIN\Administrators and TrustedInstaller pass an owner
+// check for any account, and another SID does not.
+func TestPrivilegedOwner(t *testing.T) {
+	for sid, want := range map[string]bool{
+		"S-1-5-18":     true,
+		"S-1-5-32-544": true,
+		"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464": true,
+		"S-1-5-32-545":        false, // BUILTIN\Users
+		"S-1-5-21-1-2-3-1001": false,
+		"":                    false,
+	} {
+		if got := privilegedOwner(sid); got != want {
+			t.Errorf("privilegedOwner(%q) = %v, want %v", sid, got, want)
+		}
+	}
+}
+
+// TestReadBoundedUnderChecksTheOwnerSID: a file the test creates reads for the process user's
+// SID and is refused for another account's, unless its owner is privileged. A runner account
+// can be an administrator, which makes new files Administrators-owned, so the actual owner is
+// read and the assertion follows it.
+func TestReadBoundedUnderChecksTheOwnerSID(t *testing.T) {
+	base := t.TempDir()
+	path := filepath.Join(base, "f.json")
+	testutil.WriteFile(t, path, `{}`)
+	tokenUser, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	me := tokenUser.User.Sid.String()
+	if _, err := ReadBoundedUnder(base, "f.json", ReadOpts{MaxSize: 1024, OwnerUID: me}); err != nil {
+		t.Errorf("a file owned by the expected SID must read: %v", err)
+	}
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, _, err := sd.Owner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = ReadBoundedUnder(base, "f.json", ReadOpts{MaxSize: 1024, OwnerUID: "S-1-5-21-1-2-3-1001"})
+	if privilegedOwner(owner.String()) {
+		if err != nil {
+			t.Errorf("a file owned by the privileged %s must read for any account: %v", owner, err)
+		}
+		return
+	}
+	if !errors.Is(err, ErrOwnerMismatch) {
+		t.Fatalf("expected ErrOwnerMismatch, got %v", err)
+	}
+	if got := ClassifyError(err); got != ClassOwnerMismatch {
+		t.Errorf("ClassifyError = %q, want %q", got, ClassOwnerMismatch)
 	}
 }

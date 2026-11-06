@@ -368,3 +368,15 @@ func TestListUserHomesObservesCancellation(t *testing.T) {
 		t.Error("ListUserHomes sent the roster query under a cancelled context")
 	}
 }
+
+// TestOwnerID: the owner is the account's identity, and an account with none gets a value no
+// owner has instead of "", which would disable the owner check.
+func TestOwnerID(t *testing.T) {
+	sid := "S-1-5-21-1-2-3-1001"
+	if got := (UserHome{ID: sid, UID: "1001"}).OwnerID(); got != sid {
+		t.Errorf("OwnerID = %q, want the SID", got)
+	}
+	if got := (UserHome{}).OwnerID(); got == "" {
+		t.Error("an account with no identity must not yield an empty owner")
+	}
+}

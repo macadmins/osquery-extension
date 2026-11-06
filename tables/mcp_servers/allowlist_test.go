@@ -989,7 +989,7 @@ func TestEveryRowCarriesItsHome(t *testing.T) {
 	testutil.WriteFile(t, filepath.Join(home, ".claude", "plugins", "cache", "mp", "p", "1.0.0",
 		".claude-plugin", "plugin.json"), `{"mcpServers":"./missing.json"}`)
 	rows := withoutStandingNotes(DiscoverAll(context.Background(), rosterOf(t, root), nil))
-	direct := discoverForHome(context.Background(), fsscan.UserHome{Name: "alice", Path: home},
+	direct := discoverForHome(context.Background(), fsscan.UserHome{Name: "alice", ID: ownerID(), Path: home},
 		time.Now().Add(time.Minute))
 	if len(rows) < 3 || len(direct) < 3 {
 		t.Fatalf("rows = %+v, direct = %+v, want the parse, settings and manifest diagnostics", rows, direct)

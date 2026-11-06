@@ -39,7 +39,7 @@ func TestRefusedSettingsDoNotReadAsNeverEnabled(t *testing.T) {
 		"1.0.0", ".mcp.json"), `{"mcpServers":{"srv":{"command":"npx","args":["x"]}}}`)
 	writeInstalledPlugins(t, home, map[string]string{"p@mp": "1.0.0"})
 
-	enablement, known, warnings := enabledPlugins(home)
+	enablement, known, warnings := enabledPlugins(home, ownerID())
 	if known {
 		t.Error("a refused settings file was reported as known, so an empty enablement " +
 			"map becomes a positive claim that no plugin was ever enabled")
@@ -103,7 +103,7 @@ func TestRefusedOrphanMarkerIsNotTreatedAsAbsent(t *testing.T) {
 	}
 	writeInstalledPlugins(t, home, map[string]string{"p@mp": "1.0.0"})
 
-	if got := versionSelection(home, filepath.Join(".claude", "plugins", "cache", "mp", "p",
+	if got := versionSelection(home, ownerID(), filepath.Join(".claude", "plugins", "cache", "mp", "p",
 		"1.0.0"), "mp", "p", map[string]map[string]struct{}{}, false); got != selectionUnknown {
 		t.Errorf("selection = %v, want selectionUnknown: a marker this scan could not read "+
 			"is not a marker that is absent", got)

@@ -54,7 +54,7 @@ func TestReadBoundedUnder_RefusesHardLink(t *testing.T) {
 	}
 }
 
-func TestReadBoundedUnder_RefusesForeignOwner(t *testing.T) {
+func TestReadBoundedUnder_RefusesOwnerMismatch(t *testing.T) {
 	base := t.TempDir()
 	testutil.WriteFile(t, filepath.Join(base, "f.json"), `{}`)
 
@@ -70,17 +70,17 @@ func TestReadBoundedUnder_RefusesForeignOwner(t *testing.T) {
 	// exercise it, and creating a file owned by another account needs privilege the test
 	// does not have. Passing the wrong expectation produces the same code path as the real
 	// attack -- a file whose owner is not the account whose home it was found under.
-	foreign := strconv.Itoa(os.Getuid() + 1)
-	if _, err := user.LookupId(foreign); err == nil {
+	otherUID := strconv.Itoa(os.Getuid() + 1)
+	if _, err := user.LookupId(otherUID); err == nil {
 		// Only cosmetic: the uid need not be unassigned, merely different.
-		t.Logf("uid %s exists on this host, which does not affect the comparison", foreign)
+		t.Logf("uid %s exists on this host, which does not affect the comparison", otherUID)
 	}
-	_, err := ReadBoundedUnder(base, "f.json", ReadOpts{MaxSize: 1024, OwnerUID: foreign})
-	if !errors.Is(err, ErrForeignOwner) {
-		t.Fatalf("expected ErrForeignOwner, got %v", err)
+	_, err := ReadBoundedUnder(base, "f.json", ReadOpts{MaxSize: 1024, OwnerUID: otherUID})
+	if !errors.Is(err, ErrOwnerMismatch) {
+		t.Fatalf("expected ErrOwnerMismatch, got %v", err)
 	}
-	if got := ClassifyError(err); got != ClassForeignOwner {
-		t.Errorf("ClassifyError = %q, want %q", got, ClassForeignOwner)
+	if got := ClassifyError(err); got != ClassOwnerMismatch {
+		t.Errorf("ClassifyError = %q, want %q", got, ClassOwnerMismatch)
 	}
 	if IsExpectedAbsent(err) {
 		t.Error("an owner refusal must not be reported as expected absence")
@@ -113,5 +113,14 @@ func TestClassifyErrorOverTheRealReadPath(t *testing.T) {
 				t.Errorf("ClassifyError(%v) = %q, want %q", err, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestPrivilegedOwner: root passes an owner check for any account, and no other uid does.
+func TestPrivilegedOwner(t *testing.T) {
+	for uid, want := range map[uint32]bool{0: true, 1: false, 501: false, 1000: false} {
+		if got := privilegedOwner(uid); got != want {
+			t.Errorf("privilegedOwner(%d) = %v, want %v", uid, got, want)
+		}
 	}
 }

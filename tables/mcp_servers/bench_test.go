@@ -44,7 +44,7 @@ func BenchmarkDiscoverRecordedProjects(b *testing.B) {
 			}
 			testutil.WriteFile(b, filepath.Join(home, ".claude.json"),
 				`{"projects":{`+strings.Join(entries, ",")+`}}`)
-			account := fsscan.UserHome{Name: "alice", Path: home}
+			account := fsscan.UserHome{Name: "alice", ID: ownerID(), Path: home}
 
 			found := discoverForHome(context.Background(), account, time.Now().Add(time.Minute))
 			size := 0

@@ -84,6 +84,19 @@ type UserHome struct {
 	Path string
 }
 
+// OwnerID is the value for ReadOpts.OwnerUID on a read under this account's home: the whole
+// SID on Windows and the uid on POSIX, which is what ID holds on each.
+//
+// An account whose roster row carried no identity yields a value no owner has, rather than "",
+// which would switch the owner check off. Every file but a privileged owner's is then refused
+// and reported, which is the direction to fail for an account that cannot be identified.
+func (home UserHome) OwnerID() string {
+	if home.ID == "" {
+		return "unidentified"
+	}
+	return home.ID
+}
+
 // OmissionReason is the closed set of reasons an account's home was not inspected.
 //
 // Carried alongside Reason rather than instead of it, because the two have different
