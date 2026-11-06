@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Synthetic com.apple.wifi.known-networks.plist (structure from macOS 27; values made up, no location data). -->
+<plist version="1.0">
+<dict>
+	<key>wifi.network.ssid.CorpWiFi</key>
+	<dict>
+		<key>SSID</key><data>Q29ycFdpRmk=</data>
+		<key>SupportedSecurityTypes</key><string>WPA2 Enterprise</string>
+		<key>BSSList</key>
+		<array>
+			<dict><key>BSSID</key><string>2a:b:8b:0:f2:35</string><key>LastAssociatedAt</key><date>2026-10-03T07:10:00Z</date></dict>
+			<dict><key>BSSID</key><string>26:b:8b:0:f2:34</string><key>LastAssociatedAt</key><date>2026-10-01T09:00:00Z</date></dict>
+		</array>
+	</dict>
+	<key>wifi.network.ssid.CorpGuest</key>
+	<dict>
+		<key>SSID</key><data>Q29ycEd1ZXN0</data>
+		<key>SupportedSecurityTypes</key><string>Open</string>
+		<key>BSSList</key>
+		<array>
+			<dict><key>BSSID</key><string>2a:0b:8b:00:f2:35</string><key>LastAssociatedAt</key><date>2026-09-01T12:00:00Z</date></dict>
+		</array>
+	</dict>
+	<key>wifi.network.ssid.Home</key>
+	<dict>
+		<key>SSID</key><data>SG9tZQ==</data>
+		<key>BSSList</key>
+		<array>
+			<dict><key>BSSID</key><string>1c:b:8b:0:f2:34</string><key>LastAssociatedAt</key><date>2026-10-02T20:00:00Z</date></dict>
+		</array>
+	</dict>
+	<key>SomeOtherKey</key><string>ignored</string>
+</dict>
+</plist>

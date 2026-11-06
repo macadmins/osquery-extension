@@ -60,6 +60,10 @@ exclude:
     - tables/puppet/puppet_logs.go
     - tables/puppet/puppet_state.go
     - tables/puppet/yaml.go
+    # darwin/windows backends are build-tagged out of the Linux coverage run;
+    # the active !darwin && !windows path (dot1x_other.go) stays covered.
+    - tables/dot1x/dot1x_darwin.go
+    - tables/dot1x/dot1x_windows.go
     # - \.pb\.go$ # excludes all protobuf generated files
     # - ^pkg/bar # exclude package `pkg/bar`
 
