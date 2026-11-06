@@ -1,6 +1,7 @@
 package crowdstrike_falcon
 
 import (
+	"context"
 	"testing"
 
 	"github.com/macadmins/osquery-extension/pkg/utils"
@@ -183,7 +184,7 @@ rfm-state=true,`,
 				Data: tt.mockOsqData,
 			}
 
-			output, err := runCrowdstrikeFalconLinux(runner, fs, mockOsqueryClient)
+			output, err := runCrowdstrikeFalconLinux(context.Background(), runner, fs, mockOsqueryClient)
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
@@ -220,7 +221,8 @@ func TestRunCrowdstrikeFalconLinuxQueryError(t *testing.T) {
 	runner := utils.Runner{Runner: utils.MockCmdRunner{}}
 	fs := utils.MockFileSystem{FileExists: true}
 
-	output, err := runCrowdstrikeFalconLinux(runner, fs, utils.ErrorOsqueryClient{Err: errors.New("query failed")})
+	output, err := runCrowdstrikeFalconLinux(context.Background(), runner, fs,
+		utils.ErrorOsqueryClient{Err: errors.New("query failed")})
 	assert.Error(t, err)
 	assert.Empty(t, output)
 	assert.ErrorContains(t, err, "query failed")
@@ -286,13 +288,14 @@ rfm-state=true,`}}}}
 	clienter := &utils.MockOsqueryClienter{Data: map[string][]map[string]string{
 		"SELECT 1 FROM processes WHERE name like 'falcon-sensor%';": {{"1": "1"}},
 	}}
-	rows, err := generate("linux", runner, fs, clienter)
+	rows, err := generate(context.Background(), "linux", runner, fs, clienter)
 	assert.NoError(t, err)
 	assert.Len(t, rows, 1)
 	assert.Equal(t, "true", rows[0]["sensor_loaded"])
 	assert.Equal(t, "F3EDC954D286243B5BD94130C2F2647D", rows[0]["agent_id"])
 
-	_, err = generate("linux", runner, fs, &utils.MockOsqueryClienter{Err: errors.New("no socket")})
+	_, err = generate(context.Background(), "linux", runner, fs,
+		&utils.MockOsqueryClienter{Err: errors.New("no socket")})
 	assert.Error(t, err)
 }
 
@@ -301,7 +304,8 @@ rfm-state=true,`}}}}
 func TestGenerateOnLinuxWithoutFalconctlOpensNoClient(t *testing.T) {
 	runner := utils.Runner{Runner: utils.MockCmdRunner{}}
 	fs := utils.MockFileSystem{FileExists: false}
-	rows, err := generate("linux", runner, fs, &utils.MockOsqueryClienter{Err: errors.New("no socket")})
+	rows, err := generate(context.Background(), "linux", runner, fs,
+		&utils.MockOsqueryClienter{Err: errors.New("no socket")})
 	assert.NoError(t, err)
 	assert.Len(t, rows, 1)
 	assert.Equal(t, "false", rows[0]["sensor_loaded"])
@@ -309,6 +313,26 @@ func TestGenerateOnLinuxWithoutFalconctlOpensNoClient(t *testing.T) {
 	// A falconctl that cannot be checked is an error, reported as itself rather than as the
 	// unreachable socket.
 	fs = utils.MockFileSystem{Err: errors.New("input/output error")}
-	_, err = generate("linux", runner, fs, &utils.MockOsqueryClienter{Err: errors.New("no socket")})
+	_, err = generate(context.Background(), "linux", runner, fs,
+		&utils.MockOsqueryClienter{Err: errors.New("no socket")})
 	assert.EqualError(t, err, "input/output error")
+}
+
+// TestGenerateOnLinuxWithCancelledContextOpensNoClient: with falconctl installed, a context
+// already cancelled returns its error without a client being opened.
+func TestGenerateOnLinuxWithCancelledContextOpensNoClient(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	runner := utils.Runner{Runner: utils.MockCmdRunner{}}
+	fs := utils.MockFileSystem{FileExists: true}
+	clienter := &utils.CancelAfterQueryClienter{
+		Inner: &utils.MockOsqueryClienter{Data: map[string][]map[string]string{
+			"SELECT 1 FROM processes WHERE name like 'falcon-sensor%';": {{"1": "1"}},
+		}},
+		Cancel: func() {},
+	}
+
+	_, err := generate(ctx, "linux", runner, fs, clienter)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Zero(t, clienter.Opened)
 }

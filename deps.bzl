@@ -98,18 +98,6 @@ def go_dependencies():
         version = "v1.14.1",
     )
     go_repository(
-        name = "com_github_sirupsen_logrus",
-        importpath = "github.com/sirupsen/logrus",
-        sum = "h1:dueUQJ1C2q9oE3F7wvmSGAaVtTmUizReu6fjN8uqzbQ=",
-        version = "v1.9.3",
-    )
-    go_repository(
-        name = "com_github_stretchr_objx",
-        importpath = "github.com/stretchr/objx",
-        sum = "h1:xuMeJ0Sdp5ZMRXx/aWO6RZxdr3beISkG5/G/aIRr3pY=",
-        version = "v0.5.2",
-    )
-    go_repository(
         name = "com_github_stretchr_testify",
         importpath = "github.com/stretchr/testify",
         sum = "h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=",

@@ -26,12 +26,13 @@ func SofaUnpatchedCVEsColumns() []table.ColumnDefinition {
 }
 
 func SofaUnpatchedCVEsGenerate(ctx context.Context, queryContext table.QueryContext, socketPath string, opts ...Option) ([]map[string]string, error) {
-	return unpatchedCVEs(queryContext, utils.SocketClienter(socketPath), opts...)
+	return unpatchedCVEs(ctx, queryContext, utils.SocketClienter(socketPath), opts...)
 }
 
 // unpatchedCVEs answers the query, asking osquery through clienter for this host's OS version
 // when the query names none.
-func unpatchedCVEs(queryContext table.QueryContext, clienter utils.OsqueryClienter, opts ...Option) ([]map[string]string, error) {
+func unpatchedCVEs(ctx context.Context, queryContext table.QueryContext,
+	clienter utils.OsqueryClienter, opts ...Option) ([]map[string]string, error) {
 	url := SofaV1URL
 	if constraintList, present := queryContext.Constraints["url"]; present {
 		// 'url' is in the where clause
@@ -55,7 +56,7 @@ func unpatchedCVEs(queryContext table.QueryContext, clienter utils.OsqueryClient
 
 	if osVersion == "" {
 		var err error
-		osVersion, err = currentOSVersion(clienter)
+		osVersion, err = currentOSVersion(ctx, clienter)
 		if err != nil {
 			return nil, err
 		}

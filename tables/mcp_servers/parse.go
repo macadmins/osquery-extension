@@ -140,19 +140,19 @@ func extractEnvelope(raw []byte) (envelopeEntries, int, error) {
 // A per-entry decode keeps the healthy ones. The skip count matters because a server that is
 // configured but unreadable is not the same as one that is absent, so the shortfall is said
 // out loud on a row of its own. Note what that does and does not buy: the diagnostic is a
-// separate row, so `warning = ”` selects the healthy servers and discards the notice with
-// the rest. Counting here is what makes the notice exist at all; reading it is the
+// separate row, so selecting an empty warning keeps the healthy servers and discards the
+// notice with the rest. Counting here is what makes the notice exist at all; reading it is the
 // operator's second query, and the README says so.
 //
 // The skip count is now also what makes scan_complete answerable for this file.
 //
-// This carried a KNOWN GAP saying no single predicate expressed "complete": `warning = ”`
-// selects the healthy servers and discards the notice along with them, so a short list was
-// indistinguishable from a full one. The two ways out were propagating incompleteness onto
-// every row -- which makes a partly read home unreachable through the documented filter --
-// or adding a column. The column was added, scoped: warnEntriesSkipped is source-scope, so
-// it marks the rows of this file and not the rest of the account, which is what makes
-// `WHERE scan_complete = 1` select a usable partial inventory rather than nothing.
+// This carried a KNOWN GAP saying no single predicate expressed "complete": selecting an empty
+// warning keeps the healthy servers and discards the notice along with them, so a short list was
+// indistinguishable from a full one. The two ways out were propagating incompleteness onto every
+// row -- which makes a partly read home unreachable through the documented filter -- or adding a
+// column. The column was added, scoped: warnEntriesSkipped is source-scope, so it marks the rows of
+// this file and not the rest of the account, which is what makes `WHERE scan_complete = 1` select a
+// usable partial inventory rather than nothing.
 func decodeInto(out map[string]rawServerEntry, in map[string]json.RawMessage) int {
 	skipped := 0
 	for name, value := range in {
@@ -180,8 +180,8 @@ func decodeInto(out map[string]rawServerEntry, in map[string]json.RawMessage) in
 // The one funnel of the four that was already safe: a count is an integer. It is now a code
 // plus that count, which buys something the sentence did not -- warnEntriesSkipped is
 // source-scope, so finishProcessing marks every row from this file as an incomplete listing
-// of it. That is what closes the gap recorded below: `warning = ”` selects the healthy
-// servers and discards this notice with the rest, so before scan_complete existed there was
+// of it. That is what closes the gap recorded below: selecting an empty warning keeps the
+// healthy servers and discards this notice with the rest, so before scan_complete existed there was
 // no single predicate for "this file was read in full".
 func skippedEntryWarning(skipped int) []Server {
 	if skipped == 0 {

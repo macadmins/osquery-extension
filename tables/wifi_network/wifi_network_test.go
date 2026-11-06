@@ -1,6 +1,7 @@
 package wifi_network
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -85,7 +86,7 @@ func TestGetWifiStatus(t *testing.T) {
 			"SELECT * FROM wifi_status;": {{"interface": "en0"}},
 		},
 	}
-	result, err := getWifiStatus(mockOsqueryClient)
+	result, err := getWifiStatus(context.Background(), mockOsqueryClient)
 	expected := map[string]string{"interface": "en0"}
 	assert.NoError(t, err)
 	assert.Equal(t, expected, result)
@@ -94,7 +95,7 @@ func TestGetWifiStatus(t *testing.T) {
 func TestGetWifiStatusReturnsQueryErrors(t *testing.T) {
 	expectedErr := errors.New("query failed")
 
-	result, err := getWifiStatus(utils.ErrorOsqueryClient{Err: expectedErr})
+	result, err := getWifiStatus(context.Background(), utils.ErrorOsqueryClient{Err: expectedErr})
 
 	require.ErrorIs(t, err, expectedErr)
 	assert.Nil(t, result)
@@ -398,7 +399,7 @@ func TestGenerateWithDeps(t *testing.T) {
 	}
 	mockCmdExecutor := happyCommandExecutor()
 
-	result, err := generateWithDeps(mockOsqueryClient, mockCmdExecutor)
+	result, err := generateWithDeps(context.Background(), mockOsqueryClient, mockCmdExecutor)
 
 	require.NoError(t, err)
 	assert.Equal(t, []map[string]string{
@@ -420,7 +421,8 @@ func TestGenerateWithDeps(t *testing.T) {
 func TestGenerateWithDepsReturnsWifiStatusErrors(t *testing.T) {
 	expectedErr := errors.New("query failed")
 
-	result, err := generateWithDeps(utils.ErrorOsqueryClient{Err: expectedErr}, happyCommandExecutor())
+	result, err := generateWithDeps(context.Background(),
+		utils.ErrorOsqueryClient{Err: expectedErr}, happyCommandExecutor())
 
 	require.ErrorIs(t, err, expectedErr)
 	assert.Nil(t, result)
@@ -430,13 +432,33 @@ func TestGenerateWithDepsReturnsWifiStatusErrors(t *testing.T) {
 // through the clienter it is given, and reports a client that cannot be opened.
 func TestGenerateOpensItsClientThroughTheClienter(t *testing.T) {
 	data := map[string][]map[string]string{"SELECT * FROM wifi_status;": {wifiStatusFixture()}}
-	got, err := generate(&utils.MockOsqueryClienter{Data: data}, happyCommandExecutor())
+	got, err := generate(context.Background(), &utils.MockOsqueryClienter{Data: data},
+		happyCommandExecutor())
 	assert.NoError(t, err)
-	want, err := generateWithDeps(&utils.MockOsqueryClient{Data: data}, happyCommandExecutor())
+	want, err := generateWithDeps(context.Background(), &utils.MockOsqueryClient{Data: data},
+		happyCommandExecutor())
 	assert.NoError(t, err)
 	assert.NotEmpty(t, got)
 	assert.Equal(t, want, got)
 
-	_, err = generate(&utils.MockOsqueryClienter{Err: errors.New("no socket")}, happyCommandExecutor())
+	_, err = generate(context.Background(),
+		&utils.MockOsqueryClienter{Err: errors.New("no socket")}, happyCommandExecutor())
 	assert.Error(t, err)
+}
+
+// TestGenerateWithCancelledContextOpensNoClient: a context already cancelled returns its error
+// without a client being opened.
+func TestGenerateWithCancelledContextOpensNoClient(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	clienter := &utils.CancelAfterQueryClienter{
+		Inner: &utils.MockOsqueryClienter{Data: map[string][]map[string]string{
+			"SELECT * FROM wifi_status;": {wifiStatusFixture()},
+		}},
+		Cancel: func() {},
+	}
+
+	_, err := generate(ctx, clienter, happyCommandExecutor())
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Zero(t, clienter.Opened)
 }

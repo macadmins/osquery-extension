@@ -177,10 +177,14 @@ func AltSystemInfoColumns() []table.ColumnDefinition {
 }
 
 // IsMacOS150 returns true if the host is running macOS 15.0
-func IsMacOS150(client utils.OsqueryClient) (bool, error) {
+func IsMacOS150(ctx context.Context, client utils.OsqueryClient) (bool, error) {
 	versionQuery := "select * from os_version where name = 'macOS' and major = '15' and minor = 0;"
 
-	resp, err := client.QueryRows(versionQuery)
+	// osquery-go sends the query even when the context is done, so check it before the call.
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	resp, err := client.QueryRowsContext(ctx, versionQuery)
 	if err != nil {
 		return false, err
 	}
@@ -189,10 +193,14 @@ func IsMacOS150(client utils.OsqueryClient) (bool, error) {
 }
 
 // Fallback returns the fields from the system_info table
-func Fallback(client utils.OsqueryClient) ([]map[string]string, error) {
+func Fallback(ctx context.Context, client utils.OsqueryClient) ([]map[string]string, error) {
 	infoQuery := "select * from system_info;"
 
-	resp, err := client.QueryRow(infoQuery)
+	// osquery-go sends the query even when the context is done, so check it before the call.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	resp, err := client.QueryRowContext(ctx, infoQuery)
 	if err != nil {
 		return nil, err
 	}
@@ -216,6 +224,7 @@ var globalCache = new(Cache)
 // Most data is cached forever because it never changes. Hostname data is cached for 5 minutes.
 func AltSystemInfoGenerate(ctx context.Context, queryContext table.QueryContext, socketPath string) ([]map[string]string, error) {
 	return GenerateInfo(
+		ctx,
 		utils.NewRunner().Runner,
 		utils.SocketClienter(socketPath),
 		globalCache,
@@ -223,10 +232,16 @@ func AltSystemInfoGenerate(ctx context.Context, queryContext table.QueryContext,
 }
 
 func GenerateInfo(
+	ctx context.Context,
 	runner utils.CmdRunner,
 	clienter utils.OsqueryClienter,
 	cache *Cache,
 ) ([]map[string]string, error) {
+	// osquery-go cancels the context only once osquery has closed the connection, so a query
+	// already cancelled has no reader, and opening a client can wait out the client's timeout.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 
@@ -238,7 +253,7 @@ func GenerateInfo(
 		}
 		defer osqueryClient.Close()
 
-		return Fallback(osqueryClient)
+		return Fallback(ctx, osqueryClient)
 	}
 
 	if cache.IsMacOS15 == nil {
@@ -249,7 +264,7 @@ func GenerateInfo(
 		}
 		defer osqueryClient.Close()
 
-		isMacOS15, err := IsMacOS150(osqueryClient)
+		isMacOS15, err := IsMacOS150(ctx, osqueryClient)
 		if err != nil {
 			return nil, fmt.Errorf("could not determine if host is running macOS 15.0: %w", err)
 		}
@@ -258,7 +273,7 @@ func GenerateInfo(
 
 		// if the host is not running macOS 15.0, fallback to the system_info table
 		if !isMacOS15 {
-			return Fallback(osqueryClient)
+			return Fallback(ctx, osqueryClient)
 		}
 	}
 
@@ -303,6 +318,7 @@ func GenerateInfo(
 			if err != nil {
 				return fmt.Errorf("could not get host data: %w", err)
 			}
+			cache.lastHost = time.Now()
 			return nil
 		}))
 

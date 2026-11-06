@@ -14,12 +14,13 @@ type OsqueryClienter interface {
 }
 
 // OsqueryClient is the part of osquery-go's *ExtensionManagerClient the tables use. The context
-// form bounds the wait for the client's lock by the table's own query; it does not stop a query
+// forms bound the wait for the client's lock by the table's own query; they do not stop a query
 // once the lock is held, so a caller checks ctx.Err() first.
 type OsqueryClient interface {
 	QueryRows(query string) ([]map[string]string, error)
 	QueryRow(query string) (map[string]string, error)
 	QueryRowsContext(ctx context.Context, query string) ([]map[string]string, error)
+	QueryRowContext(ctx context.Context, query string) (map[string]string, error)
 	Close()
 }
 
@@ -80,6 +81,15 @@ func (m *MockOsqueryClient) QueryRowsContext(ctx context.Context, query string) 
 	return m.QueryRows(query)
 }
 
+// QueryRowContext answers as QueryRow does, or with the context's error once it is done.
+func (m *MockOsqueryClient) QueryRowContext(ctx context.Context,
+	query string) (map[string]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return m.QueryRow(query)
+}
+
 func (m *MockOsqueryClient) Close() {}
 
 // ErrorOsqueryClient fails every query with Err, for tests of the path where osquery cannot
@@ -100,6 +110,10 @@ func (e ErrorOsqueryClient) QueryRows(string) ([]map[string]string, error) { ret
 func (e ErrorOsqueryClient) QueryRow(string) (map[string]string, error) { return nil, e.err() }
 
 func (e ErrorOsqueryClient) QueryRowsContext(context.Context, string) ([]map[string]string, error) {
+	return nil, e.err()
+}
+
+func (e ErrorOsqueryClient) QueryRowContext(context.Context, string) (map[string]string, error) {
 	return nil, e.err()
 }
 

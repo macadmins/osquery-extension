@@ -1,6 +1,7 @@
 package sofa
 
 import (
+	"context"
 	_ "embed"
 	"errors"
 	"testing"
@@ -111,13 +112,14 @@ func TestGetCurrentOSVersion(t *testing.T) {
 			"SELECT * FROM os_version;": {{"version": "1.0.0"}},
 		},
 	}
-	version, err := getCurrentOSVersion(mockClient)
+	version, err := getCurrentOSVersion(context.Background(), mockClient)
 	assert.NoError(t, err)
 	assert.Equal(t, "1.0.0", version)
 }
 
 func TestGetCurrentOSVersionQueryError(t *testing.T) {
-	_, err := getCurrentOSVersion(utils.ErrorOsqueryClient{Err: errors.New("query failed")})
+	_, err := getCurrentOSVersion(context.Background(),
+		utils.ErrorOsqueryClient{Err: errors.New("query failed")})
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "query failed")
 }
@@ -241,16 +243,35 @@ func TestQueriesAskOsqueryThroughTheClienter(t *testing.T) {
 	}}
 	options := []Option{WithCacheDir(t.TempDir()), WithUserAgent("test")}
 
-	rows, err := securityReleaseInfo(queryContext, clienter, options...)
+	rows, err := securityReleaseInfo(context.Background(), queryContext, clienter, options...)
 	assert.NoError(t, err)
 	assert.NotEmpty(t, rows)
 	assert.Equal(t, "14.4.1", rows[0]["os_version"])
-	_, err = unpatchedCVEs(queryContext, clienter, options...)
+	_, err = unpatchedCVEs(context.Background(), queryContext, clienter, options...)
 	assert.NoError(t, err)
 
 	failing := &utils.MockOsqueryClienter{Err: errors.New("no socket")}
-	_, err = securityReleaseInfo(queryContext, failing, options...)
+	_, err = securityReleaseInfo(context.Background(), queryContext, failing, options...)
 	assert.Error(t, err)
-	_, err = unpatchedCVEs(queryContext, failing, options...)
+	_, err = unpatchedCVEs(context.Background(), queryContext, failing, options...)
 	assert.Error(t, err)
+}
+
+// TestQueriesWithCancelledContextOpenNoClient: a context already cancelled returns its error
+// from both tables without a client being opened.
+func TestQueriesWithCancelledContextOpenNoClient(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	clienter := &utils.CancelAfterQueryClienter{
+		Inner: &utils.MockOsqueryClienter{Data: map[string][]map[string]string{
+			"SELECT * FROM os_version;": {{"version": "14.4.1"}},
+		}},
+		Cancel: func() {},
+	}
+
+	_, err := securityReleaseInfo(ctx, table.QueryContext{}, clienter)
+	assert.ErrorIs(t, err, context.Canceled)
+	_, err = unpatchedCVEs(ctx, table.QueryContext{}, clienter)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Zero(t, clienter.Opened)
 }

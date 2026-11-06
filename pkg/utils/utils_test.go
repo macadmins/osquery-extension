@@ -8,25 +8,21 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// TestFileExists: the answer comes from the FileSystem passed in, so a mock decides it without
+// the disk, and the real filesystem, passed or nil, reports a file and its removal.
 func TestFileExists(t *testing.T) {
-	// Create a temporary file for testing
-	fs := MockFileSystem{
-		FileExists: true,
-		Err:        nil,
-	}
-	tempFile, err := os.CreateTemp("", "test")
-	assert.NoError(t, err, "Failed to create temp file")
+	missing := filepath.Join(t.TempDir(), "missing")
+	assert.True(t, FileExists(MockFileSystem{FileExists: true}, missing))
+	assert.False(t, FileExists(MockFileSystem{FileExists: false}, missing))
+	assert.False(t, FileExists(MockFileSystem{Err: os.ErrPermission}, missing))
 
-	assert.NoError(t, tempFile.Close())
-
-	// Test that FileExists returns true for an existing file
-	assert.True(t, FileExists(fs, tempFile.Name()), "Expected file to exist")
-
-	// Delete the temporary file
-	assert.NoError(t, os.Remove(tempFile.Name()))
-
-	// Test that FileExists returns false for a non-existing file
-	assert.False(t, FileExists(fs, tempFile.Name()), "Expected file to not exist")
+	file := filepath.Join(t.TempDir(), "file")
+	assert.NoError(t, os.WriteFile(file, nil, 0o600))
+	assert.True(t, FileExists(OSFileSystem{}, file))
+	assert.True(t, FileExists(nil, file))
+	assert.False(t, FileExists(OSFileSystem{}, filepath.Dir(file)), "a directory is not a file")
+	assert.NoError(t, os.Remove(file))
+	assert.False(t, FileExists(OSFileSystem{}, file))
 }
 
 // TestFileExistsUnderARegularFile: a path below a regular file fails to stat with ENOTDIR rather

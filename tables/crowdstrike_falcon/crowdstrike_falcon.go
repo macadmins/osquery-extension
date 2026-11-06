@@ -39,13 +39,15 @@ func CrowdstrikeFalconColumns() []table.ColumnDefinition {
 }
 
 func CrowdstrikeFalconGenerate(ctx context.Context, queryContext table.QueryContext, socketPath string) ([]map[string]string, error) {
-	return generate(runtime.GOOS, utils.NewRunner(), utils.OSFileSystem{}, utils.SocketClienter(socketPath))
+	return generate(ctx, runtime.GOOS, utils.NewRunner(), utils.OSFileSystem{},
+		utils.SocketClienter(socketPath))
 }
 
 // generate reads the sensor's state for goos; on Linux, when falconctl is installed, it opens one
 // client through clienter to ask osquery whether the sensor is loaded, and closes it when the
 // query returns.
-func generate(goos string, r utils.Runner, fs utils.FileSystem, clienter utils.OsqueryClienter) ([]map[string]string, error) {
+func generate(ctx context.Context, goos string, r utils.Runner, fs utils.FileSystem,
+	clienter utils.OsqueryClienter) ([]map[string]string, error) {
 	var results []map[string]string
 	var output = CrowdStrikeOutput{}
 	var err error
@@ -67,12 +69,17 @@ func generate(goos string, r utils.Runner, fs utils.FileSystem, clienter utils.O
 			}
 			return nil, err
 		}
+		// osquery-go cancels the context only once osquery has closed the connection, so a query
+		// already cancelled has no reader, and opening a client can wait out the client's timeout.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		osqueryClient, err := clienter.NewOsqueryClient()
 		if err != nil {
 			return nil, err
 		}
 		defer osqueryClient.Close()
-		output, err = runCrowdstrikeFalconLinux(r, fs, osqueryClient)
+		output, err = runCrowdstrikeFalconLinux(ctx, r, fs, osqueryClient)
 		if err != nil {
 			fmt.Println(err)
 			return nil, err
@@ -90,7 +97,8 @@ func generate(goos string, r utils.Runner, fs utils.FileSystem, clienter utils.O
 	return results, nil
 }
 
-func runCrowdstrikeFalconLinux(r utils.Runner, fs utils.FileSystem, client utils.OsqueryClient) (CrowdStrikeOutput, error) {
+func runCrowdstrikeFalconLinux(ctx context.Context, r utils.Runner, fs utils.FileSystem,
+	client utils.OsqueryClient) (CrowdStrikeOutput, error) {
 	var output CrowdStrikeOutput
 
 	_, err := fs.Stat(falconCtlPath["linux"])
@@ -102,7 +110,11 @@ func runCrowdstrikeFalconLinux(r utils.Runner, fs utils.FileSystem, client utils
 	}
 
 	falconProcessQuery := "SELECT 1 FROM processes WHERE name like 'falcon-sensor%';"
-	loadedState, err := client.QueryRows(falconProcessQuery)
+	// osquery-go sends the query even when the context is done, so check it before the call.
+	if err := ctx.Err(); err != nil {
+		return output, err
+	}
+	loadedState, err := client.QueryRowsContext(ctx, falconProcessQuery)
 	if err != nil {
 		return output, err
 	}

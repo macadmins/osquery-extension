@@ -57,22 +57,29 @@ func WifiNetworkGenerate(
 	queryContext table.QueryContext,
 	socketPath string,
 ) ([]map[string]string, error) {
-	return generate(utils.SocketClienter(socketPath), CmdExecutor{})
+	return generate(ctx, utils.SocketClienter(socketPath), CmdExecutor{})
 }
 
 // generate opens one client through clienter for the query, to read the wifi interface from
 // osquery, and closes it when the query returns.
-func generate(clienter utils.OsqueryClienter, cmdExecutor CommandExecutor) ([]map[string]string, error) {
+func generate(ctx context.Context, clienter utils.OsqueryClienter,
+	cmdExecutor CommandExecutor) ([]map[string]string, error) {
+	// osquery-go cancels the context only once osquery has closed the connection, so a query
+	// already cancelled has no reader, and opening a client can wait out the client's timeout.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	osqueryClient, err := clienter.NewOsqueryClient()
 	if err != nil {
 		return nil, err
 	}
 	defer osqueryClient.Close()
-	return generateWithDeps(osqueryClient, cmdExecutor)
+	return generateWithDeps(ctx, osqueryClient, cmdExecutor)
 }
 
-func generateWithDeps(client utils.OsqueryClient, cmdExecutor CommandExecutor) ([]map[string]string, error) {
-	wifiStatus, err := getWifiStatus(client)
+func generateWithDeps(ctx context.Context, client utils.OsqueryClient,
+	cmdExecutor CommandExecutor) ([]map[string]string, error) {
+	wifiStatus, err := getWifiStatus(ctx, client)
 	if err != nil {
 		return nil, err
 	}
@@ -86,10 +93,14 @@ func generateWithDeps(client utils.OsqueryClient, cmdExecutor CommandExecutor) (
 }
 
 // getWifiInterface checks the wifi_status table to determine the wifi interface
-func getWifiStatus(client utils.OsqueryClient) (map[string]string, error) {
+func getWifiStatus(ctx context.Context, client utils.OsqueryClient) (map[string]string, error) {
 	wifiStatusQuery := "SELECT * FROM wifi_status;"
 
-	resp, err := client.QueryRow(wifiStatusQuery)
+	// osquery-go sends the query even when the context is done, so check it before the call.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	resp, err := client.QueryRowContext(ctx, wifiStatusQuery)
 	if err != nil {
 		return nil, err
 	}
