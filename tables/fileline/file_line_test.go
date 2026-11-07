@@ -42,7 +42,7 @@ func TestProcessFile(t *testing.T) {
 		assert.NoError(t, tmpFile2.Close())
 
 		path := filepath.Join(filepath.Dir(tmpFile1.Name()), "testfile%-*.txt")
-		fs := utils.MockFileSystem{FileExists: true, Err: nil}
+		fs := utils.OSFileSystem{}
 		lines, err := processFile(path, true, fs)
 		assert.NoError(t, err)
 		assert.Len(t, lines, 4)
@@ -60,7 +60,7 @@ func TestProcessFile(t *testing.T) {
 		assert.NoError(t, err)
 		assert.NoError(t, tmpFile.Close())
 
-		fs := utils.MockFileSystem{FileExists: true, Err: nil}
+		fs := utils.OSFileSystem{}
 
 		lines, err := processFile(tmpFile.Name(), false, fs)
 		assert.NoError(t, err)
@@ -74,7 +74,7 @@ func TestProcessFile(t *testing.T) {
 	})
 
 	t.Run("read error is returned without wildcard", func(t *testing.T) {
-		lines, err := processFile(filepath.Join(t.TempDir(), "missing.txt"), false, utils.MockFileSystem{FileExists: true})
+		lines, err := processFile(filepath.Join(t.TempDir(), "missing.txt"), false, utils.OSFileSystem{})
 		assert.Error(t, err)
 		assert.Nil(t, lines)
 	})
@@ -85,7 +85,7 @@ func TestProcessFile(t *testing.T) {
 		assert.NoError(t, err)
 
 		path := filepath.Join(filepath.Dir(tmpFile), "testfile%.txt")
-		lines, err := processFile(path, true, utils.MockFileSystem{FileExists: false})
+		lines, err := processFile(path, true, utils.OSFileSystem{})
 		assert.Error(t, err)
 		assert.Nil(t, lines)
 	})
@@ -103,7 +103,7 @@ func TestReadLines(t *testing.T) {
 		_, err = tmpFile.WriteString("line1\nline2\n")
 		assert.NoError(t, err)
 		assert.NoError(t, tmpFile.Close())
-		fs := utils.MockFileSystem{FileExists: true, Err: nil}
+		fs := utils.OSFileSystem{}
 		lines, err := readLines(tmpFile.Name(), fs)
 		assert.NoError(t, err)
 		assert.Len(t, lines, 2)

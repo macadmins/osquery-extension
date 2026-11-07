@@ -3,6 +3,8 @@
 package testutil
 
 import (
+	"io/fs"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/sys/windows"
@@ -42,4 +44,30 @@ func PrivilegedOwner(path string) bool {
 		panic("testutil: no owner recorded for " + path)
 	}
 	return privilegedSIDs[owner.String()]
+}
+
+// OwnAsTestAccount gives every file and directory under root to the user the test runs as, when
+// Windows made a privileged group its owner, as it does for files an elevated administrator
+// creates. A test of the owner check then exercises the match against the account's own SID and
+// the refusal of another, which a privileged owner would pass. The process may always name its
+// own user SID as an object's owner, and the creator of a file in its temporary directory holds
+// the right to change the owner.
+func OwnAsTestAccount(root string) error {
+	tokenUser, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return err
+	}
+	if privilegedSIDs[tokenUser.User.Sid.String()] {
+		return nil
+	}
+	return filepath.WalkDir(root, func(path string, _ fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !PrivilegedOwner(path) {
+			return nil
+		}
+		return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
+			windows.OWNER_SECURITY_INFORMATION, tokenUser.User.Sid, nil, nil, nil)
+	})
 }

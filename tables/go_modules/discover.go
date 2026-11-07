@@ -209,7 +209,8 @@ func discoverWithin(ctx context.Context, clienter utils.OsqueryClienter,
 		}
 	}
 
-	// Accounts that share a home are scanned once and reported once each.
+	// Scans are cached by account identity and home, see devclients.ScanKey, and every account is
+	// reported once; accounts with the same identity and home share one scan.
 	scanned := make(map[string][]row, len(enumerated.Homes))
 	remaining := limits
 	for _, home := range enumerated.Homes {
@@ -259,9 +260,9 @@ func discoverWithin(ctx context.Context, clienter utils.OsqueryClienter,
 // The output limits apply to cached rows too, since they count again for each account they are
 // reported under.
 //
-// The home path alone is not the whole cache key on Windows, where discovery also reads the
-// account's own registry hive; see devclients.ScanKey. pathFilter is the same for every account
-// in one query, so a cached scan is the same scan another account sharing the home would make.
+// The cache is keyed by account identity and home, see devclients.ScanKey. pathFilter is the
+// same for every account in one query, so a cached scan is the same scan another account
+// sharing the home would make.
 func rowsForHome(ctx context.Context, home fsscan.UserHome, deadline time.Time,
 	remaining, limits outputLimits, pathFilter map[string]struct{},
 	scanned map[string][]row) []row {

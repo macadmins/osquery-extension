@@ -507,10 +507,11 @@ func DiscoverAll(ctx context.Context, clienter utils.OsqueryClienter, userFilter
 			out = append(out, stampUserID([]Server{row}, h.ID, h.UID)...)
 			continue
 		}
-		// Scanned once per directory, reported once per account. Accounts legitimately
-		// share a home, and the roster keeps every one of them so a constrained query cannot
-		// lose an account another had claimed, so the duplicate work is avoided here, after
-		// the filter.
+		// Scanned once per identity and directory, reported once per account. Accounts
+		// legitimately share a home, and the roster keeps every one of them so a constrained
+		// query cannot lose an account another had claimed; accounts that also share an
+		// identity share the scan, after the filter. See devclients.ScanKey for why a
+		// different identity is scanned again.
 		//
 		// Looked up before the budget is consulted, not after. The budget question is
 		// whether there is time to do *new* filesystem work, and restamping a result already
@@ -1117,14 +1118,16 @@ func probeProjects(ctx context.Context, home, owner string, homeStorage fsscan.E
 	user string, deadline time.Time, seen map[string]struct{}, projects []projectRef,
 	stored []warning) ([]Server, bool) {
 	var out []Server
-	refusals := make(map[warnCode]*warning)
-	// count adds a refusal's count, creating its warning the first time.
+	refusals := make(map[refusalKey]*warning)
+	// count adds a refusal's count, creating its warning the first time. Keyed by reason as well
+	// as code, so a hard-link refusal and an owner refusal in one home are two rows, not one.
 	count := func(w warning) {
-		if existing, ok := refusals[w.Code]; ok {
+		key := refusalKey{w.Code, w.Class}
+		if existing, ok := refusals[key]; ok {
 			existing.Count += w.Count
 			return
 		}
-		refusals[w.Code] = &w
+		refusals[key] = &w
 	}
 	for _, w := range stored {
 		count(w)
@@ -1271,21 +1274,33 @@ func declaresServers(rows []Server) bool {
 // a project directory can be named after anything, including a secret. The home is reported
 // instead, which is a path this table already publishes.
 //
-// Sorted by code, because map iteration is random and these rows go straight to osquery.
-func aggregatedRefusals(user, home string, refusals map[warnCode]*warning) []Server {
+// Sorted by code and then reason, because map iteration is random and these rows go straight to
+// osquery.
+func aggregatedRefusals(user, home string, refusals map[refusalKey]*warning) []Server {
 	if len(refusals) == 0 {
 		return nil
 	}
-	codes := make([]warnCode, 0, len(refusals))
-	for code := range refusals {
-		codes = append(codes, code)
+	keys := make([]refusalKey, 0, len(refusals))
+	for key := range refusals {
+		keys = append(keys, key)
 	}
-	sort.Slice(codes, func(i, j int) bool { return codes[i] < codes[j] })
-	out := make([]Server, 0, len(codes))
-	for _, code := range codes {
-		out = append(out, diagnosticRow(user, home, "", *refusals[code]))
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].code != keys[j].code {
+			return keys[i].code < keys[j].code
+		}
+		return keys[i].class < keys[j].class
+	})
+	out := make([]Server, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, diagnosticRow(user, home, "", *refusals[key]))
 	}
 	return out
+}
+
+// refusalKey is one aggregated refusal row: the warning code and the reason it carries.
+type refusalKey struct {
+	code  warnCode
+	class fsscan.ErrClass
 }
 
 // finishProcessing turns one file's bytes into rows, or into one diagnostic.

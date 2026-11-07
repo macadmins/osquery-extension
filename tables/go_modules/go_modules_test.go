@@ -728,9 +728,10 @@ func TestASharedHomeIsReusedAfterTheDeadline(t *testing.T) {
 	claudeList(t, home, project)
 	testutil.WriteFile(t, filepath.Join(project, "go.mod"), "module x\n\nrequire github.com/a/b v1.0.0\n")
 	alice := fsscan.UserHome{Name: "alice", ID: ownerID(), Path: home}
-	// build is another account sharing the home; on Windows the cache is per account, so build
-	// has an identity of its own. No file is read for it, so the owner check does not apply.
-	build := fsscan.UserHome{Name: "build", ID: distinctID(2), Path: home}
+	// build shares alice's identity and home, so it reuses her scan; other shares the home with an
+	// identity of its own, so it is scanned for itself.
+	build := fsscan.UserHome{Name: "build", ID: ownerID(), Path: home}
+	sharer := fsscan.UserHome{Name: "sharer", ID: distinctID(2), Path: home}
 	other := fsscan.UserHome{Name: "other", ID: "503", UID: "503", Path: filepath.Join(t.TempDir(), "other")}
 	scanned := map[string][]row{}
 
@@ -741,12 +742,13 @@ func TestASharedHomeIsReusedAfterTheDeadline(t *testing.T) {
 	}
 	expired := time.Now().Add(-time.Second)
 	second := rowsForHome(context.Background(), build, expired, limits, limits, nil, scanned)
-	if runtime.GOOS == "windows" {
-		if len(second) != 1 || second[0].Warning.Code != warnBudgetExhaustedPreHome {
-			t.Errorf("second account rows = %+v, want its own scan refused by the deadline", second)
-		}
-	} else if moduleRows(second) != 1 || second[0].User != "build" || second[0].UserID != build.ID {
+	if moduleRows(second) != 1 || second[0].User != "build" || second[0].UserID != build.ID {
 		t.Errorf("second account rows = %+v, want the cached row labeled for build", second)
+	}
+	if rows := rowsForHome(context.Background(), sharer, expired, limits, limits, nil, scanned); len(rows) != 1 ||
+		rows[0].Warning.Code != warnBudgetExhaustedPreHome {
+		t.Errorf("an account sharing the home under another identity = %+v, want its own scan "+
+			"refused by the deadline", rows)
 	}
 	if rows := rowsForHome(context.Background(), other, expired, limits, limits, nil, scanned); len(rows) != 1 ||
 		rows[0].Warning.Code != warnBudgetExhaustedPreHome || rows[0].UID != "503" {
@@ -1297,29 +1299,28 @@ func TestACompleteSharedHomeIsReusedAfterACap(t *testing.T) {
 	project := filepath.Join(other, "svc")
 	claudeList(t, other, project)
 	testutil.WriteFile(t, filepath.Join(project, "go.mod"), goMod)
-	// alice, bob and carol in that order; alice and carol are two accounts sharing an empty home,
-	// and bob's project, read under the account running the test, spends the one-row cap. The
-	// roster is ordered by identity, so alice's sorts just before bob's and carol's just after.
+	// alice, bob and carol share the identity of the account running the test, so they are
+	// scanned in name order; alice and carol share an empty home, and bob's project spends the
+	// one-row cap. dave shares that home under an identity of his own, ordered after theirs.
 	mine, mySID := testutil.Account()
-	aliceUID, aliceSID, carolUID, carolSID := identitiesAround(mine, mySID)
+	_, _, daveUID, daveSID := testutil.IdentitiesAround(mine, mySID)
 	clienter := &utils.MockOsqueryClienter{Data: map[string][]map[string]string{fsscan.UsersQuery: {
-		{"uid": aliceUID, "uuid": aliceSID, "username": "alice", "directory": shared, "shell": "/bin/zsh"},
+		{"uid": mine, "uuid": mySID, "username": "alice", "directory": shared, "shell": "/bin/zsh"},
 		{"uid": mine, "uuid": mySID, "username": "bob", "directory": other, "shell": "/bin/zsh"},
-		{"uid": carolUID, "uuid": carolSID, "username": "carol", "directory": shared, "shell": "/bin/zsh"},
+		{"uid": mine, "uuid": mySID, "username": "carol", "directory": shared, "shell": "/bin/zsh"},
+		{"uid": daveUID, "uuid": daveSID, "username": "dave", "directory": shared, "shell": "/bin/zsh"},
 	}}}
 	found := discoverWithin(context.Background(), clienter, nil, nil, outputLimits{rows: 1, bytes: maxOutputBytes})
-	var carol []row
+	byUser := map[string][]row{}
 	for _, r := range found {
-		if r.User == "carol" {
-			carol = append(carol, r)
-		}
+		byUser[r.User] = append(byUser[r.User], r)
 	}
-	if runtime.GOOS == "windows" {
-		if len(carol) != 1 || carol[0].Warning.Code != warnRowLimitPreHome {
-			t.Errorf("carol got %+v, want her own scan refused by the spent cap", carol)
-		}
-	} else if len(carol) != 0 {
+	if carol := byUser["carol"]; len(carol) != 0 {
 		t.Errorf("carol, whose shared home was scanned in full and holds nothing, got %+v", carol)
+	}
+	if dave := byUser["dave"]; len(dave) != 1 || dave[0].Warning.Code != warnRowLimitPreHome {
+		t.Errorf("dave, sharing the home under another identity, got %+v, want his own scan "+
+			"refused by the spent cap", dave)
 	}
 }
 

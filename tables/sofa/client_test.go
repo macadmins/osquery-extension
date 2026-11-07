@@ -296,8 +296,7 @@ func TestDownloadData(t *testing.T) {
 
 	// Assert that no error occurred
 	assert.NoError(t, err)
-	fs := utils.MockFileSystem{FileExists: true, Err: nil}
-	assert.True(t, utils.FileExists(fs, client.cacheFile))
+	assert.True(t, utils.FileExists(utils.OSFileSystem{}, client.cacheFile))
 
 	// Check that the file was created
 	_, err = os.Stat(client.cacheFile)

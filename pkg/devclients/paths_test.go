@@ -85,31 +85,24 @@ func TestAppSupportForkSandboxRoots(t *testing.T) {
 	}
 }
 
-// TestScanKeySeparatesAccountsThatShareAHomeOnWindows: two accounts can report the same profile
-// path. On Windows a table's discovery is not a pure function of that path: it resolves Roaming
-// AppData from the registry hive named by the account's SID, so the same directory can yield
-// different roots, different warnings and different rows per account. Keyed on path alone, the
-// first account scanned would decide the answer for every other, attributing one account's
-// redirected AppData, or its "could not be determined" warning, to a different account.
-//
-// Everywhere else discovery depends only on the directory, and a shared home should be scanned
-// once; a key that always included the ID would scan it once per account.
-func TestScanKeySeparatesAccountsThatShareAHomeOnWindows(t *testing.T) {
-	a := fsscan.UserHome{Name: "alice", ID: "S-1-5-21-1-2-3-1001", Path: `C:\Users\shared`}
-	b := fsscan.UserHome{Name: "bob", ID: "S-1-5-21-1-2-3-1002", Path: `C:\Users\shared`}
-
-	if scanKeyFor("windows", a) == scanKeyFor("windows", b) {
-		t.Error("two SIDs sharing a profile path must not share a cache entry: each " +
-			"resolves its own AppData location from its own registry hive")
+// TestScanKeySeparatesAccountsThatShareAHome: two accounts can report the same home. Each read is
+// judged against the account being scanned, so two identities sharing a directory can get
+// different rows and refusals, and on Windows different AppData roots; they must not share a
+// cache entry. Two accounts with the same identity and home still share one scan.
+func TestScanKeySeparatesAccountsThatShareAHome(t *testing.T) {
+	for _, pair := range [][2]fsscan.UserHome{
+		{{Name: "alice", ID: "S-1-5-21-1-2-3-1001", Path: `C:\Users\shared`},
+			{Name: "bob", ID: "S-1-5-21-1-2-3-1002", Path: `C:\Users\shared`}},
+		{{Name: "root", ID: "0", Path: "/var/root"}, {Name: "daemon", ID: "1", Path: "/var/root"}},
+	} {
+		if ScanKey(pair[0]) == ScanKey(pair[1]) {
+			t.Errorf("%s and %s share a home with different identities and must not share a "+
+				"cache entry", pair[0].Name, pair[1].Name)
+		}
 	}
-	for _, goos := range []string{"darwin", "linux"} {
-		if scanKeyFor(goos, a) != scanKeyFor(goos, b) {
-			t.Errorf("%s: a shared home should be scanned once, got %q vs %q",
-				goos, scanKeyFor(goos, a), scanKeyFor(goos, b))
-		}
-		if scanKeyFor(goos, a) != a.Path {
-			t.Errorf("%s: the scan key = %q, want the home path", goos, scanKeyFor(goos, a))
-		}
+	twin := fsscan.UserHome{Name: "toor", ID: "0", Path: "/var/root"}
+	if ScanKey(twin) != ScanKey(fsscan.UserHome{Name: "root", ID: "0", Path: "/var/root"}) {
+		t.Error("two accounts with the same uid and home should share one scan")
 	}
 }
 

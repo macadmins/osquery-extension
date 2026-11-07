@@ -472,7 +472,7 @@ WHERE scan_complete = 0 AND warning NOT LIKE 'recorded project%';
 
 ## Narrowing by user
 
-A `user` constraint reaches the generator and narrows the scan under osquery's default `--extensions_default_index=true`, which promotes extension columns to `INDEX`. Equality only, and all of it or none: `user = 'alice' OR user LIKE 'b%'` scans every home and filters afterwards, because `QueryContext` does not carry enough of the original boolean structure to prove the equality subset is sufficient. Scanning more than asked costs time; returning fewer rows than the query matches is a wrong answer. `user = ''` selects the rows that belong to no account, such as `accounts_home_unusable`, so it scans every home.
+A `user` constraint reaches the generator and narrows the scan whatever `--extensions_default_index` is set to, because `user` is declared with `IndexColumn` and `OptimizedColumn`. Equality only, and all of it or none: `user = 'alice' OR user LIKE 'b%'` scans every home and filters afterwards, because `QueryContext` does not carry enough of the original boolean structure to prove the equality subset is sufficient. Scanning more than asked costs time; returning fewer rows than the query matches is a wrong answer. `user = ''` selects the rows that belong to no account, such as `accounts_home_unusable`, so it scans every home.
 
 The filter is applied to the roster *before* any filesystem call. Narrowing afterwards still stat'd every home on the host, so one dead automount belonging to an account nobody asked about could consume the budget of a query scoped to a single local user.
 

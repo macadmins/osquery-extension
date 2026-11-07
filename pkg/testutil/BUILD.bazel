@@ -6,6 +6,7 @@ go_library(
         "account_unix.go",
         "account_windows.go",
         "files.go",
+        "identities.go",
         "junction_windows.go",
     ],
     importpath = "github.com/macadmins/osquery-extension/pkg/testutil",

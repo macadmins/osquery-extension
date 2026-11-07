@@ -55,6 +55,9 @@ func TestAFileOwnedByAnotherAccountIsRefusedAndReported(t *testing.T) {
 	project := filepath.Join(home, "svc")
 	claudeList(t, home, project)
 	testutil.WriteFile(t, filepath.Join(project, "go.mod"), goMod)
+	if err := testutil.OwnAsTestAccount(home); err != nil {
+		t.Logf("the fixture keeps the owner Windows gave it: %v", err)
+	}
 	if testutil.PrivilegedOwner(filepath.Join(project, "go.mod")) {
 		t.Skip("a privileged account owns the fixture, and a privileged owner passes the check")
 	}
@@ -90,18 +93,51 @@ func TestAFileOwnedByAnotherAccountIsRefusedAndReported(t *testing.T) {
 	}
 }
 
-// identitiesAround returns two identities that are not the account running the test and that
-// the roster orders just before and just after it: the uids one below and one above on POSIX,
-// and on Windows the SID with its last component replaced by 0 and by 9 followed by it, which
-// sort as text before and after any account's SID with the same prefix.
-func identitiesAround(uid, sid string) (beforeUID, beforeSID, afterUID, afterSID string) {
-	if sid == "" {
-		number, err := strconv.Atoi(uid)
-		if err != nil {
-			panic("the test account's uid is not a number: " + uid)
-		}
-		return strconv.Itoa(number - 1), "", strconv.Itoa(number + 1), ""
+// TestAHomeSharedWithAnotherAccountIsReadForEach: two accounts share one home whose files the
+// account running the test owns. Each is scanned under its own identity, so the owner's modules
+// are listed and the other account's read is refused with reason=owner_mismatch, whichever of
+// the two the roster orders first.
+func TestAHomeSharedWithAnotherAccountIsReadForEach(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "shared")
+	project := filepath.Join(home, "svc")
+	claudeList(t, home, project)
+	testutil.WriteFile(t, filepath.Join(project, "go.mod"), goMod)
+	if err := testutil.OwnAsTestAccount(home); err != nil {
+		t.Logf("the fixture keeps the owner Windows gave it: %v", err)
 	}
-	prefix := sid[:strings.LastIndex(sid, "-")+1]
-	return "0", prefix + "0", "9" + uid, prefix + "9" + uid
+	if testutil.PrivilegedOwner(filepath.Join(project, "go.mod")) {
+		t.Skip("a privileged account owns the fixture, and a privileged owner passes the check")
+	}
+	mine, mySID := testutil.Account()
+	beforeUID, beforeSID, afterUID, afterSID := testutil.IdentitiesAround(mine, mySID)
+	for _, other := range [][2]string{{beforeUID, beforeSID}, {afterUID, afterSID}} {
+		clienter := &utils.MockOsqueryClienter{Data: map[string][]map[string]string{fsscan.UsersQuery: {
+			{"uid": mine, "uuid": mySID, "username": "owner", "directory": home, "shell": "/bin/zsh"},
+			{"uid": other[0], "uuid": other[1], "username": "other", "directory": home, "shell": "/bin/zsh"},
+		}}}
+		rows, err := generate(context.Background(), table.QueryContext{}, clienter)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ownerModules, otherModules, otherRefused := 0, 0, false
+		for _, r := range rows {
+			switch r["user"] {
+			case "owner":
+				if r["module_path"] != "" {
+					ownerModules++
+				}
+			case "other":
+				if r["module_path"] != "" {
+					otherModules++
+				}
+				otherRefused = otherRefused || strings.Contains(r["warning"],
+					"reason="+string(fsscan.ClassOwnerMismatch))
+			}
+		}
+		if ownerModules == 0 || otherModules != 0 || !otherRefused {
+			t.Errorf("other uid %s: owner modules %d, other modules %d, other refused %v; want the "+
+				"owner's modules and the other account refused", other[0], ownerModules, otherModules,
+				otherRefused)
+		}
+	}
 }

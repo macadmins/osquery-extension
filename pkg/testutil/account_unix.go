@@ -24,3 +24,9 @@ func PrivilegedOwner(path string) bool {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	return ok && stat.Uid == 0
 }
+
+// OwnAsTestAccount does nothing outside Windows: a file the test creates belongs to the user it
+// runs as.
+func OwnAsTestAccount(string) error {
+	return nil
+}

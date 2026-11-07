@@ -271,6 +271,17 @@ func isRefusedOrNotDirectory(err error) bool {
 // account's whole SID. A file whose owner cannot be read is refused rather than passed, so a
 // successful read always means the check ran.
 func checkDescriptor(f *os.File, _ os.FileInfo, opts ReadOpts) error {
+	// The link count first and the owner second, as on POSIX, so a file both checks refuse is
+	// reported for the same reason on every platform.
+	if opts.RefuseHardLinks {
+		var info windows.ByHandleFileInformation
+		if err := windows.GetFileInformationByHandle(windows.Handle(f.Fd()), &info); err != nil {
+			return fmt.Errorf("%w: link count is unavailable for this file: %w", ErrNotRegular, err)
+		}
+		if info.NumberOfLinks > 1 {
+			return fmt.Errorf("%w: %d links", ErrHardLink, info.NumberOfLinks)
+		}
+	}
 	if opts.OwnerUID != "" {
 		var owner *windows.SID
 		sd, err := windows.GetSecurityInfo(windows.Handle(f.Fd()), windows.SE_FILE_OBJECT,
@@ -288,16 +299,6 @@ func checkDescriptor(f *os.File, _ os.FileInfo, opts ReadOpts) error {
 		if ownerSID := owner.String(); ownerSID != opts.OwnerUID && !privilegedOwner(ownerSID) {
 			return ErrOwnerMismatch
 		}
-	}
-	if !opts.RefuseHardLinks {
-		return nil
-	}
-	var info windows.ByHandleFileInformation
-	if err := windows.GetFileInformationByHandle(windows.Handle(f.Fd()), &info); err != nil {
-		return fmt.Errorf("%w: link count is unavailable for this file: %w", ErrNotRegular, err)
-	}
-	if info.NumberOfLinks > 1 {
-		return fmt.Errorf("%w: %d links", ErrHardLink, info.NumberOfLinks)
 	}
 	return nil
 }

@@ -57,6 +57,9 @@ func TestReadBoundedUnder_RefusesHardLink(t *testing.T) {
 func TestReadBoundedUnder_RefusesOwnerMismatch(t *testing.T) {
 	base := t.TempDir()
 	testutil.WriteFile(t, filepath.Join(base, "f.json"), `{}`)
+	if testutil.PrivilegedOwner(filepath.Join(base, "f.json")) {
+		t.Skip("the fixture is owned by root, which passes the owner check for any account")
+	}
 
 	// The real uid passes. Taken from the running process rather than assumed, so the test
 	// says something on a host where tests run as root.
