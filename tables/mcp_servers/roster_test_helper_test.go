@@ -3,12 +3,22 @@ package mcp_servers
 import (
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 
 	"github.com/macadmins/osquery-extension/pkg/fsscan"
+	"github.com/macadmins/osquery-extension/pkg/testutil"
 	"github.com/macadmins/osquery-extension/pkg/utils"
 )
+
+// ownerID is the owner the test account's files carry, in the form probeReadOpts takes: the
+// whole SID on Windows and the uid on POSIX.
+func ownerID() string {
+	uid, uuid := testutil.Account()
+	if uuid != "" {
+		return uuid
+	}
+	return uid
+}
 
 // rosterOf builds a mock clienter that answers osquery's users query with one row per entry
 // beneath root. The roster comes from the users table, so a test that runs discovery over a
@@ -21,7 +31,9 @@ func rosterOf(t *testing.T, root string) utils.OsqueryClienter {
 		t.Fatalf("reading fixture root %q: %v", root, err)
 	}
 	var rows []map[string]string
-	uid := 500
+	// Every account is the account running the test, because the files under its home belong to
+	// that account and a different identity would make the table refuse them.
+	uid, uuid := testutil.Account()
 	for _, entry := range entries {
 		// Every entry becomes an account, whatever type it is. Filtering on IsDir here
 		// would make the helper pre-decide what the code under test exists to decide: a
@@ -31,9 +43,9 @@ func rosterOf(t *testing.T, root string) utils.OsqueryClienter {
 		if entry.Name() == "Shared" || entry.Name()[0] == '.' {
 			continue
 		}
-		uid++
 		rows = append(rows, map[string]string{
-			"uid":       strconv.Itoa(uid),
+			"uid":       uid,
+			"uuid":      uuid,
 			"username":  entry.Name(),
 			"directory": filepath.Join(root, entry.Name()),
 			"shell":     "/bin/zsh",

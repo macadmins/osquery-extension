@@ -276,7 +276,7 @@ func TestPluginAndWorkspacePassesObserveCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	refs, _, stopped := claudePluginRefs(ctx, home, time.Now().Add(time.Minute))
+	refs, _, stopped := claudePluginRefs(ctx, home, ownerID(), time.Now().Add(time.Minute))
 	if !stopped {
 		t.Error("an already-cancelled query did not stop the plugin enumeration")
 	}
@@ -285,13 +285,13 @@ func TestPluginAndWorkspacePassesObserveCancellation(t *testing.T) {
 	}
 
 	// And an exhausted budget, which is the other way a pass must stop.
-	_, _, budgetStopped := claudePluginRefs(context.Background(), home,
+	_, _, budgetStopped := claudePluginRefs(context.Background(), home, ownerID(),
 		time.Now().Add(-time.Second))
 	if !budgetStopped {
 		t.Error("an exhausted budget did not stop the plugin enumeration")
 	}
 
-	_, _, _, wsStopped := vscodeWorkspaceProjects(ctx, home, "", fsscan.ClassNone, time.Now().Add(time.Minute))
+	_, _, _, wsStopped := vscodeWorkspaceProjects(ctx, home, ownerID(), "", fsscan.ClassNone, time.Now().Add(time.Minute))
 	if !wsStopped {
 		t.Error("an already-cancelled query did not stop the workspace enumeration")
 	}
@@ -407,7 +407,7 @@ func TestWorkspaceTrustGatesCommittedApprovals(t *testing.T) {
 				testutil.WriteFile(t,
 					filepath.Join(home, projRel, ".claude", "settings.local.json"), tc.local)
 			}
-			evidence, warnings := projectApprovalSettings(home, projRel, tc.trusted)
+			evidence, warnings := projectApprovalSettings(home, ownerID(), projRel, tc.trusted)
 			if len(warnings) != 0 {
 				t.Errorf("unexpected warnings: %v", warnings)
 			}
@@ -439,7 +439,7 @@ func TestProjectApprovalSettingsRespectCloudRefusal(t *testing.T) {
 	testutil.WriteFile(t, filepath.Join(home, projRel, ".claude", "settings.local.json"),
 		`{"disabledMcpjsonServers":["srv"]}`)
 
-	evidence, warnings := projectApprovalSettings(home, projRel, true)
+	evidence, warnings := projectApprovalSettings(home, ownerID(), projRel, true)
 	// The refusal is reported rather than silent, and the rejection the file carries does
 	// not reach the result -- the file was never read.
 	if evidence.stateFor("srv") == approvalDisabled {
@@ -473,7 +473,7 @@ func TestProjectApprovalSettingsReadOrdinaryDirectoriesElsewhere(t *testing.T) {
 	testutil.WriteFile(t, filepath.Join(home, projRel, ".claude", "settings.local.json"),
 		`{"disabledMcpjsonServers":["srv"]}`)
 
-	evidence, warnings := projectApprovalSettings(home, projRel, true)
+	evidence, warnings := projectApprovalSettings(home, ownerID(), projRel, true)
 	if len(warnings) != 0 {
 		t.Errorf("an ordinary directory produced warnings: %v", warnings)
 	}
@@ -496,7 +496,7 @@ func TestUnusableApprovalSettingsAreDiagnosed(t *testing.T) {
 	testutil.WriteFile(t, filepath.Join(home, projRel, ".claude", "settings.local.json"),
 		`{"enabledMcpjsonServers":123}`)
 
-	evidence, warnings := projectApprovalSettings(home, projRel, true)
+	evidence, warnings := projectApprovalSettings(home, ownerID(), projRel, true)
 	if got := evidence.stateFor("srv"); got != approvalUnknown {
 		t.Errorf("stateFor = %q, want %q", got, approvalUnknown)
 	}
@@ -658,7 +658,7 @@ func TestRefusedApprovalRecordLeavesApprovalUnknown(t *testing.T) {
 // Genuine absence stays known-empty, so an ordinary account does not report everything unknown.
 func TestAbsentApprovalRecordStaysKnownEmpty(t *testing.T) {
 	home := t.TempDir()
-	evidence, warnings := userApprovalSettings(home)
+	evidence, warnings := userApprovalSettings(home, ownerID())
 	if len(warnings) != 0 {
 		t.Errorf("an absent settings file produced warnings: %v", warnings)
 	}
@@ -685,7 +685,7 @@ func TestSimultaneousSettingsFailuresAreDistinguishable(t *testing.T) {
 	testutil.WriteFile(t, filepath.Join(home, projRel, ".claude", "settings.local.json"),
 		`{"enabledMcpjsonServers":123}`)
 
-	_, warnings := projectApprovalSettings(home, projRel, true)
+	_, warnings := projectApprovalSettings(home, ownerID(), projRel, true)
 	if len(warnings) != 2 {
 		t.Fatalf("got %d warnings, want one per failing file: %+v", len(warnings), warnings)
 	}
@@ -964,8 +964,8 @@ func TestANullApprovalSettingsFileIsDiagnosed(t *testing.T) {
 	const projRel = "code/repo"
 	testutil.WriteFile(t, filepath.Join(home, projRel, ".claude", "settings.local.json"), "null")
 	testutil.WriteFile(t, filepath.Join(home, ".claude", "settings.json"), "\xEF\xBB\xBFnull\n")
-	project, projectWarnings := projectApprovalSettings(home, projRel, true)
-	user, userWarnings := userApprovalSettings(home)
+	project, projectWarnings := projectApprovalSettings(home, ownerID(), projRel, true)
+	user, userWarnings := userApprovalSettings(home, ownerID())
 	for name, testCase := range map[string]struct {
 		evidence claudeApproval
 		warnings []warning

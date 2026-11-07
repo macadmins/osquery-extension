@@ -24,7 +24,22 @@ import (
 	"github.com/macadmins/osquery-extension/pkg/utils"
 )
 
-// roster answers the users query with one login account per home.
+// wantUID is the uid column the test account publishes.
+var wantUID, _ = testutil.Account()
+
+// ownerID is the owner the test account's files carry, in the form readOpts takes: the whole
+// SID on Windows and the uid on POSIX.
+func ownerID() string {
+	uid, uuid := testutil.Account()
+	if uuid != "" {
+		return uuid
+	}
+	return uid
+}
+
+// roster answers the users query with one login account per home. Every account is the account
+// running the test, because the files under its home belong to that account and a different
+// identity would make the table refuse them.
 func roster(homes map[string]string) utils.OsqueryClienter {
 	names := make([]string, 0, len(homes))
 	for name := range homes {
@@ -32,13 +47,67 @@ func roster(homes map[string]string) utils.OsqueryClienter {
 	}
 	sort.Strings(names)
 	var rows []map[string]string
-	for index, name := range names {
+	uid, uuid := testutil.Account()
+	for _, name := range names {
 		rows = append(rows, map[string]string{
-			"uid": strconv.Itoa(501 + index), "username": name,
+			"uid": uid, "uuid": uuid, "username": name,
 			"directory": homes[name], "shell": "/bin/zsh",
 		})
 	}
 	return &utils.MockOsqueryClienter{Data: map[string][]map[string]string{fsscan.UsersQuery: rows}}
+}
+
+// TestACancelledQueryAfterTheRosterReportsEachAccount: a query cancelled after the roster is
+// read reports each account with a cancelled_before_home row carrying its uid.
+func TestACancelledQueryAfterTheRosterReportsEachAccount(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "alice")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	clienter := &utils.CancelAfterQueryClienter{Inner: roster(map[string]string{"alice": home}), Cancel: cancel}
+	rows, err := generate(ctx, table.QueryContext{}, clienter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || !strings.HasPrefix(rows[0]["warning"], warnSentences[warnCancelledPreHome]) ||
+		rows[0]["user"] != "alice" || rows[0]["uid"] != wantUID {
+		t.Errorf("rows = %v, want one cancelled_before_home row for alice carrying uid %s", rows,
+			wantUID)
+	}
+}
+
+// TestACancelledQueryOpensNoClient: a query already cancelled reports the cancellation without
+// opening a client to osquery.
+func TestACancelledQueryOpensNoClient(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	clienter := &utils.CancelAfterQueryClienter{Inner: roster(map[string]string{}), Cancel: cancel}
+	rows, err := generate(ctx, table.QueryContext{}, clienter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clienter.Opened != 0 || len(rows) != 1 || rows[0]["user"] != "" ||
+		!strings.HasPrefix(rows[0]["warning"], warnSentences[warnCancelledPreHome]) {
+		t.Errorf("opened %d clients, rows = %v; want none and one cancelled_before_home row",
+			clienter.Opened, rows)
+	}
+}
+
+// TestARosterFailureWhileCancelledIsTheRosterFailure: a roster read that fails for its own
+// reason, here an empty roster, while the query is cancelled reports the roster failure.
+func TestARosterFailureWhileCancelledIsTheRosterFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	clienter := &utils.CancelAfterQueryClienter{Inner: roster(map[string]string{}), Cancel: cancel}
+	rows, err := generate(ctx, table.QueryContext{}, clienter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || !strings.HasPrefix(rows[0]["warning"], warnSentences[warnRosterQueryFailed]) {
+		t.Errorf("rows = %v, want one roster_query_failed row", rows)
+	}
 }
 
 type unreachable struct{}
@@ -47,15 +116,11 @@ func (unreachable) NewOsqueryClient() (utils.OsqueryClient, error) {
 	return nil, errors.New("no socket")
 }
 
-type failingClient struct{}
-
-func (failingClient) QueryRows(string) ([]map[string]string, error) { return nil, errors.New("x") }
-func (failingClient) QueryRow(string) (map[string]string, error)    { return nil, errors.New("x") }
-func (failingClient) Close()                                        {}
-
 type queryFails struct{}
 
-func (queryFails) NewOsqueryClient() (utils.OsqueryClient, error) { return failingClient{}, nil }
+func (queryFails) NewOsqueryClient() (utils.OsqueryClient, error) {
+	return utils.ErrorOsqueryClient{Err: errors.New("x")}, nil
+}
 
 func run(t *testing.T, clienter utils.OsqueryClienter, qc table.QueryContext) []map[string]string {
 	t.Helper()
@@ -166,7 +231,7 @@ func TestDiscoversModulesFromEveryClientList(t *testing.T) {
 		t.Errorf("modules =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 	for _, r := range rows {
-		if r["user"] != "alice" || r["uid"] != "501" || r["user_id"] != "501" {
+		if r["user"] != "alice" || r["uid"] != wantUID || r["user_id"] != ownerID() {
 			t.Errorf("row identity = %q %q %q", r["user"], r["uid"], r["user_id"])
 		}
 		if r["module_path"] == "github.com/direct/one" {
@@ -375,7 +440,10 @@ func TestRequestedAccounts(t *testing.T) {
 	}
 }
 
-func TestACancelledQueryReportsEachAccount(t *testing.T) {
+// TestACancelledQueryReportsCancellationWithoutAnAccount: once the context is done the roster
+// read fails, and the answer is a cancelled_before_home row with no account rather than a
+// roster failure.
+func TestACancelledQueryReportsCancellationWithoutAnAccount(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "alice")
 	if err := os.MkdirAll(home, 0o755); err != nil {
 		t.Fatal(err)
@@ -387,8 +455,8 @@ func TestACancelledQueryReportsEachAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(rows) != 1 || !strings.HasPrefix(rows[0]["warning"], warnSentences[warnCancelledPreHome]) ||
-		rows[0]["uid"] != "501" {
-		t.Errorf("rows = %v, want one cancelled_before_home row carrying uid 501", rows)
+		rows[0]["user"] != "" || rows[0]["uid"] != "" {
+		t.Errorf("rows = %v, want one cancelled_before_home row with no account", rows)
 	}
 }
 
@@ -490,7 +558,7 @@ func TestReadFailureClassification(t *testing.T) {
 		{os.ErrNotExist, "", false},
 		{fsscan.ErrUserspaceFilesystem, warnSourceUserspaceFS, true},
 		{fsscan.ErrHardLink, warnProjectRefused, true},
-		{fsscan.ErrForeignOwner, warnProjectRefused, true},
+		{fsscan.ErrOwnerMismatch, warnProjectRefused, true},
 		{fsscan.ErrTooLarge, warnSourceTooLarge, true},
 		{fsscan.ErrNotRegular, warnSourceUnreadable, true},
 		{os.ErrPermission, warnSourceUnreadable, true},
@@ -558,8 +626,8 @@ func TestRowLimitIsReported(t *testing.T) {
 		t.Errorf("alice warnings = %v", got)
 	}
 	if len(byUser["bob"]) != 1 || !strings.HasPrefix(byUser["bob"][0]["warning"], warnSentences[warnRowLimitPreHome]) ||
-		byUser["bob"][0]["uid"] != "502" {
-		t.Errorf("bob rows = %v, want one row_limit_reached_before_home carrying uid 502", byUser["bob"])
+		byUser["bob"][0]["uid"] != wantUID {
+		t.Errorf("bob rows = %v, want one row_limit_reached_before_home carrying uid %s", byUser["bob"], wantUID)
 	}
 }
 
@@ -659,8 +727,11 @@ func TestASharedHomeIsReusedAfterTheDeadline(t *testing.T) {
 	project := filepath.Join(home, "svc")
 	claudeList(t, home, project)
 	testutil.WriteFile(t, filepath.Join(project, "go.mod"), "module x\n\nrequire github.com/a/b v1.0.0\n")
-	alice := fsscan.UserHome{Name: "alice", ID: "501", Path: home}
-	build := fsscan.UserHome{Name: "build", ID: "502", Path: home}
+	alice := fsscan.UserHome{Name: "alice", ID: ownerID(), Path: home}
+	// build shares alice's identity and home, so it reuses her scan; other shares the home with an
+	// identity of its own, so it is scanned for itself.
+	build := fsscan.UserHome{Name: "build", ID: ownerID(), Path: home}
+	sharer := fsscan.UserHome{Name: "sharer", ID: distinctID(2), Path: home}
 	other := fsscan.UserHome{Name: "other", ID: "503", UID: "503", Path: filepath.Join(t.TempDir(), "other")}
 	scanned := map[string][]row{}
 
@@ -671,12 +742,13 @@ func TestASharedHomeIsReusedAfterTheDeadline(t *testing.T) {
 	}
 	expired := time.Now().Add(-time.Second)
 	second := rowsForHome(context.Background(), build, expired, limits, limits, nil, scanned)
-	if runtime.GOOS == "windows" {
-		if len(second) != 1 || second[0].Warning.Code != warnBudgetExhaustedPreHome {
-			t.Errorf("second account rows = %+v, want its own scan refused by the deadline", second)
-		}
-	} else if moduleRows(second) != 1 || second[0].User != "build" || second[0].UserID != "502" {
+	if moduleRows(second) != 1 || second[0].User != "build" || second[0].UserID != build.ID {
 		t.Errorf("second account rows = %+v, want the cached row labeled for build", second)
+	}
+	if rows := rowsForHome(context.Background(), sharer, expired, limits, limits, nil, scanned); len(rows) != 1 ||
+		rows[0].Warning.Code != warnBudgetExhaustedPreHome {
+		t.Errorf("an account sharing the home under another identity = %+v, want its own scan "+
+			"refused by the deadline", rows)
 	}
 	if rows := rowsForHome(context.Background(), other, expired, limits, limits, nil, scanned); len(rows) != 1 ||
 		rows[0].Warning.Code != warnBudgetExhaustedPreHome || rows[0].UID != "503" {
@@ -773,7 +845,7 @@ func TestTheAgentListsRespectTheBudget(t *testing.T) {
 	note := func(w warning) { noted = append(noted, w) }
 
 	collector := devclients.NewCollector(home, devclients.MaxProjects)
-	if addAgentLists(context.Background(), home, fsscan.ClassNone, time.Now().Add(-time.Second), collector, note) {
+	if addAgentLists(context.Background(), home, ownerID(), fsscan.ClassNone, time.Now().Add(-time.Second), collector, note) {
 		t.Error("the lists were read after the deadline")
 	}
 	if len(collector.Projects()) != 0 || len(noted) != 1 || noted[0].Code != warnBudgetExhaustedInHome {
@@ -782,7 +854,7 @@ func TestTheAgentListsRespectTheBudget(t *testing.T) {
 
 	noted = nil
 	collector = devclients.NewCollector(home, devclients.MaxProjects)
-	if !addAgentLists(context.Background(), home, fsscan.ClassNone, time.Now().Add(time.Minute), collector, note) ||
+	if !addAgentLists(context.Background(), home, ownerID(), fsscan.ClassNone, time.Now().Add(time.Minute), collector, note) ||
 		len(collector.Projects()) != 1 || len(noted) != 0 {
 		t.Errorf("projects %v notes %+v, want the Claude project and no notes", collector.Projects(), noted)
 	}
@@ -940,7 +1012,7 @@ func TestABudgetStopBetweenFilesMarksThatProjectIncomplete(t *testing.T) {
 		}
 		return false, nil
 	}
-	account := fsscan.UserHome{Name: "alice", ID: "501", Path: home}
+	account := fsscan.UserHome{Name: "alice", ID: ownerID(), Path: home}
 	limits := outputLimits{rows: maxRows, bytes: maxOutputBytes}
 	rows := discoverHome(ctx, account, time.Now().Add(time.Hour), limits, limits, nil)
 	if moduleRows(rows) == 0 {
@@ -1040,7 +1112,7 @@ func TestOutputSizeIsBounded(t *testing.T) {
 	}
 	unlimited := discoverWithin(context.Background(), roster(homes), nil, nil,
 		outputLimits{rows: maxRows, bytes: maxOutputBytes})
-	alice := fsscan.UserHome{Name: "alice", UID: "501", ID: "501"}
+	alice := fsscan.UserHome{Name: "alice", UID: wantUID, ID: ownerID()}
 	var oneRow int
 	for _, r := range unlimited {
 		if r.User == "alice" && r.Entry.Path != "" {
@@ -1170,7 +1242,7 @@ func TestBothCapsAreReportedWhenBothAreSpent(t *testing.T) {
 	}
 	unlimited := discoverWithin(context.Background(), roster(homes), nil, nil,
 		outputLimits{rows: maxRows, bytes: maxOutputBytes})
-	alice := fsscan.UserHome{Name: "alice", UID: "501", ID: "501"}
+	alice := fsscan.UserHome{Name: "alice", UID: wantUID, ID: ownerID()}
 	var oneRow int
 	for _, r := range unlimited {
 		if r.User == "alice" && r.Entry.Path != "" {
@@ -1227,22 +1299,28 @@ func TestACompleteSharedHomeIsReusedAfterACap(t *testing.T) {
 	project := filepath.Join(other, "svc")
 	claudeList(t, other, project)
 	testutil.WriteFile(t, filepath.Join(project, "go.mod"), goMod)
-	// alice (501), bob (502) and carol (503) in that order; alice and carol share an empty home,
-	// and bob's project spends the one-row cap.
-	homes := map[string]string{"alice": shared, "bob": other, "carol": shared}
-	found := discoverWithin(context.Background(), roster(homes), nil, nil, outputLimits{rows: 1, bytes: maxOutputBytes})
-	var carol []row
+	// alice, bob and carol share the identity of the account running the test, so they are
+	// scanned in name order; alice and carol share an empty home, and bob's project spends the
+	// one-row cap. dave shares that home under an identity of his own, ordered after theirs.
+	mine, mySID := testutil.Account()
+	_, _, daveUID, daveSID := testutil.IdentitiesAround(mine, mySID)
+	clienter := &utils.MockOsqueryClienter{Data: map[string][]map[string]string{fsscan.UsersQuery: {
+		{"uid": mine, "uuid": mySID, "username": "alice", "directory": shared, "shell": "/bin/zsh"},
+		{"uid": mine, "uuid": mySID, "username": "bob", "directory": other, "shell": "/bin/zsh"},
+		{"uid": mine, "uuid": mySID, "username": "carol", "directory": shared, "shell": "/bin/zsh"},
+		{"uid": daveUID, "uuid": daveSID, "username": "dave", "directory": shared, "shell": "/bin/zsh"},
+	}}}
+	found := discoverWithin(context.Background(), clienter, nil, nil, outputLimits{rows: 1, bytes: maxOutputBytes})
+	byUser := map[string][]row{}
 	for _, r := range found {
-		if r.User == "carol" {
-			carol = append(carol, r)
-		}
+		byUser[r.User] = append(byUser[r.User], r)
 	}
-	if runtime.GOOS == "windows" {
-		if len(carol) != 1 || carol[0].Warning.Code != warnRowLimitPreHome {
-			t.Errorf("carol got %+v, want her own scan refused by the spent cap", carol)
-		}
-	} else if len(carol) != 0 {
+	if carol := byUser["carol"]; len(carol) != 0 {
 		t.Errorf("carol, whose shared home was scanned in full and holds nothing, got %+v", carol)
+	}
+	if dave := byUser["dave"]; len(dave) != 1 || dave[0].Warning.Code != warnRowLimitPreHome {
+		t.Errorf("dave, sharing the home under another identity, got %+v, want his own scan "+
+			"refused by the spent cap", dave)
 	}
 }
 
@@ -1522,5 +1600,26 @@ func TestRowBytesBoundsTheEncodedRow(t *testing.T) {
 	if published := publish(row{Home: home, ProjectPath: expanding})["project_path"]; len(published) <= len(expanding) {
 		t.Fatalf("the fixture must lengthen under redaction: %d bytes published from %d", len(published),
 			len(expanding))
+	}
+}
+
+// TestTheAccountAndPathColumnsAreIndexed: user and project_path are the constraints the scan
+// narrows by, declared as indexed and optimized columns, so a change to the declaration fails here.
+func TestTheAccountAndPathColumnsAreIndexed(t *testing.T) {
+	want := map[string]table.ColumnDefinition{
+		"user":         table.TextColumn("user", table.IndexColumn(), table.OptimizedColumn()),
+		"project_path": table.TextColumn("project_path", table.IndexColumn(), table.OptimizedColumn()),
+		"uid":          table.BigIntColumn("uid", table.OptimizedColumn()),
+	}
+	for _, column := range GoModulesColumns() {
+		if expected, declared := want[column.Name]; declared {
+			if column != expected {
+				t.Errorf("%s column = %+v, want %+v", column.Name, column, expected)
+			}
+			delete(want, column.Name)
+		}
+	}
+	if len(want) != 0 {
+		t.Errorf("columns %v are missing", want)
 	}
 }

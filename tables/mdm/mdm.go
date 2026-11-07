@@ -286,12 +286,17 @@ func hasCheckedCloudConfigInPast24Hours(cloudConfigPath string, fs utils.FileSys
 
 // Will return true if the device appears to be DEP capable based on the on-disk contents, or false if not.
 func getCachedDEPStatus(fs utils.FileSystem) bool {
-	if utils.FileExists(fs, CloudConfigRecordNotFound) {
+	return cachedDEPStatus(fs, CloudConfigRecordNotFound, CloudConfigRecordFound)
+}
+
+// cachedDEPStatus is getCachedDEPStatus with the two record paths given, so a test can stage them.
+func cachedDEPStatus(fs utils.FileSystem, notFoundPath, foundPath string) bool {
+	if utils.FileExists(fs, notFoundPath) {
 		return false
 	}
 
 	var cloudConfigRecordFound map[string]interface{}
-	plistFile, err := os.Open(CloudConfigRecordFound)
+	plistFile, err := os.Open(foundPath)
 	if err != nil {
 		// could not open file
 		return false

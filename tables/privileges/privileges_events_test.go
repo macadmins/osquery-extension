@@ -40,7 +40,7 @@ func TestPrivilegesEventsColumns(t *testing.T) {
 	assert.Contains(t, columns, table.IntegerColumn("is_platform_binary"))
 	assert.Contains(t, columns, table.IntegerColumn("is_es_client"))
 	assert.Contains(t, columns, table.TextColumn("process_start_time"))
-	assert.Contains(t, columns, table.TextColumn("last"))
+	assert.Contains(t, columns, table.TextColumn("last", table.AdditionalColumn()))
 }
 
 func TestGenerateEventsFullHistory(t *testing.T) {

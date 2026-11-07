@@ -100,7 +100,7 @@ func TestUserFindingsLeaveServerRowsComplete(t *testing.T) {
 		}
 		t.Cleanup(func() { homeProbes = original })
 
-		rows := withoutStandingNotes(discoverForHome(ctx, fsscan.UserHome{Name: "alice", Path: home},
+		rows := withoutStandingNotes(discoverForHome(ctx, fsscan.UserHome{Name: "alice", ID: ownerID(), Path: home},
 			time.Now().Add(time.Minute)))
 		var stopped, sawHealthy bool
 		for _, row := range rows {

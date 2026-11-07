@@ -64,7 +64,7 @@ func EnergyImpactColumns() []table.ColumnDefinition {
 		table.IntegerColumn("packets_sent"),
 		table.IntegerColumn("bytes_received"),
 		table.IntegerColumn("bytes_sent"),
-		table.IntegerColumn("interval"),
+		table.IntegerColumn("interval", table.AdditionalColumn()),
 	}
 }
 

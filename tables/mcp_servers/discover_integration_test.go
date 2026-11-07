@@ -15,6 +15,7 @@ import (
 
 	"github.com/macadmins/osquery-extension/pkg/fsscan"
 	"github.com/macadmins/osquery-extension/pkg/testutil"
+	"github.com/macadmins/osquery-extension/pkg/utils"
 )
 
 // serversOnly drops the diagnostic rows, so a test asserting on the servers found does not
@@ -40,7 +41,7 @@ func serversOnly(rows []Server) []Server {
 // roaming-application-data row and fail a count or a no-warning assertion for a reason that
 // has nothing to do with discovery. See withoutStandingNotes.
 func discoverForTest(user, home string) []Server {
-	rows := discoverForHome(context.Background(), fsscan.UserHome{Name: user, Path: home},
+	rows := discoverForHome(context.Background(), fsscan.UserHome{Name: user, ID: ownerID(), Path: home},
 		time.Now().Add(fsscan.WalkTimeout()))
 	return withoutStandingNotes(rows)
 }
@@ -517,6 +518,51 @@ func TestDiscoverAllHonoursCallerCancellation(t *testing.T) {
 	}
 }
 
+// A roster read that fails under a done context is the cancellation, not a roster failure, and
+// no account was reached, so the row carries none. A constrained query gets it under each name.
+func TestCancelledRosterReadReportsCancellationWithoutAnAccount(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "alice"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rows := DiscoverAll(ctx, rosterOf(t, root), nil)
+	if len(rows) != 1 || rows[0].Warning.Code != warnCancelledPreHome || rows[0].User != "" ||
+		rows[0].Home != "" {
+		t.Errorf("rows = %+v, want one cancelled_before_home row with no account", rows)
+	}
+	rows = DiscoverAll(ctx, rosterOf(t, root), map[string]struct{}{"alice": {}})
+	if len(rows) != 1 || rows[0].Warning.Code != warnCancelledPreHome || rows[0].User != "alice" {
+		t.Errorf("constrained rows = %+v, want one cancelled_before_home row under alice", rows)
+	}
+}
+
+// TestACancelledQueryOpensNoClient: a query already cancelled reports the cancellation without
+// opening a client to osquery.
+func TestACancelledQueryOpensNoClient(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	clienter := &utils.CancelAfterQueryClienter{Inner: rosterOf(t, t.TempDir()), Cancel: cancel}
+	rows := DiscoverAll(ctx, clienter, nil)
+	if clienter.Opened != 0 || len(rows) != 1 || rows[0].Warning.Code != warnCancelledPreHome {
+		t.Errorf("opened %d clients, rows = %+v; want none and one cancelled_before_home row",
+			clienter.Opened, rows)
+	}
+}
+
+// TestARosterFailureWhileCancelledIsTheRosterFailure: a roster read that fails for its own
+// reason, here an empty roster, while the query is cancelled reports the roster failure.
+func TestARosterFailureWhileCancelledIsTheRosterFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	clienter := &utils.CancelAfterQueryClienter{Inner: rosterOf(t, t.TempDir()), Cancel: cancel}
+	rows := DiscoverAll(ctx, clienter, nil)
+	if len(rows) != 1 || rows[0].Warning.Code != warnRosterQueryFailed {
+		t.Errorf("rows = %+v, want one roster_query_failed row", rows)
+	}
+}
+
 func TestDiscoverForHome_VSCodeUserScopeProfilesAndCopilot(t *testing.T) {
 	home := buildFakeHome(t, map[string]string{
 		appSupport("Code", "User", "mcp.json"): `{
@@ -615,7 +661,7 @@ func TestDiscoverForHomeReportsAnExhaustedBudget(t *testing.T) {
 		{"expires during pass 1", 1 * time.Nanosecond},
 	} {
 		rows := withoutStandingNotes(discoverForHome(context.Background(),
-			fsscan.UserHome{Name: "alice", Path: home}, time.Now().Add(testCase.budget)))
+			fsscan.UserHome{Name: "alice", ID: ownerID(), Path: home}, time.Now().Add(testCase.budget)))
 		var diagnostics int
 		for _, row := range rows {
 			if row.Warning.empty() {
@@ -659,7 +705,7 @@ func TestHomeOpenIsChargedAgainstTheDeadline(t *testing.T) {
 	// A deadline already past when the function is entered. Under a duration this arrived as
 	// a positive budget and the whole home was walked.
 	rows := withoutStandingNotes(discoverForHome(context.Background(),
-		fsscan.UserHome{Name: "alice", Path: home}, time.Now().Add(-time.Second)))
+		fsscan.UserHome{Name: "alice", ID: ownerID(), Path: home}, time.Now().Add(-time.Second)))
 	if len(rows) == 0 {
 		t.Fatal("an exhausted deadline produced no row at all, which reads as an account " +
 			"with no configuration")

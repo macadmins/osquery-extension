@@ -158,10 +158,11 @@ const (
 // stow or yadm symlinked into place, which this file does not follow -- is unknown, so the
 // plugins' servers read `unknown` rather than `not_approved`, a positive claim about a decision
 // nobody could read.
-func enabledPlugins(home string) (enablement map[string]bool, known bool, warnings []warning) {
+func enabledPlugins(home, owner string) (enablement map[string]bool, known bool,
+	warnings []warning) {
 	out := make(map[string]bool)
 	data, err := fsscan.ReadBoundedUnder(home, filepath.FromSlash(claudeSettingsRel),
-		probeReadOpts(MaxFileSize))
+		probeReadOpts(MaxFileSize, owner))
 	if err != nil {
 		// Absence is the common case and is evidence in its own right: a user who has never
 		// enabled a plugin has no enablement file, so an installed plugin genuinely is not
@@ -246,9 +247,9 @@ func approvalForPlugin(enablement map[string]bool, known bool,
 // A plugin may legitimately have more than one recorded install, because a plugin can be
 // installed at user scope and again for a particular project, so the value is a set and not
 // one string.
-func selectedVersions(home string) (map[string]map[string]struct{}, bool, []warning) {
+func selectedVersions(home, owner string) (map[string]map[string]struct{}, bool, []warning) {
 	data, err := fsscan.ReadBoundedUnder(home, filepath.FromSlash(claudeInstalledRel),
-		probeReadOpts(MaxFileSize))
+		probeReadOpts(MaxFileSize, owner))
 	if err != nil {
 		if fsscan.ClassifyError(err) == fsscan.ClassAbsent {
 			// No records file at all, which on a host with a populated cache is the same
@@ -320,10 +321,11 @@ func selectedVersions(home string) (map[string]map[string]struct{}, bool, []warn
 // or rewritten copy would otherwise leave every version looking current, while the marker
 // sits in the directory it describes and survives that. Claude writes it on update and on
 // uninstall, which is precisely the state this is trying to detect.
-func versionSelection(home, versionRel, marketplace, plugin string,
+func versionSelection(home, owner, versionRel, marketplace, plugin string,
 	selected map[string]map[string]struct{}, selectionKnown bool) pluginSelection {
 	markerRel := filepath.Join(versionRel, pluginOrphanMarkerName)
-	if _, err := fsscan.ReadBoundedUnder(home, markerRel, probeReadOpts(maxOrphanMarker)); err == nil {
+	markerOpts := probeReadOpts(maxOrphanMarker, owner)
+	if _, err := fsscan.ReadBoundedUnder(home, markerRel, markerOpts); err == nil {
 		return versionSuperseded
 	} else if fsscan.ClassifyError(err) != fsscan.ClassAbsent {
 		// The marker exists and could not be read, or the read was refused. Its presence is
@@ -370,7 +372,8 @@ const maxOrphanMarker = 4096
 // is found, not before: they describe plugins, so an account with none has no use for them, and a
 // malformed copy would otherwise report plugin_settings_unreadable or plugin_records_unreadable
 // about plugins that do not exist.
-func claudePluginRefs(ctx context.Context, home string, deadline time.Time) ([]pluginRef, []warning, bool) {
+func claudePluginRefs(ctx context.Context, home, owner string, deadline time.Time) ([]pluginRef,
+	[]warning, bool) {
 	var (
 		warnings                        []warning
 		enablement                      map[string]bool
@@ -484,14 +487,14 @@ func claudePluginRefs(ctx context.Context, home string, deadline time.Time) ([]p
 				probes++
 				if !evidenceRead {
 					var settingsWarnings, recordWarnings []warning
-					enablement, enablementKnown, settingsWarnings = enabledPlugins(home)
-					selected, selectionKnown, recordWarnings = selectedVersions(home)
+					enablement, enablementKnown, settingsWarnings = enabledPlugins(home, owner)
+					selected, selectionKnown, recordWarnings = selectedVersions(home, owner)
 					warnings = append(warnings, settingsWarnings...)
 					warnings = append(warnings, recordWarnings...)
 					evidenceRead = true
 				}
 				versionRel := filepath.Join(pluginRelPath, version)
-				selection := versionSelection(home, versionRel, marketplace, plugin,
+				selection := versionSelection(home, owner, versionRel, marketplace, plugin,
 					selected, selectionKnown)
 				refs = append(refs, pluginRef{
 					Rel:         filepath.Join(versionRel, claudePluginConfigName),
@@ -572,9 +575,9 @@ type manifestSource struct {
 // scheduled query: one is an archive extraction driven by a file the user controls, the other
 // is a network fetch to a host named in that file. An explicit incompleteness diagnostic says
 // a declaration exists and was not read, which is the honest half of that trade.
-func pluginManifestSources(home, versionRel string) ([]manifestSource, []warning) {
+func pluginManifestSources(home, owner, versionRel string) ([]manifestSource, []warning) {
 	manifestRel := filepath.Join(versionRel, filepath.FromSlash(pluginManifestRel))
-	data, err := fsscan.ReadBoundedUnder(home, manifestRel, probeReadOpts(MaxFileSize))
+	data, err := fsscan.ReadBoundedUnder(home, manifestRel, probeReadOpts(MaxFileSize, owner))
 	if err != nil {
 		// The manifest is optional: a plugin laid out conventionally needs none, and most
 		// have one with no MCP key. A genuinely missing one is silent; anything else,
@@ -737,8 +740,8 @@ func manifestDeclaration(home, versionRel string, element json.RawMessage) (mani
 const pluginSourceContext = "plugin.mcp_json"
 
 // probePlugins reads each installed plugin's MCP configuration.
-func probePlugins(ctx context.Context, home string, homeStorage fsscan.ErrClass, user string,
-	deadline time.Time, seen map[string]struct{}, refs []pluginRef) ([]Server, bool) {
+func probePlugins(ctx context.Context, home, owner string, homeStorage fsscan.ErrClass,
+	user string, deadline time.Time, seen map[string]struct{}, refs []pluginRef) ([]Server, bool) {
 	var out []Server
 	declaredReads := 0
 	for _, ref := range refs {
@@ -753,7 +756,7 @@ func probePlugins(ctx context.Context, home string, homeStorage fsscan.ErrClass,
 		seen[rootPath] = struct{}{}
 		versionRel := filepath.Dir(ref.Rel)
 		manifestPath := filepath.Join(home, versionRel, filepath.FromSlash(pluginManifestRel))
-		extra, manifestWarnings := pluginManifestSources(home, versionRel)
+		extra, manifestWarnings := pluginManifestSources(home, owner, versionRel)
 		var manifestRows []Server
 		for _, manifestWarning := range manifestWarnings {
 			manifestRows = append(manifestRows,
@@ -827,7 +830,7 @@ func probePlugins(ctx context.Context, home string, homeStorage fsscan.ErrClass,
 				}
 				if !cached {
 					read, readErr = fsscan.ReadBoundedUnder(home, source.Rel,
-						probeReadOpts(MaxFileSize))
+						probeReadOpts(MaxFileSize, owner))
 					// The root .mcp.json is followed one hop when it is a link, as a home
 					// config is. A declared source is not, and a refused one is reported as
 					// plugin_manifest_missing_source.
@@ -835,7 +838,7 @@ func probePlugins(ctx context.Context, home string, homeStorage fsscan.ErrClass,
 					if !source.Declared && refused {
 						dir, name := filepath.Split(source.Rel)
 						read, readErr = fsscan.ReadLinkTarget(home, homeStorage, dir, name,
-							probeReadOpts(MaxFileSize), linkChecks(fsscan.ReadBoundedUnder), readErr)
+							probeReadOpts(MaxFileSize, owner), linkChecks(fsscan.ReadBoundedUnder), readErr)
 					}
 					cache[key] = cachedRead{read, readErr}
 				}

@@ -26,7 +26,7 @@ func TestThermalPressureColumns(t *testing.T) {
 	assert.Equal(t, []table.ColumnDefinition{
 		table.TextColumn("thermal_pressure"),
 		table.IntegerColumn("is_throttling"),
-		table.IntegerColumn("interval"),
+		table.IntegerColumn("interval", table.AdditionalColumn()),
 	}, ThermalPressureColumns())
 }
 

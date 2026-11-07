@@ -4,11 +4,9 @@ import (
 	"context"
 	"errors"
 	"strconv"
-	"time"
 
 	"github.com/hashicorp/go-version"
 	"github.com/macadmins/osquery-extension/pkg/utils"
-	osquery "github.com/osquery/osquery-go"
 	"github.com/osquery/osquery-go/plugin/table"
 )
 
@@ -122,23 +120,24 @@ func SofaSecurityReleaseInfoColumns() []table.ColumnDefinition {
 		table.TextColumn("security_info"),
 		table.IntegerColumn("unique_cves_count"),
 		table.IntegerColumn("days_since_previous_release"),
-		table.TextColumn("os_version"),
-		table.TextColumn("url"),
+		table.TextColumn("os_version", table.AdditionalColumn()),
+		table.TextColumn("url", table.AdditionalColumn()),
 	}
 }
 
 func SofaSecurityReleaseInfoGenerate(ctx context.Context, queryContext table.QueryContext, socketPath string, clientOpts ...Option) ([]map[string]string, error) {
+	return securityReleaseInfo(ctx, queryContext, utils.SocketClienter(socketPath), clientOpts...)
+}
+
+// securityReleaseInfo answers the query, asking osquery through clienter for this host's OS
+// version when the query names none.
+func securityReleaseInfo(ctx context.Context, queryContext table.QueryContext,
+	clienter utils.OsqueryClienter, clientOpts ...Option) ([]map[string]string, error) {
 	url, osVersion := processContextConstraints(queryContext)
 
 	if osVersion == "" {
-		// get the current device os version from osquery
-		osqueryClient, err := osquery.NewClient(socketPath, 10*time.Second)
-		if err != nil {
-			return nil, err
-		}
-		defer osqueryClient.Close()
-
-		osVersion, err = getCurrentOSVersion(osqueryClient)
+		var err error
+		osVersion, err = currentOSVersion(ctx, clienter)
 		if err != nil {
 			return nil, err
 		}
@@ -234,10 +233,30 @@ func getSecurityReleaseInfoForOSVersion(root Root, osVersion string) ([]Security
 	return out, nil
 }
 
-func getCurrentOSVersion(client utils.OsqueryClient) (string, error) {
+// currentOSVersion opens one client through clienter to read this host's OS version and closes
+// it before returning.
+func currentOSVersion(ctx context.Context, clienter utils.OsqueryClienter) (string, error) {
+	// osquery-go cancels the context only once osquery has closed the connection, so a query
+	// already cancelled has no reader, and opening a client can wait out the client's timeout.
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	osqueryClient, err := clienter.NewOsqueryClient()
+	if err != nil {
+		return "", err
+	}
+	defer osqueryClient.Close()
+	return getCurrentOSVersion(ctx, osqueryClient)
+}
+
+func getCurrentOSVersion(ctx context.Context, client utils.OsqueryClient) (string, error) {
 	osVersionQuery := "SELECT * FROM os_version;"
 
-	resp, err := client.QueryRow(osVersionQuery)
+	// osquery-go sends the query even when the context is done, so check it before the call.
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	resp, err := client.QueryRowContext(ctx, osVersionQuery)
 	if err != nil {
 		return "", err
 	}

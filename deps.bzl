@@ -64,8 +64,8 @@ def go_dependencies():
     go_repository(
         name = "com_github_micromdm_plist",
         importpath = "github.com/micromdm/plist",
-        sum = "h1:U9A+0ZED3cPxb5ufiTzyn2kyo6UFoR5bMggCR0Q/DOg=",
-        version = "v0.2.3-0.20260123201933-667adaf87d87",
+        sum = "h1:a7G9K92jBnY4k202TqlTropTXrYTLJEGV9Ks5AN0LpU=",
+        version = "v0.3.0",
     )
     go_repository(
         name = "com_github_microsoft_go_winio",
@@ -76,8 +76,8 @@ def go_dependencies():
     go_repository(
         name = "com_github_osquery_osquery_go",
         importpath = "github.com/osquery/osquery-go",
-        sum = "h1:EDgVELFaHiQXln+fZs9Ib9aXJwBEfa2qBZMVpSUYbYM=",
-        version = "v0.0.0-20250131154556-629f995b6947",
+        sum = "h1:GEa8SFf/OXRXSHU5EtjUxs4yPz8caf9UlHN/F89/OJA=",
+        version = "v0.0.0-20260630173615-eb39ad3443df",
     )
     go_repository(
         name = "com_github_pkg_errors",
@@ -96,18 +96,6 @@ def go_dependencies():
         importpath = "github.com/rogpeppe/go-internal",
         sum = "h1:UQB4HGPB6osV0SQTLymcB4TgvyWu6ZyliaW0tI/otEQ=",
         version = "v1.14.1",
-    )
-    go_repository(
-        name = "com_github_sirupsen_logrus",
-        importpath = "github.com/sirupsen/logrus",
-        sum = "h1:dueUQJ1C2q9oE3F7wvmSGAaVtTmUizReu6fjN8uqzbQ=",
-        version = "v1.9.3",
-    )
-    go_repository(
-        name = "com_github_stretchr_objx",
-        importpath = "github.com/stretchr/objx",
-        sum = "h1:xuMeJ0Sdp5ZMRXx/aWO6RZxdr3beISkG5/G/aIRr3pY=",
-        version = "v0.5.2",
     )
     go_repository(
         name = "com_github_stretchr_testify",

@@ -142,7 +142,7 @@ func TestGetRuleErrors(t *testing.T) {
 
 func TestAuthDBColumns(t *testing.T) {
 	expectedColumns := []table.ColumnDefinition{
-		table.TextColumn("name"),
+		table.TextColumn("name", table.IndexColumn()),
 		table.TextColumn("allow_root"),
 		table.TextColumn("authenticate_user"),
 		table.TextColumn("class"),

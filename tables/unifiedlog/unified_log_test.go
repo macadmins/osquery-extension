@@ -12,9 +12,9 @@ import (
 func TestUnifiedLogColumns(t *testing.T) {
 	columns := UnifiedLogColumns()
 	assert.Contains(t, columns, table.TextColumn("time_zone_name"))
-	assert.Contains(t, columns, table.TextColumn("predicate"))
-	assert.Contains(t, columns, table.TextColumn("last"))
-	assert.Contains(t, columns, table.TextColumn("log_level"))
+	assert.Contains(t, columns, table.TextColumn("predicate", table.AdditionalColumn()))
+	assert.Contains(t, columns, table.TextColumn("last", table.AdditionalColumn()))
+	assert.Contains(t, columns, table.TextColumn("log_level", table.AdditionalColumn()))
 }
 
 func TestExecute(t *testing.T) {

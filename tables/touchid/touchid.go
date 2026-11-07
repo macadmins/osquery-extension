@@ -440,7 +440,7 @@ func GetUserConfigs(
 // TouchIDUserConfigColumns is the schema for touchid_user_config.
 func TouchIDUserConfigColumns() []table.ColumnDefinition {
 	return []table.ColumnDefinition{
-		table.IntegerColumn("uid"),
+		table.IntegerColumn("uid", table.IndexColumn(), table.OptimizedColumn()),
 		table.IntegerColumn("fingerprints_registered"),
 		table.IntegerColumn("touchid_unlock"),
 		table.IntegerColumn("touchid_applepay"),

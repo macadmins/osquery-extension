@@ -39,12 +39,7 @@ type privilegesEvent struct {
 }
 
 func cliInstalled(fs utils.FileSystem) bool {
-	info, err := fs.Stat(cliPath)
-	if err != nil {
-		return false
-	}
-	// utils.MockFileSystem returns a nil FileInfo for existing files.
-	return info == nil || !info.IsDir()
+	return utils.FileExists(fs, cliPath)
 }
 
 func parseEvents(output []byte) []privilegesEvent {

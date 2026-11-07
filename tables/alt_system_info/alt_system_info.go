@@ -15,6 +15,10 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// TableName is the name main.go registers this table under, and the name a worker's recovered
+// panic is reported under.
+const TableName = "alt_system_info"
+
 func GetCPUType(cmder utils.CmdRunner) (string, error) {
 	buf, err := cmder.RunCmd("machine")
 	if err != nil {
@@ -117,32 +121,32 @@ func GetHostData(cmder utils.CmdRunner) (*HostData, error) {
 	data := new(HostData)
 
 	var wg errgroup.Group
-	wg.Go(func() error {
+	wg.Go(utils.RecoverWorker(TableName, func() error {
 		buf, err := cmder.RunCmd("hostname")
 		if err != nil {
 			return fmt.Errorf("could not run hostname command: %w", err)
 		}
 		data.Hostname = strings.TrimSpace(string(buf))
 		return nil
-	})
+	}))
 
-	wg.Go(func() error {
+	wg.Go(utils.RecoverWorker(TableName, func() error {
 		buf, err := cmder.RunCmd("scutil", "--get", "ComputerName")
 		if err != nil {
 			return fmt.Errorf("could not run scutil --get ComputerName command: %w", err)
 		}
 		data.ComputerName = strings.TrimSpace(string(buf))
 		return nil
-	})
+	}))
 
-	wg.Go(func() error {
+	wg.Go(utils.RecoverWorker(TableName, func() error {
 		buf, err := cmder.RunCmd("scutil", "--get", "LocalHostName")
 		if err != nil {
 			return fmt.Errorf("could not run scutil --get LocalHostname command: %w", err)
 		}
 		data.LocalHostname = strings.TrimSpace(string(buf))
 		return nil
-	})
+	}))
 
 	return data, wg.Wait()
 }
@@ -173,10 +177,14 @@ func AltSystemInfoColumns() []table.ColumnDefinition {
 }
 
 // IsMacOS150 returns true if the host is running macOS 15.0
-func IsMacOS150(client utils.OsqueryClient) (bool, error) {
+func IsMacOS150(ctx context.Context, client utils.OsqueryClient) (bool, error) {
 	versionQuery := "select * from os_version where name = 'macOS' and major = '15' and minor = 0;"
 
-	resp, err := client.QueryRows(versionQuery)
+	// osquery-go sends the query even when the context is done, so check it before the call.
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	resp, err := client.QueryRowsContext(ctx, versionQuery)
 	if err != nil {
 		return false, err
 	}
@@ -185,10 +193,14 @@ func IsMacOS150(client utils.OsqueryClient) (bool, error) {
 }
 
 // Fallback returns the fields from the system_info table
-func Fallback(client utils.OsqueryClient) ([]map[string]string, error) {
+func Fallback(ctx context.Context, client utils.OsqueryClient) ([]map[string]string, error) {
 	infoQuery := "select * from system_info;"
 
-	resp, err := client.QueryRow(infoQuery)
+	// osquery-go sends the query even when the context is done, so check it before the call.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	resp, err := client.QueryRowContext(ctx, infoQuery)
 	if err != nil {
 		return nil, err
 	}
@@ -212,17 +224,24 @@ var globalCache = new(Cache)
 // Most data is cached forever because it never changes. Hostname data is cached for 5 minutes.
 func AltSystemInfoGenerate(ctx context.Context, queryContext table.QueryContext, socketPath string) ([]map[string]string, error) {
 	return GenerateInfo(
+		ctx,
 		utils.NewRunner().Runner,
-		&utils.SocketOsqueryClienter{SocketPath: socketPath, Timeout: 10 * time.Second},
+		utils.SocketClienter(socketPath),
 		globalCache,
 	)
 }
 
 func GenerateInfo(
+	ctx context.Context,
 	runner utils.CmdRunner,
 	clienter utils.OsqueryClienter,
 	cache *Cache,
 ) ([]map[string]string, error) {
+	// osquery-go cancels the context only once osquery has closed the connection, so a query
+	// already cancelled has no reader, and opening a client can wait out the client's timeout.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 
@@ -234,7 +253,7 @@ func GenerateInfo(
 		}
 		defer osqueryClient.Close()
 
-		return Fallback(osqueryClient)
+		return Fallback(ctx, osqueryClient)
 	}
 
 	if cache.IsMacOS15 == nil {
@@ -245,7 +264,7 @@ func GenerateInfo(
 		}
 		defer osqueryClient.Close()
 
-		isMacOS15, err := IsMacOS150(osqueryClient)
+		isMacOS15, err := IsMacOS150(ctx, osqueryClient)
 		if err != nil {
 			return nil, fmt.Errorf("could not determine if host is running macOS 15.0: %w", err)
 		}
@@ -254,53 +273,54 @@ func GenerateInfo(
 
 		// if the host is not running macOS 15.0, fallback to the system_info table
 		if !isMacOS15 {
-			return Fallback(osqueryClient)
+			return Fallback(ctx, osqueryClient)
 		}
 	}
 
 	var wg errgroup.Group
 	if cache.CPUType == "" {
-		wg.Go(func() error {
+		wg.Go(utils.RecoverWorker(TableName, func() error {
 			var err error
 			cache.CPUType, err = GetCPUType(runner)
 			if err != nil {
 				return fmt.Errorf("could not get cpu type: %w", err)
 			}
 			return nil
-		})
+		}))
 	}
 
 	if cache.IORegData == nil {
-		wg.Go(func() error {
+		wg.Go(utils.RecoverWorker(TableName, func() error {
 			var err error
 			cache.IORegData, err = GetIORegData(runner)
 			if err != nil {
 				return fmt.Errorf("could not get ioreg data: %w", err)
 			}
 			return nil
-		})
+		}))
 	}
 
 	if cache.SysctlData == nil {
-		wg.Go(func() error {
+		wg.Go(utils.RecoverWorker(TableName, func() error {
 			var err error
 			cache.SysctlData, err = GetSysctlData(runner)
 			if err != nil {
 				return fmt.Errorf("could not get sysctl data: %w", err)
 			}
 			return nil
-		})
+		}))
 	}
 
 	if time.Since(cache.lastHost) > 5*time.Minute {
-		wg.Go(func() error {
+		wg.Go(utils.RecoverWorker(TableName, func() error {
 			var err error
 			cache.HostData, err = GetHostData(runner)
 			if err != nil {
 				return fmt.Errorf("could not get host data: %w", err)
 			}
+			cache.lastHost = time.Now()
 			return nil
-		})
+		}))
 
 	}
 

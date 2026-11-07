@@ -289,11 +289,11 @@ const codexTrustedLevel = "trusted"
 //
 // stored counts the .code-workspace files not read because they are stored somewhere other than
 // this machine's disk, for probeProjects to report in the same rows as projects stored that way.
-func vscodeWorkspaceProjects(ctx context.Context, home, appDataRoot string,
+func vscodeWorkspaceProjects(ctx context.Context, home, owner, appDataRoot string,
 	homeStorage fsscan.ErrClass, deadline time.Time) (refs []projectRef, warnings []warning,
 	stored []warning, stopped bool) {
 	scan := devclients.WorkspaceFolders(ctx, home, appDataRoot, homeStorage, deadline,
-		probeReadOpts(MaxFileSize))
+		probeReadOpts(MaxFileSize, owner))
 	for _, kind := range []struct {
 		class fsscan.ErrClass
 		code  warnCode
@@ -518,7 +518,7 @@ func projectRefusalWarning(err error, maxSize int64) (warning, bool) {
 		return warning{Code: warnProjectCloudPlaceholder, Count: 1}, true
 	case fsscan.ClassUserspaceFilesystem:
 		return warning{Code: warnProjectUserspaceFS, Count: 1}, true
-	case fsscan.ClassHardLink, fsscan.ClassForeignOwner:
+	case fsscan.ClassHardLink, fsscan.ClassOwnerMismatch:
 		return warning{Code: warnProjectRefused, Class: class}, true
 	case fsscan.ClassTooLarge:
 		// Reported with the cap that actually applied rather than folded into the generic

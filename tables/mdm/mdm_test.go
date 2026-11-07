@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
@@ -255,10 +256,7 @@ func TestHasCheckedCloudConfigInPast24Hours(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			tmpFile, err := os.CreateTemp(t.TempDir(), "")
-			fs := utils.MockFileSystem{
-				FileExists: true,
-				Err:        nil,
-			}
+			fs := utils.OSFileSystem{}
 			assert.NoError(t, err)
 			_, err = tmpFile.WriteString(c.cloudConfigContents)
 			assert.NoError(t, err)
@@ -272,10 +270,33 @@ func TestHasCheckedCloudConfigInPast24Hours(t *testing.T) {
 
 // TestGetCachedDEPStatus tests the getCachedDEPStatus function
 func TestGetCachedDEPStatus(t *testing.T) {
-	fs := utils.MockFileSystem{FileExists: true, Err: nil}
-	result := getCachedDEPStatus(fs)
+	record := func(t *testing.T, key string) string {
+		path := filepath.Join(t.TempDir(), ".cloudConfigRecordFound")
+		contents := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>` + key + `</key><string>x</string></dict></plist>`
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	missing := filepath.Join(t.TempDir(), "absent")
+	fs := utils.OSFileSystem{}
 
-	assert.NotNil(t, result)
+	// A record without CloudConfigFetchError is a device the server recognized.
+	assert.True(t, cachedDEPStatus(fs, missing, record(t, "ConfigurationURL")))
+	// CloudConfigFetchError means the serial was not recognized.
+	assert.False(t, cachedDEPStatus(fs, missing, record(t, "CloudConfigFetchError")))
+	// The not-found marker decides it before the record is read.
+	notFound := record(t, "ConfigurationURL")
+	assert.False(t, cachedDEPStatus(fs, notFound, record(t, "ConfigurationURL")))
+	// No record, or one that is not a plist, is not DEP capable.
+	assert.False(t, cachedDEPStatus(fs, missing, missing))
+	garbled := filepath.Join(t.TempDir(), "garbled")
+	if err := os.WriteFile(garbled, []byte("not a plist"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assert.False(t, cachedDEPStatus(fs, missing, garbled))
 }
 
 func generateCloudConfigContents(t time.Time) string {

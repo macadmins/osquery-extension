@@ -284,7 +284,8 @@ type approvalSource struct {
 // exists and cannot be read or parsed, or is null, sets Known false and returns a warning
 // naming the class, because "unknown" alone leaves an administrator unable to tell malformed
 // JSON from denied access from an oversized file.
-func readApprovalSettings(home, projRel string, source approvalSource) (claudeApproval, []warning) {
+func readApprovalSettings(home, owner, projRel string, source approvalSource) (claudeApproval,
+	[]warning) {
 	// The source's own path travels with its warnings, so a row naming only the project
 	// directory cannot leave an administrator guessing which of two settings files failed.
 	// Set on every warning this function returns, at the one point that knows.
@@ -293,7 +294,7 @@ func readApprovalSettings(home, projRel string, source approvalSource) (claudeAp
 		data []byte
 		err  error
 	)
-	opts := probeReadOpts(MaxFileSize)
+	opts := probeReadOpts(MaxFileSize, owner)
 	if projRel == "" {
 		data, err = fsscan.ReadBoundedUnder(home, filepath.FromSlash(source.relFile), opts)
 	} else {
@@ -371,10 +372,10 @@ func readApprovalSettings(home, projRel string, source approvalSource) (claudeAp
 // `~/.claude/settings.local.json` is deliberately not read here. Claude documents it at
 // project scope, and it appears in a home only because that home was opened as a project, so
 // treating it as account-wide applied one project's decisions to every project.
-func userApprovalSettings(home string) (claudeApproval, []warning) {
+func userApprovalSettings(home, owner string) (claudeApproval, []warning) {
 	// Always eligible. Claude documents approvals from the user settings file, managed
 	// settings and `--settings` as applying even in an untrusted folder.
-	return readApprovalSettings(home, "",
+	return readApprovalSettings(home, owner, "",
 		approvalSource{relFile: claudeSettingsRel, eligibility: mayApprove})
 }
 
@@ -403,7 +404,8 @@ func userApprovalSettings(home string) (claudeApproval, []warning) {
 // local approvals read as unknown rather than applying; that is the safe direction.
 //
 // Applied lowest precedence first, so the local file's scalar overrides the committed one's.
-func projectApprovalSettings(home, projRel string, trusted bool) (claudeApproval, []warning) {
+func projectApprovalSettings(home, owner, projRel string, trusted bool) (claudeApproval,
+	[]warning) {
 	committed := cannotApprove
 	if trusted {
 		committed = mayApprove
@@ -420,7 +422,7 @@ func projectApprovalSettings(home, projRel string, trusted bool) (claudeApproval
 		{relFile: filepath.Join(".claude", "settings.json"), eligibility: committed},
 		{relFile: filepath.Join(".claude", "settings.local.json"), eligibility: local},
 	} {
-		evidence, sourceWarnings := readApprovalSettings(home, projRel, source)
+		evidence, sourceWarnings := readApprovalSettings(home, owner, projRel, source)
 		out = out.overlay(evidence)
 		warnings = append(warnings, sourceWarnings...)
 	}

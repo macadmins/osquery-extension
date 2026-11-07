@@ -261,40 +261,61 @@ func isRefusedOrNotDirectory(err error) bool {
 	return false
 }
 
-// checkDescriptor applies ReadOpts' link-count refusal to an already-open file.
+// checkDescriptor applies ReadOpts' link-count and owner refusals to an already-open file.
 //
-// The link count comes from GetFileInformationByHandle, which answers about the handle
-// rather than about a path, so a replacement between the open and the check cannot change
-// the answer. That is the same property the unix implementation relies on for its fstat.
+// Both answers come from the handle: GetFileInformationByHandle for the link count and
+// GetSecurityInfo for the owner, so a replacement between the open and the check cannot change
+// either. That is the same property the unix implementation relies on for its fstat.
 //
-// The owner check is deliberately not implemented here, and OwnerUID is refused rather than
-// silently treated as satisfied. Comparing an NTFS owner means GetSecurityInfo, a SID
-// conversion and a comparison against the roster's SID string, none of which has a CI job
-// that would ever execute it; shipping it unexercised in the function whose whole purpose is
-// a security guarantee is worse than declining the guarantee out loud. Refusing is what stops
-// a caller believing a check ran that did not -- a successful read would otherwise look like
-// an owner-verified one. Hard links are the vector that matters here and
-// GetFileInformationByHandle does answer them, so the useful half is covered. Implementing
-// the rest wants a Windows CI job first.
+// The owner is read as a SID and compared as a string with ReadOpts.OwnerUID, which holds the
+// account's whole SID. A file whose owner cannot be read is refused rather than passed, so a
+// successful read always means the check ran.
 func checkDescriptor(f *os.File, _ os.FileInfo, opts ReadOpts) error {
+	// The link count first and the owner second, as on POSIX, so a file both checks refuse is
+	// reported for the same reason on every platform.
+	if opts.RefuseHardLinks {
+		var info windows.ByHandleFileInformation
+		if err := windows.GetFileInformationByHandle(windows.Handle(f.Fd()), &info); err != nil {
+			return fmt.Errorf("%w: link count is unavailable for this file: %w", ErrNotRegular, err)
+		}
+		if info.NumberOfLinks > 1 {
+			return fmt.Errorf("%w: %d links", ErrHardLink, info.NumberOfLinks)
+		}
+	}
 	if opts.OwnerUID != "" {
-		// Refused rather than passed. A caller that asked for an owner check and got a
-		// successful read would believe the file was owner-verified, which is precisely the
-		// half-applied guarantee this must not create.
-		return fmt.Errorf("%w: owner verification is not implemented on this platform",
-			ErrForeignOwner)
-	}
-	if !opts.RefuseHardLinks {
-		return nil
-	}
-	var info windows.ByHandleFileInformation
-	if err := windows.GetFileInformationByHandle(windows.Handle(f.Fd()), &info); err != nil {
-		return fmt.Errorf("%w: link count is unavailable for this file: %w", ErrNotRegular, err)
-	}
-	if info.NumberOfLinks > 1 {
-		return fmt.Errorf("%w: %d links", ErrHardLink, info.NumberOfLinks)
+		var owner *windows.SID
+		sd, err := windows.GetSecurityInfo(windows.Handle(f.Fd()), windows.SE_FILE_OBJECT,
+			windows.OWNER_SECURITY_INFORMATION)
+		if err == nil {
+			owner, _, err = sd.Owner()
+		}
+		if err == nil && owner == nil {
+			err = errNoOwner
+		}
+		if err != nil {
+			return fmt.Errorf("%w: the owner is unavailable for this file: %w", ErrOwnerMismatch,
+				err)
+		}
+		if ownerSID := owner.String(); ownerSID != opts.OwnerUID && !privilegedOwner(ownerSID) {
+			return ErrOwnerMismatch
+		}
 	}
 	return nil
+}
+
+// errNoOwner is the cause reported when a security descriptor carries no owner SID.
+var errNoOwner = errors.New("security descriptor has no owner")
+
+// privilegedOwner reports whether sid is an owner whose files pass an owner check for any
+// account: LocalSystem, the BUILTIN\Administrators group, and TrustedInstaller.
+func privilegedOwner(sid string) bool {
+	switch sid {
+	case "S-1-5-18", // LocalSystem
+		"S-1-5-32-544", // BUILTIN\Administrators
+		"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464": // TrustedInstaller
+		return true
+	}
+	return false
 }
 
 // cloudPlaceholderFlags are the attributes that mark a file whose content is not local.

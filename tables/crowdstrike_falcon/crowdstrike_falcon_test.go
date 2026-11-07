@@ -1,26 +1,13 @@
 package crowdstrike_falcon
 
 import (
+	"context"
 	"testing"
 
 	"github.com/macadmins/osquery-extension/pkg/utils"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 )
-
-type errorOsqueryClient struct {
-	err error
-}
-
-func (e errorOsqueryClient) QueryRows(query string) ([]map[string]string, error) {
-	return nil, e.err
-}
-
-func (e errorOsqueryClient) QueryRow(query string) (map[string]string, error) {
-	return nil, e.err
-}
-
-func (e errorOsqueryClient) Close() {}
 
 func TestRunCrowdstrikeFalconDarwin(t *testing.T) {
 	tests := []struct {
@@ -197,7 +184,7 @@ rfm-state=true,`,
 				Data: tt.mockOsqData,
 			}
 
-			output, err := runCrowdstrikeFalconLinux(runner, fs, mockOsqueryClient)
+			output, err := runCrowdstrikeFalconLinux(context.Background(), runner, fs, mockOsqueryClient)
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
@@ -234,7 +221,8 @@ func TestRunCrowdstrikeFalconLinuxQueryError(t *testing.T) {
 	runner := utils.Runner{Runner: utils.MockCmdRunner{}}
 	fs := utils.MockFileSystem{FileExists: true}
 
-	output, err := runCrowdstrikeFalconLinux(runner, fs, errorOsqueryClient{err: errors.New("query failed")})
+	output, err := runCrowdstrikeFalconLinux(context.Background(), runner, fs,
+		utils.ErrorOsqueryClient{Err: errors.New("query failed")})
 	assert.Error(t, err)
 	assert.Empty(t, output)
 	assert.ErrorContains(t, err, "query failed")
@@ -285,4 +273,66 @@ func TestLinuxParsing(t *testing.T) {
 			assert.Equal(t, tt.expected.ReducedFunctionalityMode, result.ReducedFunctionalityMode)
 		})
 	}
+}
+
+// TestGenerateOnLinuxAsksThroughTheClienter: on Linux the path a query takes asks osquery
+// whether the sensor is loaded through the clienter it is given, and reports a client that
+// cannot be opened.
+func TestGenerateOnLinuxAsksThroughTheClienter(t *testing.T) {
+	// Keyed by the Linux falconctl path, so the test fails on any other host if generate looks
+	// the path up by the host's platform instead of the one it was given.
+	runner := utils.Runner{Runner: utils.MultiMockCmdRunner{Commands: map[string]utils.MockCmdRunner{
+		falconCtlPath["linux"] + " -g --aid --cid --rfm-state --version": {Output: `cid="79391c24113773b01d8181c38c3e111a", aid="f3edc954d286243b5bd94130c2f2647d", version = 7.29.18202.0
+rfm-state=true,`}}}}
+	fs := utils.MockFileSystem{FileExists: true}
+	clienter := &utils.MockOsqueryClienter{Data: map[string][]map[string]string{
+		"SELECT 1 FROM processes WHERE name like 'falcon-sensor%';": {{"1": "1"}},
+	}}
+	rows, err := generate(context.Background(), "linux", runner, fs, clienter)
+	assert.NoError(t, err)
+	assert.Len(t, rows, 1)
+	assert.Equal(t, "true", rows[0]["sensor_loaded"])
+	assert.Equal(t, "F3EDC954D286243B5BD94130C2F2647D", rows[0]["agent_id"])
+
+	_, err = generate(context.Background(), "linux", runner, fs,
+		&utils.MockOsqueryClienter{Err: errors.New("no socket")})
+	assert.Error(t, err)
+}
+
+// TestGenerateOnLinuxWithoutFalconctlOpensNoClient: a host without falconctl gets the empty row
+// without a client being opened, so an unreachable osquery socket does not fail the query.
+func TestGenerateOnLinuxWithoutFalconctlOpensNoClient(t *testing.T) {
+	runner := utils.Runner{Runner: utils.MockCmdRunner{}}
+	fs := utils.MockFileSystem{FileExists: false}
+	rows, err := generate(context.Background(), "linux", runner, fs,
+		&utils.MockOsqueryClienter{Err: errors.New("no socket")})
+	assert.NoError(t, err)
+	assert.Len(t, rows, 1)
+	assert.Equal(t, "false", rows[0]["sensor_loaded"])
+
+	// A falconctl that cannot be checked is an error, reported as itself rather than as the
+	// unreachable socket.
+	fs = utils.MockFileSystem{Err: errors.New("input/output error")}
+	_, err = generate(context.Background(), "linux", runner, fs,
+		&utils.MockOsqueryClienter{Err: errors.New("no socket")})
+	assert.EqualError(t, err, "input/output error")
+}
+
+// TestGenerateOnLinuxWithCancelledContextOpensNoClient: with falconctl installed, a context
+// already cancelled returns its error without a client being opened.
+func TestGenerateOnLinuxWithCancelledContextOpensNoClient(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	runner := utils.Runner{Runner: utils.MockCmdRunner{}}
+	fs := utils.MockFileSystem{FileExists: true}
+	clienter := &utils.CancelAfterQueryClienter{
+		Inner: &utils.MockOsqueryClienter{Data: map[string][]map[string]string{
+			"SELECT 1 FROM processes WHERE name like 'falcon-sensor%';": {{"1": "1"}},
+		}},
+		Cancel: func() {},
+	}
+
+	_, err := generate(ctx, "linux", runner, fs, clienter)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Zero(t, clienter.Opened)
 }

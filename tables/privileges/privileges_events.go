@@ -52,7 +52,7 @@ func PrivilegesEventsColumns() []table.ColumnDefinition {
 		// timestamp.
 		table.TextColumn("process_start_time"),
 		// Parameter column: WHERE last = '3h' maps to `--last 3h`.
-		table.TextColumn("last"),
+		table.TextColumn("last", table.AdditionalColumn()),
 	}
 }
 

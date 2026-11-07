@@ -73,7 +73,7 @@ func TestProjectFileReadRefusesASymlinkedParentDirectory(t *testing.T) {
 	}
 
 	data, err := fsscan.ReadProjectFile(home, filepath.Join("code", "repo"), ".mcp.json",
-		probeReadOpts(MaxFileSize))
+		probeReadOpts(MaxFileSize, ownerID()))
 	if err == nil {
 		t.Fatalf("read through a symlinked parent into another user's config: %q", data)
 	}
