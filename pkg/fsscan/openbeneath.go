@@ -72,8 +72,9 @@ var (
 	// linking user could write, which is what makes the count worth refusing on.
 	ErrHardLink = errors.New("fsscan: file has more than one hard link")
 
-	// ErrForeignOwner means the file's owning uid is not the one ReadOpts.OwnerUID named.
-	ErrForeignOwner = errors.New("fsscan: file is owned by another account")
+	// ErrOwnerMismatch means the file's owner is neither the account ReadOpts.OwnerUID named nor a
+	// privileged owner.
+	ErrOwnerMismatch = errors.New("fsscan: file is owned by another account")
 
 	// errUnsupported reports that this platform has no symlink-refusing traversal.
 	//
@@ -112,8 +113,8 @@ const (
 	ClassGrewDuringRead ErrClass = "grew_during_read"
 	// ClassHardLink is a multiply-linked file refused by RefuseHardLinks.
 	ClassHardLink ErrClass = "hard_link"
-	// ClassForeignOwner is a file owned by an account other than the one expected.
-	ClassForeignOwner ErrClass = "foreign_owner"
+	// ClassOwnerMismatch is a file owned by an account other than the one expected.
+	ClassOwnerMismatch ErrClass = "owner_mismatch"
 	// ClassUnsupported is a platform with no symlink-refusing traversal.
 	ClassUnsupported ErrClass = "unsupported"
 	// ClassCloudPlaceholder is a file whose content is not local.
@@ -154,8 +155,8 @@ func ClassifyError(err error) ErrClass {
 		return ClassGrewDuringRead
 	case errors.Is(err, ErrHardLink):
 		return ClassHardLink
-	case errors.Is(err, ErrForeignOwner):
-		return ClassForeignOwner
+	case errors.Is(err, ErrOwnerMismatch):
+		return ClassOwnerMismatch
 	case errors.Is(err, ErrNotRegular):
 		return ClassNotRegular
 	case errors.Is(err, ErrCloudPlaceholder):
@@ -227,7 +228,16 @@ type ReadOpts struct {
 	// MaxSize caps the bytes read. A larger file is refused with ErrTooLarge.
 	MaxSize int64
 
-	// OwnerUID refuses a file whose owning uid differs; "" disables the check.
+	// OwnerUID is the account whose file this must be: a file passes when it is owned by that
+	// account or by a privileged owner, and is refused with ErrOwnerMismatch otherwise. ""
+	// disables the check.
+	//
+	// On POSIX the value is the uid and the privileged owner is root. On Windows it is the
+	// account's whole SID, not the last component the roster reports as uid, and the privileged
+	// owners are LocalSystem, BUILTIN\Administrators and TrustedInstaller. Privileged owners
+	// pass because a file the account's own sudo or a root container wrote is still that
+	// account's inventory, while a file another regular account owns is not attributable to
+	// this one. A Windows file whose owner cannot be read is refused.
 	//
 	// A string because the roster carries the uid as osquery reported it, and because the
 	// identity on Windows is a SID rather than a number. A parameter rather than something

@@ -1,6 +1,7 @@
 package alt_system_info_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -18,21 +19,6 @@ type errorOsqueryClienter struct {
 func (e errorOsqueryClienter) NewOsqueryClient() (utils.OsqueryClient, error) {
 	return nil, e.err
 }
-
-type errorOsqueryClient struct {
-	rowsErr error
-	rowErr  error
-}
-
-func (e errorOsqueryClient) QueryRows(query string) ([]map[string]string, error) {
-	return nil, e.rowsErr
-}
-
-func (e errorOsqueryClient) QueryRow(query string) (map[string]string, error) {
-	return nil, e.rowErr
-}
-
-func (e errorOsqueryClient) Close() {}
 
 var mockIOReg = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -177,6 +163,23 @@ func TestGetHostDataCommandError(t *testing.T) {
 	assert.ErrorContains(t, err, "could not run scutil --get ComputerName command")
 }
 
+// panickingCmdRunner panics on every command, standing in for a fault in code a worker runs.
+type panickingCmdRunner struct{}
+
+func (panickingCmdRunner) RunCmd(string, ...string) ([]byte, error) { panic("command fault") }
+
+func (panickingCmdRunner) RunCmdWithStdin(string, string, ...string) ([]byte, error) {
+	panic("command fault")
+}
+
+// TestGetHostDataRecoversAWorkerPanic: a panic in one of the errgroup workers becomes the
+// table's internal error instead of ending the process.
+func TestGetHostDataRecoversAWorkerPanic(t *testing.T) {
+	_, err := alt_system_info.GetHostData(panickingCmdRunner{})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "alt_system_info: internal error")
+}
+
 var (
 	isMacOS15Query  = "select * from os_version where name = 'macOS' and major = '15' and minor = 0;"
 	systemInfoQuery = "select * from system_info;"
@@ -189,18 +192,19 @@ func TestIsMacOS15(t *testing.T) {
 		},
 	}
 
-	isMacOS15, err := alt_system_info.IsMacOS150(mockOsquery)
+	isMacOS15, err := alt_system_info.IsMacOS150(context.Background(), mockOsquery)
 	require.NoError(t, err)
 	assert.False(t, isMacOS15)
 
 	mockOsquery.Data[isMacOS15Query] = []map[string]string{{"version": "15.0"}}
-	isMacOS15, err = alt_system_info.IsMacOS150(mockOsquery)
+	isMacOS15, err = alt_system_info.IsMacOS150(context.Background(), mockOsquery)
 	require.NoError(t, err)
 	assert.True(t, isMacOS15)
 }
 
 func TestIsMacOS15QueryError(t *testing.T) {
-	_, err := alt_system_info.IsMacOS150(errorOsqueryClient{rowsErr: errors.New("query failed")})
+	_, err := alt_system_info.IsMacOS150(context.Background(),
+		utils.ErrorOsqueryClient{Err: errors.New("query failed")})
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "query failed")
 }
@@ -212,15 +216,45 @@ func TestFallback(t *testing.T) {
 		},
 	}
 
-	value, err := alt_system_info.Fallback(mockOsquery)
+	value, err := alt_system_info.Fallback(context.Background(), mockOsquery)
 	require.NoError(t, err)
 	assert.Equal(t, mockOsquery.Data[systemInfoQuery], value)
 }
 
 func TestFallbackQueryError(t *testing.T) {
-	_, err := alt_system_info.Fallback(errorOsqueryClient{rowErr: errors.New("system_info failed")})
+	_, err := alt_system_info.Fallback(context.Background(),
+		utils.ErrorOsqueryClient{Err: errors.New("system_info failed")})
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "system_info failed")
+}
+
+// countingCmdRunner answers as MultiMockCmdRunner does and counts the hostname commands it runs.
+type countingCmdRunner struct {
+	utils.MultiMockCmdRunner
+	hostnames int
+}
+
+func (runner *countingCmdRunner) RunCmd(name string, arg ...string) ([]byte, error) {
+	if name == "hostname" {
+		runner.hostnames++
+	}
+	return runner.MultiMockCmdRunner.RunCmd(name, arg...)
+}
+
+// TestGenerateInfoCachesHostData: the host names are read once and served from the cache for
+// five minutes, so a second query runs no hostname command.
+func TestGenerateInfoCachesHostData(t *testing.T) {
+	mockOsquery := &utils.MockOsqueryClienter{Data: map[string][]map[string]string{
+		isMacOS15Query: {{"version": "15.0"}},
+	}}
+	runner := &countingCmdRunner{MultiMockCmdRunner: *mockCmdRunner}
+	cache := new(alt_system_info.Cache)
+	for range 2 {
+		data, err := alt_system_info.GenerateInfo(context.Background(), runner, mockOsquery, cache)
+		require.NoError(t, err)
+		assert.Equal(t, "myhostname.local", data[0]["hostname"])
+	}
+	assert.Equal(t, 1, runner.hostnames)
 }
 
 func TestGenerateInfo(t *testing.T) {
@@ -234,7 +268,8 @@ func TestGenerateInfo(t *testing.T) {
 	// Test with macOS 15.0 multiple times to ensure cache is working
 	cache := new(alt_system_info.Cache)
 	for i := 0; i < 3; i++ {
-		data, err := alt_system_info.GenerateInfo(mockCmdRunner, mockOsquery, cache)
+		data, err := alt_system_info.GenerateInfo(context.Background(), mockCmdRunner,
+			mockOsquery, cache)
 		require.NoError(t, err)
 		require.Len(t, data, 1)
 		assert.Equal(t, "arm64e", data[0]["cpu_type"])
@@ -258,7 +293,8 @@ func TestGenerateInfo(t *testing.T) {
 	mockOsquery.Data[isMacOS15Query] = []map[string]string{}
 	cache = new(alt_system_info.Cache)
 	for i := 0; i < 3; i++ {
-		data, err := alt_system_info.GenerateInfo(mockCmdRunner, mockOsquery, cache)
+		data, err := alt_system_info.GenerateInfo(context.Background(), mockCmdRunner,
+			mockOsquery, cache)
 		require.NoError(t, err)
 		require.Len(t, data, 1)
 		assert.Equal(t, "value", data[0]["key"])
@@ -269,6 +305,7 @@ func TestGenerateInfo(t *testing.T) {
 
 func TestGenerateInfoClientCreationError(t *testing.T) {
 	_, err := alt_system_info.GenerateInfo(
+		context.Background(),
 		mockCmdRunner,
 		errorOsqueryClienter{err: errors.New("socket unavailable")},
 		new(alt_system_info.Cache),
@@ -294,7 +331,25 @@ func TestGenerateInfoCommandError(t *testing.T) {
 		},
 	}
 
-	_, err := alt_system_info.GenerateInfo(runner, mockOsquery, new(alt_system_info.Cache))
+	_, err := alt_system_info.GenerateInfo(context.Background(), runner, mockOsquery,
+		new(alt_system_info.Cache))
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "could not get cpu type")
+}
+
+func TestGenerateInfoCancelledContextOpensNoClient(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	clienter := &utils.CancelAfterQueryClienter{
+		Inner: &utils.MockOsqueryClienter{
+			Data: map[string][]map[string]string{
+				isMacOS15Query: {{"version": "15.0"}},
+			},
+		},
+		Cancel: func() {},
+	}
+
+	_, err := alt_system_info.GenerateInfo(ctx, mockCmdRunner, clienter, new(alt_system_info.Cache))
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Zero(t, clienter.Opened)
 }

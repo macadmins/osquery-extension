@@ -446,7 +446,7 @@ func TestVSCodeWorkspaceProjects(t *testing.T) {
 	testutil.WriteFile(t, filepath.Join(storage, "c9d0e1f2", "workspace.json"),
 		`{"folder":"vscode-remote://ssh-remote%2Bbox/home/alice/p"}`)
 
-	refs, _, _, _ := vscodeWorkspaceProjects(context.Background(), home, "", fsscan.ClassNone,
+	refs, _, _, _ := vscodeWorkspaceProjects(context.Background(), home, ownerID(), "", fsscan.ClassNone,
 		time.Now().Add(time.Minute))
 	var rels []string
 	for _, ref := range refs {

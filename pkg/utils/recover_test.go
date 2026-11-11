@@ -2,10 +2,12 @@ package utils
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/osquery/osquery-go/plugin/table"
+	"golang.org/x/sync/errgroup"
 )
 
 // TestRecoverPanicsReturnsFixedText: a panic is recovered into an error, and the panic value,
@@ -23,6 +25,24 @@ func TestRecoverPanicsReturnsFixedText(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "opaqueSecret") || strings.Contains(err.Error(), "goroutine") {
 		t.Errorf("the error carries the panic value or the stack: %q", err)
+	}
+}
+
+// TestRecoverWorkerReturnsFixedText: a panic on a worker goroutine becomes that worker's error,
+// without the panic value, and a worker that returns normally is unchanged.
+func TestRecoverWorkerReturnsFixedText(t *testing.T) {
+	var workers errgroup.Group
+	workers.Go(RecoverWorker("some_table", func() error { panic("TOKEN=opaqueSecret") }))
+	err := workers.Wait()
+	if err == nil || !strings.HasPrefix(err.Error(), "some_table: ") {
+		t.Fatalf("err = %v; want the table's internal error", err)
+	}
+	if strings.Contains(err.Error(), "opaqueSecret") {
+		t.Errorf("the error carries the panic value: %q", err)
+	}
+	want := errors.New("worker failed")
+	if got := RecoverWorker("some_table", func() error { return want })(); got != want {
+		t.Errorf("err = %v; want the worker's own error unchanged", got)
 	}
 }
 

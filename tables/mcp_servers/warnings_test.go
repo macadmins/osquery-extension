@@ -144,7 +144,7 @@ func TestWarningColumnCarriesNoInputBytes(t *testing.T) {
 			name: "a read failure on a path containing a token",
 			run: func() warning {
 				_, err := fsscan.ReadBoundedUnder(t.TempDir(),
-					filepath.Join("--token="+secret, "mcp.json"), probeReadOpts(MaxFileSize))
+					filepath.Join("--token="+secret, "mcp.json"), probeReadOpts(MaxFileSize, ownerID()))
 				if err == nil {
 					t.Fatal("the fixture is wrong: this read must fail")
 				}

@@ -2,6 +2,7 @@ package go_modules
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -62,10 +63,12 @@ const maxListSize = 1 << 20
 
 // readOpts is the one place the read refusals are chosen, so a read site cannot opt out.
 // Hard links are refused because a hard link to another user's file passes every path check.
-// Owner checks are not set: fsscan refuses rather than passes an owner check on Windows, where
-// it is not implemented, so setting one here would return no rows on that platform.
-func readOpts(maxSize int64) fsscan.ReadOpts {
-	return fsscan.ReadOpts{MaxSize: maxSize, RefuseHardLinks: true, CloudPlaceholder: cloudPlaceholder}
+// owner is the account whose home is read: its uid on POSIX and its whole SID on Windows. A file
+// owned by another account is refused, and one owned by root, SYSTEM or Administrators is read;
+// see fsscan.ReadOpts.OwnerUID.
+func readOpts(maxSize int64, owner string) fsscan.ReadOpts {
+	return fsscan.ReadOpts{MaxSize: maxSize, OwnerUID: owner, RefuseHardLinks: true,
+		CloudPlaceholder: cloudPlaceholder}
 }
 
 // Where a project's content is stored decides whether this table reads it. A project stored
@@ -128,6 +131,11 @@ func discoverAll(ctx context.Context, clienter utils.OsqueryClienter,
 // without writing tens of thousands of rows.
 func discoverWithin(ctx context.Context, clienter utils.OsqueryClienter,
 	userFilter, pathFilter map[string]struct{}, limits outputLimits) []row {
+	// osquery-go cancels the context only once osquery has closed the connection, so a query
+	// already cancelled has no reader, and opening a client can wait out the client's timeout.
+	if ctx.Err() != nil {
+		return rosterRows(userFilter, warning{Code: warnCancelledPreHome})
+	}
 	client, err := clienter.NewOsqueryClient()
 	if err != nil {
 		return rosterRows(userFilter, warning{Code: warnRosterUnreachable})
@@ -135,8 +143,14 @@ func discoverWithin(ctx context.Context, clienter utils.OsqueryClienter,
 	defer client.Close()
 	// Set before the roster is read, so the roster query is inside the budget.
 	deadline := time.Now().Add(fsscan.WalkTimeout())
-	enumerated, err := fsscan.ListUserHomes(client, userFilter)
+	enumerated, err := fsscan.ListUserHomes(ctx, client, userFilter)
 	if err != nil {
+		// A roster read the cancellation stopped reports it, with no account since none was
+		// reached; any other failure is the roster's own, even when the query was cancelled
+		// meanwhile.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return rosterRows(userFilter, warning{Code: warnCancelledPreHome})
+		}
 		return rosterRows(userFilter, warning{Code: warnRosterQueryFailed})
 	}
 
@@ -195,7 +209,8 @@ func discoverWithin(ctx context.Context, clienter utils.OsqueryClienter,
 		}
 	}
 
-	// Accounts that share a home are scanned once and reported once each.
+	// Scans are cached by account identity and home, see devclients.ScanKey, and every account is
+	// reported once; accounts with the same identity and home share one scan.
 	scanned := make(map[string][]row, len(enumerated.Homes))
 	remaining := limits
 	for _, home := range enumerated.Homes {
@@ -245,9 +260,9 @@ func discoverWithin(ctx context.Context, clienter utils.OsqueryClienter,
 // The output limits apply to cached rows too, since they count again for each account they are
 // reported under.
 //
-// The home path alone is not the whole cache key on Windows, where discovery also reads the
-// account's own registry hive; see devclients.ScanKey. pathFilter is the same for every account
-// in one query, so a cached scan is the same scan another account sharing the home would make.
+// The cache is keyed by account identity and home, see devclients.ScanKey. pathFilter is the
+// same for every account in one query, so a cached scan is the same scan another account
+// sharing the home would make.
 func rowsForHome(ctx context.Context, home fsscan.UserHome, deadline time.Time,
 	remaining, limits outputLimits, pathFilter map[string]struct{},
 	scanned map[string][]row) []row {
@@ -405,7 +420,7 @@ func namedPathIn(home, path string) bool {
 // of them is not opened at all.
 func discoverHome(ctx context.Context, account fsscan.UserHome, deadline time.Time,
 	remaining, limits outputLimits, pathFilter map[string]struct{}) []row {
-	home := account.Path
+	home, owner := account.Path, account.OwnerID()
 	var out []row
 	note := func(w warning) { out = append(out, row{Home: home, Warning: w}) }
 
@@ -524,7 +539,7 @@ func discoverHome(ctx context.Context, account fsscan.UserHome, deadline time.Ti
 				stopped, partial = true, index > 0
 				break
 			}
-			files[index] = readModuleFile(home, homeStorage, project, file)
+			files[index] = readModuleFile(home, owner, homeStorage, project, file)
 			if files[index].cloudStored {
 				break
 			}
@@ -618,7 +633,7 @@ func discoverHome(ctx context.Context, account fsscan.UserHome, deadline time.Ti
 func addRecordedProjects(ctx context.Context, account fsscan.UserHome, homeStorage fsscan.ErrClass,
 	deadline time.Time, collector *devclients.Collector, storedElsewhere map[fsscan.ErrClass]int,
 	note func(warning)) bool {
-	home := account.Path
+	home, owner := account.Path, account.OwnerID()
 	appData, appDataNote := roamingRoot(account)
 	if !appDataNote.empty() {
 		note(appDataNote)
@@ -628,7 +643,7 @@ func addRecordedProjects(ctx context.Context, account fsscan.UserHome, homeStora
 	// reached early drops the least-used ones: the VS Code family, then JetBrains IDEs, then the
 	// coding agents. The 2025 Go Developer Survey puts VS Code at 37% and GoLand at 28%.
 	workspaces := devclients.WorkspaceFolders(ctx, home, appData, homeStorage, deadline,
-		readOpts(maxListSize))
+		readOpts(maxListSize, owner))
 	for class, count := range workspaces.StoredElsewhere {
 		storedElsewhere[class] += count
 	}
@@ -665,7 +680,8 @@ func addRecordedProjects(ctx context.Context, account fsscan.UserHome, homeStora
 	// JetBrains IDEs keep one recent-projects list per product and version. A list that exists
 	// and cannot be read or parsed is a lost list of projects, so it is reported the way an
 	// unreadable ~/.claude.json is.
-	jetbrains := devclients.JetBrainsProjects(ctx, home, appData, deadline, readOpts(maxListSize))
+	jetbrains := devclients.JetBrainsProjects(ctx, home, appData, deadline,
+		readOpts(maxListSize, owner))
 	for _, listing := range jetbrains.Listings {
 		if listing.Truncated {
 			note(warning{Code: warnProjectListTruncated, Count: listing.Count,
@@ -686,7 +702,7 @@ func addRecordedProjects(ctx context.Context, account fsscan.UserHome, homeStora
 		return false
 	}
 
-	return addAgentLists(ctx, home, homeStorage, deadline, collector, note)
+	return addAgentLists(ctx, home, owner, homeStorage, deadline, collector, note)
 }
 
 // workspaceAt reports whether a project has a go.work at its root. Only its presence is
@@ -890,13 +906,14 @@ func projectRows(home string, project devclients.Project, goMod, goSum projectFi
 // gets, so a dangling link is absent, a hard-linked target is refused, and an oversized target
 // is too large. A link it does not follow keeps the refusal, whatever the target is, and the
 // project itself is local, so its other file is still listed.
-func readModuleFile(home string, homeStorage fsscan.ErrClass, project devclients.Project,
+func readModuleFile(home, owner string, homeStorage fsscan.ErrClass, project devclients.Project,
 	file string) projectFile {
 	finding := row{Home: home, ProjectPath: project.Abs, SourceFile: file}
-	data, err := fsscan.ReadProjectFile(home, project.Rel, file, readOpts(maxGoFileSize))
+	data, err := fsscan.ReadProjectFile(home, project.Rel, file,
+		readOpts(maxGoFileSize, owner))
 	if fsscan.ClassifyError(err) == fsscan.ClassRefusedPath {
 		data, err = fsscan.ReadLinkTarget(home, homeStorage, project.Rel, file,
-			readOpts(maxGoFileSize), linkChecks(), err)
+			readOpts(maxGoFileSize, owner), linkChecks(), err)
 	}
 	if err != nil {
 		switch fsscan.ClassifyError(err) {
@@ -967,7 +984,7 @@ func readFailure(err error) (warning, bool) {
 		return warning{}, false
 	case fsscan.ClassUserspaceFilesystem:
 		return warning{Code: warnSourceUserspaceFS, Count: 1}, true
-	case fsscan.ClassHardLink, fsscan.ClassForeignOwner:
+	case fsscan.ClassHardLink, fsscan.ClassOwnerMismatch:
 		return warning{Code: warnProjectRefused, Class: class}, true
 	case fsscan.ClassTooLarge:
 		return warning{Code: warnSourceTooLarge, Limit: maxGoFileSize}, true
@@ -980,13 +997,13 @@ func readFailure(err error) (warning, bool) {
 // is checked before each read: the JetBrains reads before these can end after the deadline
 // without reporting a stop, and a read under the home can block. It returns false, after noting
 // why, when the budget ran out before a read.
-func addAgentLists(ctx context.Context, home string, homeStorage fsscan.ErrClass,
+func addAgentLists(ctx context.Context, home, owner string, homeStorage fsscan.ErrClass,
 	deadline time.Time, collector *devclients.Collector, note func(warning)) bool {
 	if !fsscan.BudgetRemains(ctx, deadline) {
 		note(warning{Code: budgetCode(ctx)})
 		return false
 	}
-	if entries, w := readClaudeList(home, homeStorage); !w.empty() {
+	if entries, w := readClaudeList(home, owner, homeStorage); !w.empty() {
 		w.Source = devclients.OriginClaudeJSON
 		note(w)
 	} else {
@@ -998,7 +1015,7 @@ func addAgentLists(ctx context.Context, home string, homeStorage fsscan.ErrClass
 		note(warning{Code: budgetCode(ctx)})
 		return false
 	}
-	if entries, w := readCodexList(home, homeStorage); !w.empty() {
+	if entries, w := readCodexList(home, owner, homeStorage); !w.empty() {
 		w.Source = devclients.OriginCodexTOML
 		note(w)
 	} else {
@@ -1012,9 +1029,10 @@ func addAgentLists(ctx context.Context, home string, homeStorage fsscan.ErrClass
 // readClaudeList reads the project paths from ~/.claude.json. Only the recorded paths are used;
 // the entries' values are never decoded here, because they include the text the user last
 // typed at the client.
-func readClaudeList(home string, homeStorage fsscan.ErrClass) ([]devclients.ClaudeEntry, warning) {
+func readClaudeList(home, owner string, homeStorage fsscan.ErrClass) ([]devclients.ClaudeEntry,
+	warning) {
 	data, err := readListFile(home, homeStorage, devclients.ClaudeListPath,
-		readOpts(devclients.ClaudeListMaxSize))
+		readOpts(devclients.ClaudeListMaxSize, owner))
 	if err != nil {
 		return nil, listReadFailure(err)
 	}
@@ -1026,8 +1044,10 @@ func readClaudeList(home string, homeStorage fsscan.ErrClass) ([]devclients.Clau
 }
 
 // readCodexList reads the project paths from ~/.codex/config.toml.
-func readCodexList(home string, homeStorage fsscan.ErrClass) ([]devclients.CodexEntry, warning) {
-	data, err := readListFile(home, homeStorage, devclients.CodexListPath, readOpts(maxListSize))
+func readCodexList(home, owner string, homeStorage fsscan.ErrClass) ([]devclients.CodexEntry,
+	warning) {
+	data, err := readListFile(home, homeStorage, devclients.CodexListPath,
+		readOpts(maxListSize, owner))
 	if err != nil {
 		return nil, listReadFailure(err)
 	}

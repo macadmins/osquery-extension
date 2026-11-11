@@ -29,7 +29,7 @@ func TestProjectFileReadRefusesAJunctionedParentDirectory(t *testing.T) {
 	testutil.Junction(t, filepath.Join(home, "code", "repo"), victimDir)
 
 	data, err := fsscan.ReadProjectFile(home, filepath.Join("code", "repo"), ".mcp.json",
-		probeReadOpts(MaxFileSize))
+		probeReadOpts(MaxFileSize, ownerID()))
 	if err == nil {
 		t.Fatalf("read through a junctioned parent into another user's config: %q", data)
 	}

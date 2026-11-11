@@ -49,6 +49,7 @@ go_test(
         "projects_test.go",
         "provenance_test.go",
         "refusal_unix_test.go",
+        "owner_test.go",
         "roster_test_helper_test.go",
         "sandbox_sandboxed_unix_test.go",
         "toml_test.go",

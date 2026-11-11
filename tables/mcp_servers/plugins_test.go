@@ -267,7 +267,7 @@ func TestPluginEnumerationReportsTheLimitReached(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			home := t.TempDir()
 			testCase.build(t, filepath.Join(home, ".claude", "plugins", "cache"))
-			refs, warnings, _ := claudePluginRefs(context.Background(), home, time.Now().Add(time.Minute))
+			refs, warnings, _ := claudePluginRefs(context.Background(), home, ownerID(), time.Now().Add(time.Minute))
 			var got []truncation
 			for _, w := range mergeWarnings(warnings) {
 				if w.Code == warnPluginListTruncated {
@@ -1140,13 +1140,13 @@ func TestANullPluginSettingsDocumentIsUnknown(t *testing.T) {
 func TestANullPluginRecordsOrManifestIsUnreadable(t *testing.T) {
 	home := t.TempDir()
 	testutil.WriteFile(t, filepath.Join(home, ".claude", "plugins", "installed_plugins.json"), "null")
-	if _, known, warnings := selectedVersions(home); known || len(warnings) != 1 ||
+	if _, known, warnings := selectedVersions(home, ownerID()); known || len(warnings) != 1 ||
 		warnings[0].Code != warnPluginRecordsUnreadable {
 		t.Errorf("records: known = %v, warnings = %+v", known, warnings)
 	}
 	versionRel := filepath.Join(".claude", "plugins", "cache", "mp", "p", "1.0.0")
 	testutil.WriteFile(t, filepath.Join(home, versionRel, ".claude-plugin", "plugin.json"), " null ")
-	if sources, warnings := pluginManifestSources(home, versionRel); sources != nil ||
+	if sources, warnings := pluginManifestSources(home, ownerID(), versionRel); sources != nil ||
 		len(warnings) != 1 || warnings[0].Code != warnPluginManifestUnreadable {
 		t.Errorf("manifest: sources = %+v, warnings = %+v", sources, warnings)
 	}
@@ -1186,7 +1186,7 @@ func TestAFileInThePluginCacheIsNotAPlugin(t *testing.T) {
 		testutil.WriteFile(t, filepath.Join(dir, ".DS_Store"), "")
 	}
 	testutil.WriteFile(t, filepath.Join(home, ".claude", "settings.json"), `{ not json`)
-	refs, warnings, stopped := claudePluginRefs(context.Background(), home, time.Now().Add(time.Minute))
+	refs, warnings, stopped := claudePluginRefs(context.Background(), home, ownerID(), time.Now().Add(time.Minute))
 	if len(refs) != 0 || len(warnings) != 0 || stopped {
 		t.Errorf("refs = %+v, warnings = %+v, stopped = %v; want nothing", refs, warnings, stopped)
 	}
@@ -1215,7 +1215,7 @@ func TestManifestCapCountsOnlyUsableDeclarations(t *testing.T) {
 		home := t.TempDir()
 		testutil.WriteFile(t, filepath.Join(home, versionRel, ".claude-plugin", "plugin.json"),
 			`{"name":"p","mcpServers":[`+eight+`,`+testCase.tail+`]}`)
-		sources, warnings := pluginManifestSources(home, versionRel)
+		sources, warnings := pluginManifestSources(home, ownerID(), versionRel)
 		var codes []warnCode
 		for _, w := range warnings {
 			codes = append(codes, w.Code)

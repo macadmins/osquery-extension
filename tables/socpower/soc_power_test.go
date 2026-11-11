@@ -20,7 +20,7 @@ func TestSocPowerColumns(t *testing.T) {
 		table.TextColumn("ane_power_mw"),
 		table.TextColumn("combined_power_mw"),
 		table.TextColumn("gpu_active_ratio"),
-		table.IntegerColumn("interval"),
+		table.IntegerColumn("interval", table.AdditionalColumn()),
 	}, SocPowerColumns())
 }
 

@@ -125,15 +125,21 @@ func checkDescriptor(_ *os.File, info os.FileInfo, opts ReadOpts) error {
 	}
 	if opts.OwnerUID != "" {
 		owner := strconv.FormatUint(uint64(sys.Uid), 10)
-		if owner != opts.OwnerUID {
+		if owner != opts.OwnerUID && !privilegedOwner(sys.Uid) {
 			// Neither uid appears in the error. The expected one came from the roster and
 			// the found one from the filesystem, and both are numbers a caller could
 			// publish safely -- but the caller classifies this rather than printing it, so
 			// there is nothing for them to be in.
-			return ErrForeignOwner
+			return ErrOwnerMismatch
 		}
 	}
 	return nil
+}
+
+// privilegedOwner reports whether uid is an owner whose files pass an owner check for any
+// account: root.
+func privilegedOwner(uid uint32) bool {
+	return uid == 0
 }
 
 // readLinkAt reads the target of the symlink name inside dir, without following any link.

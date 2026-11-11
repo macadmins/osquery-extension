@@ -256,7 +256,7 @@ func TestLoadMunkiReportInvalidPlist(t *testing.T) {
 	err := os.WriteFile(path, []byte("not plist"), 0600)
 	require.NoError(t, err)
 
-	report, err := loadMunkiReport(utils.MockFileSystem{FileExists: true})
+	report, err := loadMunkiReport(utils.OSFileSystem{})
 	assert.Error(t, err)
 	assert.NotNil(t, report)
 	assert.ErrorContains(t, err, "decode ManagedInstallReport plist")

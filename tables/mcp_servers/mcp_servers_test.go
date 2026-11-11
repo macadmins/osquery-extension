@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -863,11 +862,6 @@ func TestDeclaredUnknownTransportIsNotReplacedByAGuess(t *testing.T) {
 // full. The claim was false, and it cost that account every row the cache was already
 // holding. Restamping a cached result is not filesystem work and the budget has no say in it.
 func TestASharedHomeIsReportedForBothAccountsAfterTheBudgetIsGone(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("on Windows each account's scan is its own, keyed by SID as well as home, so " +
-			"the second account meeting the spent budget is correct there; see " +
-			"TestScanKeySeparatesAccountsThatShareAHomeOnWindows")
-	}
 	root := t.TempDir()
 	home := filepath.Join(root, "shared")
 	if err := os.MkdirAll(filepath.Join(home, ".cursor"), 0o755); err != nil {
@@ -877,10 +871,17 @@ func TestASharedHomeIsReportedForBothAccountsAfterTheBudgetIsGone(t *testing.T) 
 		[]byte(`{"mcpServers":{"seeded":{"command":"npx","args":["pkg"]}}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Two accounts, one home, distinct identities.
+	// alice and bob share both the identity and the home, so bob reuses alice's scan; carol shares
+	// the home under an identity of her own, ordered after them, so her scan is her own.
+	uid, uuid := testutil.Account()
+	_, _, carolUID, carolUUID := testutil.IdentitiesAround(uid, uuid)
 	roster := rosterFrom(
-		map[string]string{"uid": "501", "uuid": "", "username": "alice", "directory": home, "shell": "/bin/zsh"},
-		map[string]string{"uid": "502", "uuid": "", "username": "bob", "directory": home, "shell": "/bin/zsh"},
+		map[string]string{"uid": uid, "uuid": uuid, "username": "alice", "directory": home, "shell": "/bin/zsh"},
+		map[string]string{"uid": uid, "uuid": uuid, "username": "bob", "directory": home, "shell": "/bin/zsh"},
+		map[string]string{
+			"uid": carolUID, "uuid": carolUUID, "username": "carol", "directory": home,
+			"shell": "/bin/zsh",
+		},
 	)
 	// Enough recorded projects that probing them outlasts the budget, so the deadline is
 	// gone by the time the second account is considered but the first has already been
@@ -932,7 +933,9 @@ func TestASharedHomeIsReportedForBothAccountsAfterTheBudgetIsGone(t *testing.T) 
 	// anywhere else and fails in CI.
 	var exhausted, scannedFirstHome bool
 	for _, row := range rows {
-		if _, isBudget := budgetCodes[row.Warning.Code]; isBudget {
+		// Only alice's scan decides whether the window was hit: carol's own scan can also run
+		// out of budget, after alice finished inside it, which is not the case under test.
+		if _, isBudget := budgetCodes[row.Warning.Code]; isBudget && row.User == "alice" {
 			exhausted = true
 		}
 		if row.ServerName == "seeded" {
@@ -952,8 +955,8 @@ func TestASharedHomeIsReportedForBothAccountsAfterTheBudgetIsGone(t *testing.T) 
 		// The one statement that must never be made about an account whose home was
 		// already scanned: the cache lookup has to come before the budget check, or the
 		// second account is told nothing was looked at while the rows sit in hand.
-		if row.Warning.Code == warnBudgetExhaustedPreHome ||
-			row.Warning.Code == warnCancelledPreHome {
+		if row.User != "carol" && (row.Warning.Code == warnBudgetExhaustedPreHome ||
+			row.Warning.Code == warnCancelledPreHome) {
 			t.Errorf("an account sharing an already-scanned home was told it was never "+
 				"scanned: %+v", row)
 		}
@@ -966,6 +969,20 @@ func TestASharedHomeIsReportedForBothAccountsAfterTheBudgetIsGone(t *testing.T) 
 			t.Errorf("no server row for %q; a shared home has to be reported for every "+
 				"account that shares it", user)
 		}
+	}
+	// carol's identity differs, so her scan is not alice's and the spent budget refuses it.
+	var carolRows int
+	for _, row := range rows {
+		if row.User != "carol" {
+			continue
+		}
+		carolRows++
+		if row.Warning.Code != warnBudgetExhaustedPreHome {
+			t.Errorf("carol row = %+v, want only a budget_exhausted_before_home row", row)
+		}
+	}
+	if carolRows != 1 {
+		t.Errorf("carol rows = %d, want one budget_exhausted_before_home row", carolRows)
 	}
 }
 
@@ -980,5 +997,25 @@ func TestAnOmittedAccountKeepsItsUID(t *testing.T) {
 		map[string]struct{}{"carol": {}}))
 	if len(rows) != 1 || rows[0].Warning.Code != warnAccountHomeMissing || rows[0].UID != "502" {
 		t.Errorf("rows = %+v, want one account_home_missing row carrying uid 502", rows)
+	}
+}
+
+// TestTheAccountColumnIsIndexed: user is the constraint the scan narrows by, declared as an indexed
+// and optimized column, so a change to the declaration fails here.
+func TestTheAccountColumnIsIndexed(t *testing.T) {
+	want := map[string]table.ColumnDefinition{
+		"user": table.TextColumn("user", table.IndexColumn(), table.OptimizedColumn()),
+		"uid":  table.BigIntColumn("uid", table.OptimizedColumn()),
+	}
+	for _, column := range MCPServersColumns() {
+		if expected, declared := want[column.Name]; declared {
+			if column != expected {
+				t.Errorf("%s column = %+v, want %+v", column.Name, column, expected)
+			}
+			delete(want, column.Name)
+		}
+	}
+	if len(want) != 0 {
+		t.Errorf("columns %v are missing", want)
 	}
 }

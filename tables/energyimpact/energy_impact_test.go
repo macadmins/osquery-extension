@@ -300,3 +300,22 @@ func TestRunPowermetrics(t *testing.T) {
 		})
 	}
 }
+
+// TestTheIntervalColumnIsAdditional: interval changes the sampling powermetrics does, declared as
+// an additional column, so a change to the declaration fails here.
+func TestTheIntervalColumnIsAdditional(t *testing.T) {
+	want := map[string]table.ColumnDefinition{
+		"interval": table.IntegerColumn("interval", table.AdditionalColumn()),
+	}
+	for _, column := range EnergyImpactColumns() {
+		if expected, declared := want[column.Name]; declared {
+			if column != expected {
+				t.Errorf("%s column = %+v, want %+v", column.Name, column, expected)
+			}
+			delete(want, column.Name)
+		}
+	}
+	if len(want) != 0 {
+		t.Errorf("columns %v are missing", want)
+	}
+}

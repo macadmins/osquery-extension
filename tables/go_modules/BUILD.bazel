@@ -27,6 +27,7 @@ go_test(
     srcs = [
         "bench_test.go",
         "go_modules_test.go",
+        "owner_test.go",
         "parse_test.go",
         "refusal_unix_test.go",
         "refusal_windows_test.go",

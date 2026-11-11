@@ -62,6 +62,7 @@ go_library(
         "//tables/touchid",
         "//tables/unifiedlog",
         "//tables/wifi_network",
+        "@com_github_apache_thrift//lib/go/thrift",
         "@com_github_osquery_osquery_go//:osquery-go",
         "@com_github_osquery_osquery_go//plugin/table",
     ],

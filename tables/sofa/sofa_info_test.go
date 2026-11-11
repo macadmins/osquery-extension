@@ -1,6 +1,7 @@
 package sofa
 
 import (
+	"context"
 	_ "embed"
 	"errors"
 	"testing"
@@ -9,20 +10,6 @@ import (
 	"github.com/osquery/osquery-go/plugin/table"
 	"github.com/stretchr/testify/assert"
 )
-
-type errorOsqueryClient struct {
-	err error
-}
-
-func (e errorOsqueryClient) QueryRows(query string) ([]map[string]string, error) {
-	return nil, e.err
-}
-
-func (e errorOsqueryClient) QueryRow(query string) (map[string]string, error) {
-	return nil, e.err
-}
-
-func (e errorOsqueryClient) Close() {}
 
 func TestGetSecurityReleaseInfoForOSVersion(t *testing.T) {
 	tests := []struct {
@@ -114,8 +101,8 @@ func TestSofaSecurityReleaseInfoColumns(t *testing.T) {
 		table.TextColumn("security_info"),
 		table.IntegerColumn("unique_cves_count"),
 		table.IntegerColumn("days_since_previous_release"),
-		table.TextColumn("os_version"),
-		table.TextColumn("url"),
+		table.TextColumn("os_version", table.AdditionalColumn()),
+		table.TextColumn("url", table.AdditionalColumn()),
 	}, SofaSecurityReleaseInfoColumns())
 }
 
@@ -125,13 +112,14 @@ func TestGetCurrentOSVersion(t *testing.T) {
 			"SELECT * FROM os_version;": {{"version": "1.0.0"}},
 		},
 	}
-	version, err := getCurrentOSVersion(mockClient)
+	version, err := getCurrentOSVersion(context.Background(), mockClient)
 	assert.NoError(t, err)
 	assert.Equal(t, "1.0.0", version)
 }
 
 func TestGetCurrentOSVersionQueryError(t *testing.T) {
-	_, err := getCurrentOSVersion(errorOsqueryClient{err: errors.New("query failed")})
+	_, err := getCurrentOSVersion(context.Background(),
+		utils.ErrorOsqueryClient{Err: errors.New("query failed")})
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "query failed")
 }
@@ -239,4 +227,51 @@ func TestBuildSecurityReleaseInfoOutput(t *testing.T) {
 	output := buildSecurityReleaseInfoOutput(securityReleases, osVersion, SofaV1URL)
 
 	assert.Equal(t, expectedOutput, output)
+}
+
+// TestQueriesAskOsqueryThroughTheClienter: with no os_version in the query, both tables ask
+// osquery for this host's version through the clienter they are given, and report a client that
+// cannot be opened.
+func TestQueriesAskOsqueryThroughTheClienter(t *testing.T) {
+	server := setup()
+	defer teardown(server)
+	queryContext := table.QueryContext{Constraints: map[string]table.ConstraintList{
+		"url": {Constraints: []table.Constraint{{Operator: table.OperatorEquals, Expression: server.URL}}},
+	}}
+	clienter := &utils.MockOsqueryClienter{Data: map[string][]map[string]string{
+		"SELECT * FROM os_version;": {{"version": "14.4.1"}},
+	}}
+	options := []Option{WithCacheDir(t.TempDir()), WithUserAgent("test")}
+
+	rows, err := securityReleaseInfo(context.Background(), queryContext, clienter, options...)
+	assert.NoError(t, err)
+	assert.NotEmpty(t, rows)
+	assert.Equal(t, "14.4.1", rows[0]["os_version"])
+	_, err = unpatchedCVEs(context.Background(), queryContext, clienter, options...)
+	assert.NoError(t, err)
+
+	failing := &utils.MockOsqueryClienter{Err: errors.New("no socket")}
+	_, err = securityReleaseInfo(context.Background(), queryContext, failing, options...)
+	assert.Error(t, err)
+	_, err = unpatchedCVEs(context.Background(), queryContext, failing, options...)
+	assert.Error(t, err)
+}
+
+// TestQueriesWithCancelledContextOpenNoClient: a context already cancelled returns its error
+// from both tables without a client being opened.
+func TestQueriesWithCancelledContextOpenNoClient(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	clienter := &utils.CancelAfterQueryClienter{
+		Inner: &utils.MockOsqueryClienter{Data: map[string][]map[string]string{
+			"SELECT * FROM os_version;": {{"version": "14.4.1"}},
+		}},
+		Cancel: func() {},
+	}
+
+	_, err := securityReleaseInfo(ctx, table.QueryContext{}, clienter)
+	assert.ErrorIs(t, err, context.Canceled)
+	_, err = unpatchedCVEs(ctx, table.QueryContext{}, clienter)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Zero(t, clienter.Opened)
 }

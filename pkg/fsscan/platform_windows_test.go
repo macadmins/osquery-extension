@@ -3,6 +3,7 @@
 package fsscan
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -189,4 +190,87 @@ func TestExpandProfileVars(t *testing.T) {
 			t.Errorf("expandProfileVars(%q) = %q, want %q", tc.raw, got, tc.want)
 		}
 	}
+}
+
+// TestPrivilegedOwner: LocalSystem, BUILTIN\Administrators and TrustedInstaller pass an owner
+// check for any account, and another SID does not.
+func TestPrivilegedOwner(t *testing.T) {
+	for sid, want := range map[string]bool{
+		"S-1-5-18":     true,
+		"S-1-5-32-544": true,
+		"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464": true,
+		"S-1-5-32-545":        false, // BUILTIN\Users
+		"S-1-5-21-1-2-3-1001": false,
+		"":                    false,
+	} {
+		if got := privilegedOwner(sid); got != want {
+			t.Errorf("privilegedOwner(%q) = %v, want %v", sid, got, want)
+		}
+	}
+}
+
+// TestReadBoundedUnderChecksTheOwnerSID: a file the test creates reads for the process user's
+// SID and is refused for another account's, unless its owner is privileged. A runner account
+// can be an administrator, which makes new files Administrators-owned, so the actual owner is
+// read and the assertion follows it.
+func TestReadBoundedUnderChecksTheOwnerSID(t *testing.T) {
+	base := t.TempDir()
+	path := filepath.Join(base, "f.json")
+	testutil.WriteFile(t, path, `{}`)
+	tokenUser, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	me := tokenUser.User.Sid.String()
+	if privilegedOwner(me) {
+		t.Skip("the test runs as a privileged account, which every owner check passes")
+	}
+	// Required rather than skipped on failure, so this test always exercises the match against
+	// the account's own SID and the refusal of another.
+	if err := testutil.OwnAsTestAccount(base); err != nil {
+		t.Fatalf("giving the fixture to the test account: %v", err)
+	}
+	if owner := fileOwner(t, path); owner != me {
+		t.Fatalf("the fixture is owned by %s, want the test account %s", owner, me)
+	}
+	if _, err := ReadBoundedUnder(base, "f.json", ReadOpts{MaxSize: 1024, OwnerUID: me}); err != nil {
+		t.Errorf("a file owned by the expected SID must read: %v", err)
+	}
+	_, err = ReadBoundedUnder(base, "f.json", ReadOpts{MaxSize: 1024, OwnerUID: "S-1-5-21-1-2-3-1001"})
+	if !errors.Is(err, ErrOwnerMismatch) {
+		t.Fatalf("expected ErrOwnerMismatch, got %v", err)
+	}
+	if got := ClassifyError(err); got != ClassOwnerMismatch {
+		t.Errorf("ClassifyError = %q, want %q", got, ClassOwnerMismatch)
+	}
+}
+
+// TestReadBoundedUnderReadsAPrivilegedOwnersFile: a file a privileged group owns, as a file an
+// elevated administrator creates is, reads for any account.
+func TestReadBoundedUnderReadsAPrivilegedOwnersFile(t *testing.T) {
+	base := t.TempDir()
+	path := filepath.Join(base, "f.json")
+	testutil.WriteFile(t, path, `{}`)
+	if owner := fileOwner(t, path); !privilegedOwner(owner) {
+		t.Skipf("the fixture is owned by %s, not a privileged owner", owner)
+	}
+	if _, err := ReadBoundedUnder(base, "f.json", ReadOpts{MaxSize: 1024,
+		OwnerUID: "S-1-5-21-1-2-3-1001"}); err != nil {
+		t.Errorf("a file a privileged owner holds must read for any account: %v", err)
+	}
+}
+
+// fileOwner returns the SID that owns path.
+func fileOwner(t *testing.T, path string) string {
+	t.Helper()
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, _, err := sd.Owner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return owner.String()
 }

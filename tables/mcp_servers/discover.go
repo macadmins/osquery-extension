@@ -197,8 +197,8 @@ type probe struct {
 // own home and have root read it and report it under theirs. The refusal is reported rather
 // than silent, so a host where a dotfile manager legitimately hard-links configs says so
 // rather than quietly returning fewer rows -- see warnProjectRefused and the table README.
-func (p probe) readOpts() fsscan.ReadOpts {
-	return probeReadOpts(p.cap())
+func (p probe) readOpts(owner string) fsscan.ReadOpts {
+	return probeReadOpts(p.cap(), owner)
 }
 
 // cap is this probe's effective size limit.
@@ -232,12 +232,12 @@ func linkChecks(read func(base, rel string, opts fsscan.ReadOpts) ([]byte, error
 
 // probeReadOpts is the one place the read refusals are chosen, so a new read site cannot
 // quietly opt out of them.
-func probeReadOpts(maxSize int64) fsscan.ReadOpts {
-	// OwnerUID is deliberately not set. It reads correctly on POSIX, and on Windows it would
-	// need GetSecurityInfo and SID plumbing that does not exist here -- and fsscan refuses rather than passes when asked for a check it
-	// cannot perform, so setting it here would return zero rows on that platform. Enabling
-	// it wants the Windows implementation, which wants a Windows CI job first.
-	return fsscan.ReadOpts{MaxSize: maxSize, RefuseHardLinks: true,
+//
+// owner is the account whose home is read: its uid on POSIX and its whole SID on Windows. A
+// file owned by another account is refused, and one owned by root, SYSTEM or Administrators
+// is read; see fsscan.ReadOpts.OwnerUID.
+func probeReadOpts(maxSize int64, owner string) fsscan.ReadOpts {
+	return fsscan.ReadOpts{MaxSize: maxSize, OwnerUID: owner, RefuseHardLinks: true,
 		CloudPlaceholder: cloudPlaceholder}
 }
 
@@ -369,6 +369,12 @@ func DiscoverAll(ctx context.Context, clienter utils.OsqueryClienter, userFilter
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// osquery-go cancels the context only once osquery has closed the connection, so a query
+	// already cancelled has no reader, and opening a client can wait out the client's timeout.
+	if ctx.Err() != nil {
+		return rosterDiagnostic(userFilter, fsscan.UsersRoot,
+			warning{Code: warnCancelledPreHome})
+	}
 	// The account roster comes from osquery. There is no filesystem fallback: the socket is
 	// how this extension returns rows at all, so if it cannot be reached osquery is not
 	// receiving results either, and a guessed roster would only make that quieter.
@@ -377,12 +383,7 @@ func DiscoverAll(ctx context.Context, clienter utils.OsqueryClienter, userFilter
 		return rosterDiagnostic(userFilter, fsscan.UsersRoot,
 			warning{Code: warnRosterUnreachable})
 	}
-	// KNOWN GAP: this Close is correct and currently
-	// does nothing. The pinned osquery-go revision opens a transport in NewClient and never
-	// assigns it to the struct, so Close finds a nil transport and returns. The socket is
-	// left to the garbage collector, and this table opens one per query. Written anyway
-	// because the call site is right and only the dependency is wrong; fixing it is an
-	// osquery-go bump, which is a repository-wide change.
+	// Each query opens its own client, so its socket is closed when the query returns.
 	defer client.Close()
 	// Established before the roster is read, not after. The roster is a query back to
 	// osquery, so it is fast, but it is still work the budget should cover.
@@ -391,8 +392,15 @@ func DiscoverAll(ctx context.Context, clienter utils.OsqueryClienter, userFilter
 	// the fact still Lstat'd every home on the host, so one dead automount belonging to an
 	// account nobody asked about could consume the budget of a query scoped to a single
 	// local user.
-	enumerated, err := fsscan.ListUserHomes(client, userFilter)
+	enumerated, err := fsscan.ListUserHomes(ctx, client, userFilter)
 	if err != nil {
+		// A roster read the cancellation stopped reports it, with no account since none was
+		// reached; any other failure is the roster's own, even when the query was cancelled
+		// meanwhile.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return rosterDiagnostic(userFilter, fsscan.UsersRoot,
+				warning{Code: warnCancelledPreHome})
+		}
 		// The roster itself is unreadable, so no account can be confirmed or ruled out.
 		//
 		// A single aggregate row with an empty user was dropped by `WHERE user = '<name>'`,
@@ -499,10 +507,11 @@ func DiscoverAll(ctx context.Context, clienter utils.OsqueryClienter, userFilter
 			out = append(out, stampUserID([]Server{row}, h.ID, h.UID)...)
 			continue
 		}
-		// Scanned once per directory, reported once per account. Accounts legitimately
-		// share a home, and the roster keeps every one of them so a constrained query cannot
-		// lose an account another had claimed, so the duplicate work is avoided here, after
-		// the filter.
+		// Scanned once per identity and directory, reported once per account. Accounts
+		// legitimately share a home, and the roster keeps every one of them so a constrained
+		// query cannot lose an account another had claimed; accounts that also share an
+		// identity share the scan, after the filter. See devclients.ScanKey for why a
+		// different identity is scanned again.
 		//
 		// Looked up before the budget is consulted, not after. The budget question is
 		// whether there is time to do *new* filesystem work, and restamping a result already
@@ -737,7 +746,7 @@ func discoverForHome(ctx context.Context, account fsscan.UserHome, deadline time
 // opened, which is a number in a file, so two runs over an unchanged host do the same work
 // and return the same rows.
 func discoverHomePasses(ctx context.Context, account fsscan.UserHome, deadline time.Time) []Server {
-	user, home := account.Name, account.Path
+	user, home, owner := account.Name, account.Path, account.OwnerID()
 
 	// One row when the home itself cannot be opened, rather than one per candidate inside
 	// it: every probe under an unreadable home fails identically, and what an operator needs
@@ -785,8 +794,8 @@ func discoverHomePasses(ctx context.Context, account fsscan.UserHome, deadline t
 	// read them a second time. That matters for ~/.claude.json in particular: it is the one
 	// source with a raised cap, and decoding it twice would double the largest allocation
 	// this table makes per account per query.
-	rows, lists, stoppedEarly := probeHome(ctx, home, homeStorage, user, appData, deadline, seen,
-		homeProbes)
+	rows, lists, stoppedEarly := probeHome(ctx, home, owner, homeStorage, user, appData, deadline,
+		seen, homeProbes)
 	out = append(out, rows...)
 
 	// One diagnostic covering both ways the budget can run out during pass 1: a break out of
@@ -798,8 +807,8 @@ func discoverHomePasses(ctx context.Context, account fsscan.UserHome, deadline t
 	}
 
 	// Pass 2: the two places a generated name sits between a fixed path and a config file.
-	profileRows, profileWarnings := probeGeneratedProfiles(ctx, home, homeStorage, user, appData,
-		deadline, seen)
+	profileRows, profileWarnings := probeGeneratedProfiles(ctx, home, owner, homeStorage, user,
+		appData, deadline, seen)
 	out = append(out, profileRows...)
 	for _, w := range profileWarnings {
 		out = append(out, diagnosticRow(user, home, "", w))
@@ -815,8 +824,8 @@ func discoverHomePasses(ctx context.Context, account fsscan.UserHome, deadline t
 	// list is to read and the budget is shared: three small directory listings against one
 	// ~/.claude.json of up to 4 MiB. A budget that runs out should lose the expensive thing
 	// rather than the cheap one.
-	pluginRefs, pluginWarnings, pluginStopped := claudePluginRefs(ctx, home, deadline)
-	pluginRows, probeStopped := probePlugins(ctx, home, homeStorage, user, deadline, seen,
+	pluginRefs, pluginWarnings, pluginStopped := claudePluginRefs(ctx, home, owner, deadline)
+	pluginRows, probeStopped := probePlugins(ctx, home, owner, homeStorage, user, deadline, seen,
 		pluginRefs)
 	out = append(out, pluginRows...)
 	for _, w := range mergeWarnings(pluginWarnings) {
@@ -865,7 +874,7 @@ func discoverHomePasses(ctx context.Context, account fsscan.UserHome, deadline t
 			Class: lists.codexFailure, Source: devclients.OriginCodexTOML})
 	}
 	workspaceRefs, workspaceWarnings, workspaceStored, workspaceStopped := vscodeWorkspaceProjects(
-		ctx, home, appData, homeStorage, deadline)
+		ctx, home, owner, appData, homeStorage, deadline)
 	projectGroups = append(projectGroups, workspaceRefs)
 	projectWarnings = append(projectWarnings, workspaceWarnings...)
 
@@ -882,7 +891,7 @@ func discoverHomePasses(ctx context.Context, account fsscan.UserHome, deadline t
 	}
 
 	// Pass 5: four known filenames inside each contained project.
-	projectRows, projectStopped := probeProjects(ctx, home, homeStorage, user, deadline, seen,
+	projectRows, projectStopped := probeProjects(ctx, home, owner, homeStorage, user, deadline, seen,
 		projects, workspaceStored)
 	out = append(out, projectRows...)
 	if projectStopped {
@@ -916,7 +925,7 @@ type projectLists struct {
 
 // probeHome runs the home-rooted probe list, returning the rows, the captured project lists,
 // and whether it stopped short.
-func probeHome(ctx context.Context, home string, homeStorage fsscan.ErrClass, user,
+func probeHome(ctx context.Context, home, owner string, homeStorage fsscan.ErrClass, user,
 	appData string, deadline time.Time, seen map[string]struct{}, probes []probe) ([]Server,
 	projectLists, bool) {
 	var out []Server
@@ -947,14 +956,14 @@ func probeHome(ctx context.Context, home string, homeStorage fsscan.ErrClass, us
 		// back through snap's `current` symlink, was refused, and had the refusal read as
 		// expected absence -- so the resolution above changed only the dedup key and the
 		// reported source_path while the file itself stayed undiscoverable.
-		data, readErr := fsscan.ReadBoundedUnder(home, relPath, src.readOpts())
+		data, readErr := fsscan.ReadBoundedUnder(home, relPath, src.readOpts(owner))
 		// A configuration file a dotfile manager linked into place is followed one hop, under
 		// fsscan.ReadLinkTarget's rules; a link it declines keeps the refusal, which is silent
 		// for a config file and reported for a project list. source_path and the dedup key stay
 		// the link's path, which is where the client reads the file.
 		if fsscan.ClassifyError(readErr) == fsscan.ClassRefusedPath {
 			dir, name := filepath.Split(relPath)
-			data, readErr = fsscan.ReadLinkTarget(home, homeStorage, dir, name, src.readOpts(),
+			data, readErr = fsscan.ReadLinkTarget(home, homeStorage, dir, name, src.readOpts(owner),
 				linkChecks(fsscan.ReadBoundedUnder), readErr)
 		}
 		// Captured before parsing and after the BOM strip, so the listers see the same bytes
@@ -1006,8 +1015,8 @@ func capturedList(data []byte, readErr error) ([]byte, fsscan.ErrClass) {
 // never inside a cloud-backed directory. Dropping them instead would have lost every
 // per-profile VS Code config and every Codex named profile on the host, in silence -- the
 // exact failure this table exists to prevent.
-func probeGeneratedProfiles(ctx context.Context, home string, homeStorage fsscan.ErrClass, user,
-	appData string, deadline time.Time, seen map[string]struct{}) ([]Server, []warning) {
+func probeGeneratedProfiles(ctx context.Context, home, owner string, homeStorage fsscan.ErrClass,
+	user, appData string, deadline time.Time, seen map[string]struct{}) ([]Server, []warning) {
 	var out []Server
 	var warnings []warning
 
@@ -1046,7 +1055,8 @@ func probeGeneratedProfiles(ctx context.Context, home string, homeStorage fsscan
 				relPath: filepath.Join(relPath, name, "mcp.json"),
 				client:  root.client, jsonc: true, extract: extractEnvelopeSimple,
 			}}
-			rows, _, stopped := probeHome(ctx, home, homeStorage, user, "", deadline, seen, probes)
+			rows, _, stopped := probeHome(ctx, home, owner, homeStorage, user, "", deadline, seen,
+				probes)
 			out = append(out, rows...)
 			if stopped {
 				return out, warnings
@@ -1076,7 +1086,8 @@ func probeGeneratedProfiles(ctx context.Context, home string, homeStorage fsscan
 		probes := []probe{{
 			relPath: relPath, client: "codex", jsonc: false, extract: extractCodexTOML,
 		}}
-		rows, _, stopped := probeHome(ctx, home, homeStorage, user, "", deadline, seen, probes)
+		rows, _, stopped := probeHome(ctx, home, owner, homeStorage, user, "", deadline, seen,
+			probes)
 		out = append(out, rows...)
 		if stopped {
 			return out, warnings
@@ -1103,18 +1114,20 @@ const maxProfileDirs = 200
 //
 // stored holds the counts of .code-workspace files stored somewhere other than this machine's
 // disk, which are reported in the same rows as the projects stored that way.
-func probeProjects(ctx context.Context, home string, homeStorage fsscan.ErrClass, user string,
-	deadline time.Time, seen map[string]struct{}, projects []projectRef,
+func probeProjects(ctx context.Context, home, owner string, homeStorage fsscan.ErrClass,
+	user string, deadline time.Time, seen map[string]struct{}, projects []projectRef,
 	stored []warning) ([]Server, bool) {
 	var out []Server
-	refusals := make(map[warnCode]*warning)
-	// count adds a refusal's count, creating its warning the first time.
+	refusals := make(map[refusalKey]*warning)
+	// count adds a refusal's count, creating its warning the first time. Keyed by reason as well
+	// as code, so a hard-link refusal and an owner refusal in one home are two rows, not one.
 	count := func(w warning) {
-		if existing, ok := refusals[w.Code]; ok {
+		key := refusalKey{w.Code, w.Class}
+		if existing, ok := refusals[key]; ok {
 			existing.Count += w.Count
 			return
 		}
-		refusals[w.Code] = &w
+		refusals[key] = &w
 	}
 	for _, w := range stored {
 		count(w)
@@ -1166,11 +1179,11 @@ func probeProjects(ctx context.Context, home string, homeStorage fsscan.ErrClass
 				continue
 			}
 			data, readErr := fsscan.ReadProjectFile(home, project.Rel, relPath,
-				src.readOpts())
+				src.readOpts(owner))
 			// A linked project config is followed one hop, as a home config is.
 			if fsscan.ClassifyError(readErr) == fsscan.ClassRefusedPath {
 				dir, name := filepath.Split(filepath.Join(project.Rel, relPath))
-				data, readErr = fsscan.ReadLinkTarget(home, homeStorage, dir, name, src.readOpts(),
+				data, readErr = fsscan.ReadLinkTarget(home, homeStorage, dir, name, src.readOpts(owner),
 					linkChecks(nil), readErr)
 			}
 			if readErr != nil {
@@ -1208,13 +1221,13 @@ func probeProjects(ctx context.Context, home string, homeStorage fsscan.ErrClass
 				if !userSettingsRead {
 					userSettingsRead = true
 					var userWarnings []warning
-					userSettings, userWarnings = userApprovalSettings(home)
+					userSettings, userWarnings = userApprovalSettings(home, owner)
 					for _, w := range userWarnings {
 						out = append(out, diagnosticRow(user, home, "", w))
 					}
 				}
 				evidence, settingsWarnings := projectApprovalSettings(
-					home, project.Rel, project.TrustDialogAccepted)
+					home, owner, project.Rel, project.TrustDialogAccepted)
 				project.Approval = userSettings.merge(project.Approval).overlay(evidence)
 				for _, w := range settingsWarnings {
 					out = append(out, diagnosticRow(user, project.Abs, "claude_code", w))
@@ -1261,21 +1274,33 @@ func declaresServers(rows []Server) bool {
 // a project directory can be named after anything, including a secret. The home is reported
 // instead, which is a path this table already publishes.
 //
-// Sorted by code, because map iteration is random and these rows go straight to osquery.
-func aggregatedRefusals(user, home string, refusals map[warnCode]*warning) []Server {
+// Sorted by code and then reason, because map iteration is random and these rows go straight to
+// osquery.
+func aggregatedRefusals(user, home string, refusals map[refusalKey]*warning) []Server {
 	if len(refusals) == 0 {
 		return nil
 	}
-	codes := make([]warnCode, 0, len(refusals))
-	for code := range refusals {
-		codes = append(codes, code)
+	keys := make([]refusalKey, 0, len(refusals))
+	for key := range refusals {
+		keys = append(keys, key)
 	}
-	sort.Slice(codes, func(i, j int) bool { return codes[i] < codes[j] })
-	out := make([]Server, 0, len(codes))
-	for _, code := range codes {
-		out = append(out, diagnosticRow(user, home, "", *refusals[code]))
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].code != keys[j].code {
+			return keys[i].code < keys[j].code
+		}
+		return keys[i].class < keys[j].class
+	})
+	out := make([]Server, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, diagnosticRow(user, home, "", *refusals[key]))
 	}
 	return out
+}
+
+// refusalKey is one aggregated refusal row: the warning code and the reason it carries.
+type refusalKey struct {
+	code  warnCode
+	class fsscan.ErrClass
 }
 
 // finishProcessing turns one file's bytes into rows, or into one diagnostic.

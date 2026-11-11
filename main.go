@@ -32,6 +32,7 @@ import (
 	"github.com/macadmins/osquery-extension/tables/unifiedlog"
 	"github.com/macadmins/osquery-extension/tables/wifi_network"
 
+	"github.com/apache/thrift/lib/go/thrift"
 	"github.com/macadmins/osquery-extension/tables/authdb"
 	osquery "github.com/osquery/osquery-go"
 	"github.com/osquery/osquery-go/plugin/table"
@@ -64,6 +65,9 @@ func main() {
 		"macadmins_extension",
 		*flSocketPath,
 		osquery.ServerTimeout(time.Duration(*flTimeout)*time.Second),
+		// Buffered, so a large result is written in 16 KiB batches rather than one write per
+		// Thrift primitive, as kolide/launcher does.
+		osquery.WithTransportFactory(thrift.NewTBufferedTransportFactory(16*1024)),
 	)
 	if err != nil {
 		log.Fatalf("Error creating extension: %s\n", err)
@@ -73,12 +77,12 @@ func main() {
 	// Adding a new table? Add it to the list and the loop below will handle
 	// the registration for you.
 	plugins := []osquery.OsqueryPlugin{
-		table.NewPlugin("puppet_info", puppet.PuppetInfoColumns(), puppet.PuppetInfoGenerate),
-		table.NewPlugin("puppet_logs", puppet.PuppetLogsColumns(), puppet.PuppetLogsGenerate),
-		table.NewPlugin("puppet_state", puppet.PuppetStateColumns(), puppet.PuppetStateGenerate),
-		table.NewPlugin("puppet_facts", puppet.PuppetFactsColumns(), puppet.PuppetFactsGenerate),
-		table.NewPlugin("google_chrome_profiles", chromeuserprofiles.GoogleChromeProfilesColumns(), chromeuserprofiles.GoogleChromeProfilesGenerate),
-		table.NewPlugin("file_lines", fileline.FileLineColumns(), fileline.FileLineGenerate),
+		newTable("puppet_info", puppet.PuppetInfoColumns(), puppet.PuppetInfoGenerate),
+		newTable("puppet_logs", puppet.PuppetLogsColumns(), puppet.PuppetLogsGenerate),
+		newTable("puppet_state", puppet.PuppetStateColumns(), puppet.PuppetStateGenerate),
+		newTable("puppet_facts", puppet.PuppetFactsColumns(), puppet.PuppetFactsGenerate),
+		newTable("google_chrome_profiles", chromeuserprofiles.GoogleChromeProfilesColumns(), chromeuserprofiles.GoogleChromeProfilesGenerate),
+		newTable("file_lines", fileline.FileLineColumns(), fileline.FileLineGenerate),
 	}
 
 	// Platform specific tables
@@ -93,21 +97,21 @@ func main() {
 	// unsupported rather than degrading, so these tables are registered where they can answer
 	// safely and left unregistered where they cannot.
 	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" || runtime.GOOS == "linux" {
-		plugins = append(plugins, table.NewPlugin(
+		plugins = append(plugins, newTable(
 			"mcp_servers", mcpservers.MCPServersColumns(),
-			utils.RecoverPanics("mcp_servers", func(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
+			func(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
 				return mcpservers.MCPServersGenerate(ctx, queryContext, *flSocketPath)
-			})))
-		plugins = append(plugins, table.NewPlugin(
+			}))
+		plugins = append(plugins, newTable(
 			"go_modules", gomodules.GoModulesColumns(),
-			utils.RecoverPanics("go_modules", func(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
+			func(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
 				return gomodules.GoModulesGenerate(ctx, queryContext, *flSocketPath)
-			})))
+			}))
 	}
 
 	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
 		linuxPlugins := []osquery.OsqueryPlugin{
-			table.NewPlugin(
+			newTable(
 				"crowdstrike_falcon",
 				crowdstrike_falcon.CrowdstrikeFalconColumns(),
 				func(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
@@ -119,41 +123,41 @@ func main() {
 
 	if runtime.GOOS == "darwin" {
 		darwinPlugins := []osquery.OsqueryPlugin{
-			table.NewPlugin("energy_impact", energyimpact.EnergyImpactColumns(), energyimpact.EnergyImpactGenerate),
-			table.NewPlugin("filevault_users", filevaultusers.FileVaultUsersColumns(), filevaultusers.FileVaultUsersGenerate),
-			table.NewPlugin("local_network_permissions", localnetworkpermissions.LocalNetworkPermissionsColumns(), localnetworkpermissions.LocalNetworkPermissionsGenerate),
-			table.NewPlugin("macos_profiles", macosprofiles.MacOSProfilesColumns(), macosprofiles.MacOSProfilesGenerate),
-			table.NewPlugin("mdm", mdm.MDMInfoColumns(), mdm.MDMInfoGenerate),
-			table.NewPlugin("munki_info", munki.MunkiInfoColumns(), munki.MunkiInfoGenerate),
-			table.NewPlugin("munki_installs", munki.MunkiInstallsColumns(), munki.MunkiInstallsGenerate),
-			table.NewPlugin("network_quality", networkquality.NetworkQualityColumns(), networkquality.NetworkQualityGenerate),
-			table.NewPlugin("pending_apple_updates", pendingappleupdates.PendingAppleUpdatesColumns(), pendingappleupdates.PendingAppleUpdatesGenerate),
-			table.NewPlugin("privileges_events", privileges.PrivilegesEventsColumns(), privileges.PrivilegesEventsGenerate),
-			table.NewPlugin("macadmins_unified_log", unifiedlog.UnifiedLogColumns(), unifiedlog.UnifiedLogGenerate),
-			table.NewPlugin("macos_rsr", macosrsr.MacOSRsrColumns(), macosrsr.MacOSRsrGenerate),
-			table.NewPlugin("sofa_security_release_info", sofa.SofaSecurityReleaseInfoColumns(), func(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
+			newTable("energy_impact", energyimpact.EnergyImpactColumns(), energyimpact.EnergyImpactGenerate),
+			newTable("filevault_users", filevaultusers.FileVaultUsersColumns(), filevaultusers.FileVaultUsersGenerate),
+			newTable("local_network_permissions", localnetworkpermissions.LocalNetworkPermissionsColumns(), localnetworkpermissions.LocalNetworkPermissionsGenerate),
+			newTable("macos_profiles", macosprofiles.MacOSProfilesColumns(), macosprofiles.MacOSProfilesGenerate),
+			newTable("mdm", mdm.MDMInfoColumns(), mdm.MDMInfoGenerate),
+			newTable("munki_info", munki.MunkiInfoColumns(), munki.MunkiInfoGenerate),
+			newTable("munki_installs", munki.MunkiInstallsColumns(), munki.MunkiInstallsGenerate),
+			newTable("network_quality", networkquality.NetworkQualityColumns(), networkquality.NetworkQualityGenerate),
+			newTable("pending_apple_updates", pendingappleupdates.PendingAppleUpdatesColumns(), pendingappleupdates.PendingAppleUpdatesGenerate),
+			newTable("privileges_events", privileges.PrivilegesEventsColumns(), privileges.PrivilegesEventsGenerate),
+			newTable("macadmins_unified_log", unifiedlog.UnifiedLogColumns(), unifiedlog.UnifiedLogGenerate),
+			newTable("macos_rsr", macosrsr.MacOSRsrColumns(), macosrsr.MacOSRsrGenerate),
+			newTable("sofa_security_release_info", sofa.SofaSecurityReleaseInfoColumns(), func(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
 				return sofa.SofaSecurityReleaseInfoGenerate(ctx, queryContext, *flSocketPath, sofaOpts...)
 			}),
-			table.NewPlugin("sofa_unpatched_cves", sofa.SofaUnpatchedCVEsColumns(), func(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
+			newTable("sofa_unpatched_cves", sofa.SofaUnpatchedCVEsColumns(), func(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
 				return sofa.SofaUnpatchedCVEsGenerate(ctx, queryContext, *flSocketPath, sofaOpts...)
 			}),
-			table.NewPlugin("authdb", authdb.AuthDBColumns(), authdb.AuthDBGenerate),
-			table.NewPlugin(
+			newTable("authdb", authdb.AuthDBColumns(), authdb.AuthDBGenerate),
+			newTable(
 				"wifi_network",
 				wifi_network.WifiNetworkColumns(),
 				func(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
 					return wifi_network.WifiNetworkGenerate(ctx, queryContext, *flSocketPath)
 				},
 			),
-			table.NewPlugin("alt_system_info", alt_system_info.AltSystemInfoColumns(),
+			newTable(alt_system_info.TableName, alt_system_info.AltSystemInfoColumns(),
 				func(ctx context.Context, queryContext table.QueryContext) ([]map[string]string, error) {
 					return alt_system_info.AltSystemInfoGenerate(ctx, queryContext, *flSocketPath)
 				},
 			),
-			table.NewPlugin("macos_thermal_pressure", thermalthrottling.ThermalPressureColumns(), thermalthrottling.ThermalPressureGenerate),
-			table.NewPlugin("macos_soc_power", socpower.SocPowerColumns(), socpower.SocPowerGenerate),
-			table.NewPlugin("touchid_system_config", touchid.TouchIDSystemConfigColumns(), touchid.TouchIDSystemConfigGenerate),
-			table.NewPlugin("touchid_user_config", touchid.TouchIDUserConfigColumns(), touchid.TouchIDUserConfigGenerate),
+			newTable("macos_thermal_pressure", thermalthrottling.ThermalPressureColumns(), thermalthrottling.ThermalPressureGenerate),
+			newTable("macos_soc_power", socpower.SocPowerColumns(), socpower.SocPowerGenerate),
+			newTable("touchid_system_config", touchid.TouchIDSystemConfigColumns(), touchid.TouchIDSystemConfigGenerate),
+			newTable("touchid_user_config", touchid.TouchIDUserConfigColumns(), touchid.TouchIDUserConfigGenerate),
 		}
 		plugins = append(plugins, darwinPlugins...)
 	}
@@ -166,4 +170,11 @@ func main() {
 	if err := server.Run(); err != nil {
 		log.Fatalln(err)
 	}
+}
+
+// newTable registers a table with its generate function wrapped by utils.RecoverPanics, so a
+// panic in one table becomes an error for that query instead of ending the process that serves
+// every table.
+func newTable(name string, columns []table.ColumnDefinition, generate table.GenerateFunc) *table.Plugin {
+	return table.NewPlugin(name, columns, utils.RecoverPanics(name, generate))
 }

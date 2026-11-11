@@ -33,7 +33,9 @@ type AuthDBRight struct {
 
 func AuthDBColumns() []table.ColumnDefinition {
 	return []table.ColumnDefinition{
-		table.TextColumn("name"),
+		// Indexed, not optimized: getRules fails the whole call when one right is missing, so an IN
+		// list is left to one generate call per name, and the names that resolve still answer.
+		table.TextColumn("name", table.IndexColumn()),
 		table.TextColumn("allow_root"),
 		table.TextColumn("authenticate_user"),
 		table.TextColumn("class"),

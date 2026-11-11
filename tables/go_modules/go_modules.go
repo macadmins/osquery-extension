@@ -32,7 +32,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
 
 	"github.com/osquery/osquery-go/plugin/table"
 
@@ -61,12 +60,15 @@ func GoModulesColumns() []table.ColumnDefinition {
 		// compiler a build used, which GOTOOLCHAIN, an installed compiler or CI can change.
 		table.TextColumn("go_directive"),
 		table.TextColumn("toolchain_directive"),
-		table.TextColumn("project_path"),
-		table.TextColumn("user"),
+		table.TextColumn("project_path", table.IndexColumn(), table.OptimizedColumn()),
+		table.TextColumn("user", table.IndexColumn(), table.OptimizedColumn()),
 		// The uid column of osquery's users table, as core osquery's per-user tables publish it,
 		// so `JOIN users USING (uid)` works. On Windows osquery fills it with the last component
-		// of the SID, which two accounts can share; user_id holds the whole SID.
-		table.BigIntColumn("uid"),
+		// of the SID, which two accounts can share; user_id holds the whole SID. OptimizedColumn
+		// alone keeps osquery from indexing it, as --extensions_default_index does a column with
+		// no options: the scan does not narrow by uid, so an index would make `JOIN users USING
+		// (uid)` one full scan per users row, where SQLite otherwise matches uid after one scan.
+		table.BigIntColumn("uid", table.OptimizedColumn()),
 		// The uid on macOS and Linux, the SID on Windows, as osquery's users table reports it.
 		table.TextColumn("user_id"),
 		// What go.sum records for this version, for its contents and for its go.mod file: 1
@@ -86,7 +88,7 @@ func GoModulesColumns() []table.ColumnDefinition {
 func GoModulesGenerate(ctx context.Context, queryContext table.QueryContext,
 	socketPath string) ([]map[string]string, error) {
 	return generate(ctx, queryContext,
-		&utils.SocketOsqueryClienter{SocketPath: socketPath, Timeout: 10 * time.Second})
+		utils.SocketClienter(socketPath))
 }
 
 // generate is GoModulesGenerate with the osquery client injected, so tests drive it through a
