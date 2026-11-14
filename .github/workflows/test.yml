@@ -35,3 +35,20 @@ jobs:
 
       - name: Build
         run: make build
+  macos:
+    # Ubuntu jobs can't compile the darwin targets (cgo + Apple toolchain via
+    # apple_support), so build them and run the darwin-tagged tests here.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        run: make test
+
+      - name: Build darwin targets
+        run: bazel build --verbose_failures //:osquery-extension-mac-arm //:osquery-extension-mac-amd

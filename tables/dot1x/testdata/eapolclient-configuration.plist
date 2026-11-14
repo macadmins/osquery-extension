@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Synthetic /Library/Preferences/SystemConfiguration/com.apple.network.eapolclient.configuration.plist (structure from macOS 27; values made up). -->
+<plist version="1.0">
+<dict>
+	<key>Profiles</key>
+	<dict>
+		<key>11111111-2222-3333-4444-555555555555</key>
+		<dict>
+			<key>UserDefinedName</key><string>WiFi (CorpWiFi)</string>
+			<key>Information</key>
+			<dict>
+				<key>com.apple.mcx.configurationprofiles.8021X</key>
+				<dict><key>PayloadUUID</key><string>ABCDEF01-2345-6789-ABCD-EF0123456789</string></dict>
+			</dict>
+			<key>WLAN</key>
+			<dict>
+				<key>SSID</key><data>Q29ycFdpRmk=</data>
+				<key>SecurityType</key><string>Any</string>
+			</dict>
+			<key>AuthenticationProperties</key>
+			<dict>
+				<key>AcceptEAPTypes</key><array><integer>25</integer></array>
+				<key>OuterIdentity</key><string>anonymous@campus.edu</string>
+				<key>UserName</key><string>jdoe@campus.edu</string>
+				<key>TLSTrustedCertificates</key><array><data>MAo=</data></array>
+				<key>TLSTrustedServerNames</key><array><string>radius1.campus.edu</string><string>radius2.campus.edu</string></array>
+			</dict>
+		</dict>
+		<key>66666666-7777-8888-9999-000000000000</key>
+		<dict>
+			<key>UserDefinedName</key><string>Wired (no WLAN)</string>
+			<key>AuthenticationProperties</key>
+			<dict>
+				<key>AcceptEAPTypes</key><array><integer>13</integer></array>
+				<key>UserName</key><string>host/wired01.campus.edu</string>
+				<key>TLSTrustedCertificates</key><array><data>MAo=</data></array>
+			</dict>
+		</dict>
+		<key>aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</key>
+		<dict>
+			<key>UserDefinedName</key><string>EAP-TLS (certificate only)</string>
+			<key>AuthenticationProperties</key>
+			<dict>
+				<key>AcceptEAPTypes</key><array><integer>13</integer></array>
+			</dict>
+		</dict>
+		<key>bbbbbbbb-cccc-dddd-eeee-ffffffffffff</key>
+		<dict>
+			<key>UserDefinedName</key><string>Names only</string>
+			<key>AuthenticationProperties</key>
+			<dict>
+				<key>AcceptEAPTypes</key><array><integer>25</integer></array>
+				<key>TLSTrustedServerNames</key><array><string>*.campus.edu</string></array>
+			</dict>
+		</dict>
+	</dict>
+</dict>
+</plist>
