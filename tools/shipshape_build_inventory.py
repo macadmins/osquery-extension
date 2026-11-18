@@ -1,0 +1,321 @@
+#!/usr/bin/env python3
+"""Unsigned build-data collection only; never execute built extension files."""
+
+import argparse
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import struct
+import subprocess
+import sys
+import zipfile
+
+
+FILE_LIMIT = 64 << 20
+TOTAL_LIMIT = 128 << 20
+JSON_LIMIT = 64 << 10
+REPOSITORY_ID = "273057431"
+TRANSFER_NAME = "osquery-extension-thin-build-v1.zip"
+TARGETS = (
+    ("darwin-amd64", "//:osquery-extension-mac-amd"),
+    ("darwin-arm64", "//:osquery-extension-mac-arm"),
+    ("linux-amd64", "//:osquery-extension-linux-amd"),
+    ("linux-arm64", "//:osquery-extension-linux-arm"),
+    ("windows-amd64", "//:osquery-extension-win-amd"),
+)
+
+
+class Invalid(ValueError):
+    pass
+
+
+class Budget:
+    def __init__(self, limit=TOTAL_LIMIT):
+        self.remaining = limit
+
+    def charge(self, size):
+        if size < 0 or size > self.remaining:
+            raise Invalid("incomplete: shared byte limit exceeded")
+        self.remaining -= size
+
+
+def digest(raw):
+    return hashlib.sha256(raw).hexdigest()
+
+
+def read_file(path, budget, limit=FILE_LIMIT):
+    path = Path(path)
+    metadata = path.lstat()
+    if not stat.S_ISREG(metadata.st_mode) or not 0 < metadata.st_size <= limit:
+        raise Invalid("incomplete: nonregular, empty or oversized file")
+    budget.charge(metadata.st_size)
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if (opened.st_dev, opened.st_ino, opened.st_size) != (metadata.st_dev, metadata.st_ino, metadata.st_size):
+            raise Invalid("incomplete: file changed before read")
+        raw = stream.read(limit + 1)
+    if len(raw) != metadata.st_size:
+        raise Invalid("incomplete: file changed during read")
+    return raw
+
+
+def pairs(items):
+    result = {}
+    for key, value in items:
+        if key in result:
+            raise Invalid("incomplete: duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def json_bytes(value):
+    raw = (json.dumps(value, sort_keys=True, indent=2) + "\n").encode("utf-8")
+    if len(raw) > JSON_LIMIT:
+        raise Invalid("incomplete: diagnostic JSON exceeds limit")
+    return raw
+
+
+def context(environment):
+    source = environment.get("TRIAL_SOURCE_SHA", "")
+    if not re.fullmatch(r"[0-9a-f]{40}", source):
+        raise Invalid("source SHA must be forty lowercase hexadecimal characters")
+    expected = {"GITHUB_REPOSITORY_ID": REPOSITORY_ID,
+                "GITHUB_REPOSITORY": "macadmins/osquery-extension",
+                "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/main",
+                "GITHUB_SHA": source, "GITHUB_WORKFLOW_SHA": source,
+                "GITHUB_WORKFLOW_REF": "macadmins/osquery-extension/.github/workflows/shipshape-build-inventory.yml@refs/heads/main"}
+    if any(environment.get(key) != value for key, value in expected.items()):
+        raise Invalid("unexpected repository identity")
+    result = {"repository_id": int(REPOSITORY_ID), "source_sha": source, "workflow_sha": source}
+    for key, field in (("GITHUB_RUN_ID", "run_id"), ("GITHUB_RUN_ATTEMPT", "run_attempt")):
+        value = environment.get(key, "")
+        if not re.fullmatch(r"[1-9][0-9]{0,17}", value):
+            raise Invalid("missing or malformed run locator")
+        result[field] = int(value)
+    return result
+
+
+def thin_platform(raw):
+    """CPU/container diagnostics only; no embedded Go OS/module proof."""
+    if len(raw) < 64:
+        raise Invalid("incomplete: truncated executable header")
+    if raw[:4] == b"\xcf\xfa\xed\xfe":
+        cpu, subtype, kind = struct.unpack_from("<III", raw, 4)
+        if kind == 2 and (cpu, subtype) in ((0x01000007, 3), (0x0100000C, 0)):
+            return "darwin-amd64" if cpu == 0x01000007 else "darwin-arm64"
+    if raw[:7] == b"\x7fELF\x02\x01\x01" and raw[7] in (0, 3):
+        kind, machine = struct.unpack_from("<HH", raw, 16)
+        if kind in (2, 3) and machine in (62, 183):
+            return "linux-amd64" if machine == 62 else "linux-arm64"
+    if raw[:2] == b"MZ":
+        offset = struct.unpack_from("<I", raw, 60)[0]
+        if 64 <= offset <= min(1 << 20, len(raw) - 26):
+            if raw[offset:offset + 4] == b"PE\0\0" and struct.unpack_from("<H", raw, offset + 4)[0] == 0x8664 and struct.unpack_from("<H", raw, offset + 24)[0] == 0x20B:
+                return "windows-amd64"
+    raise Invalid("incomplete: unsupported executable header")
+
+
+class BoundedBuffer(io.BytesIO):
+    def write(self, raw):
+        if self.tell() + len(raw) > FILE_LIMIT:
+            raise Invalid("incomplete: ZIP size exceeds limit")
+        return super().write(raw)
+
+
+def make_zip(members, budget):
+    output = BoundedBuffer()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=False) as archive:
+        for name, raw in sorted(members.items()):
+            if not 0 < len(raw) <= FILE_LIMIT:
+                raise Invalid("incomplete: ZIP member size exceeds limit")
+            budget.charge(len(raw))
+            info = zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = (stat.S_IFREG | 0o600) << 16
+            archive.writestr(info, raw)
+    raw = output.getvalue()
+    if len(raw) > FILE_LIMIT:
+        raise Invalid("incomplete: ZIP size exceeds limit")
+    budget.charge(len(raw))
+    return raw
+
+
+def transfer_members(raw, expected, budget):
+    # Bound the central directory BEFORE zipfile allocates entry structures.
+    end = raw.rfind(b"PK\x05\x06", max(0, len(raw) - 65557))
+    if end < 0 or len(raw) < end + 22:
+        raise Invalid("incomplete: ZIP directory missing")
+    disk, directory_disk, on_disk, count, size, start, comment = struct.unpack_from("<HHHHIIH", raw, end + 4)
+    if disk or directory_disk or on_disk != count or count != len(expected) or size > 16384 or start + size != end or end + 22 + comment != len(raw):
+        raise Invalid("incomplete: unsupported ZIP directory")
+    position = start
+    for _ in range(count):
+        if position + 46 > end or raw[position:position + 4] != b"PK\x01\x02":
+            raise Invalid("incomplete: invalid ZIP directory entry")
+        lengths = struct.unpack_from("<HHH", raw, position + 28)
+        position += 46 + sum(lengths)
+    if position != end:
+        raise Invalid("incomplete: ZIP directory count mismatch")
+    members = {}
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        for entry in archive.infolist():
+            mode = entry.external_attr >> 16
+            limit = JSON_LIMIT if entry.filename == "build.json" else FILE_LIMIT
+            if entry.filename not in expected or entry.filename in members or stat.S_IFMT(mode) not in (0, stat.S_IFREG) or entry.flag_bits & 1 or entry.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED) or not 0 < entry.file_size <= limit:
+                raise Invalid("incomplete: unexpected or unsafe transfer member")
+            budget.charge(entry.file_size)
+            with archive.open(entry) as stream:
+                body = stream.read(entry.file_size + 1)
+            if len(body) != entry.file_size:
+                raise Invalid("incomplete: truncated transfer member")
+            members[entry.filename] = body
+    if set(members) != expected:
+        raise Invalid("incomplete: missing transfer member")
+    return members
+
+
+def tool_versions(value):
+    patterns = {"bazel": r"bazel 7\.4\.1", "host_go": r"go version go1\.27\.3 darwin/(amd64|arm64)",
+                "python": r"Python 3\.[0-9]{1,2}\.[0-9]{1,3}"}
+    if not isinstance(value, dict) or set(value) != set(patterns) or any(not isinstance(value[key], str) or not re.fullmatch(pattern, value[key]) for key, pattern in patterns.items()):
+        raise Invalid("unexpected tool version; review the concrete proposal")
+    return value
+
+
+def scratch_output(path):
+    root = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+    output = Path(path).resolve()
+    if output == root or not output.is_relative_to(root):
+        raise Invalid("output must be inside the job's temporary directory")
+    return output
+
+
+def collect(args, invocation):
+    budget = Budget()
+    workspace = Path(args.workspace).resolve(strict=True)
+    scratch = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+    output_root = Path(read_file(args.output_root, budget, 4096).decode().strip()).resolve(strict=True)
+    if not output_root.is_relative_to(scratch / "osquery-trial-bazel"):
+        raise Invalid("unexpected Bazel output root")
+    paths = read_file(args.output_files, budget, 16384).decode().splitlines()
+    if len(paths) != len(TARGETS):
+        raise Invalid("expected exactly one output for each of five fixed labels")
+    version = read_file(workspace / "VERSION", budget, 64).decode().strip()
+    if version != "1.5.5" or read_file(workspace / ".bazelversion", budget, 64).decode().strip() != "7.4.1":
+        raise Invalid("baseline version/tool pin changed; review a refreshed proposal")
+    tree = read_file(args.source_tree, budget, 64).decode().strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", tree):
+        raise Invalid("malformed source-tree observation")
+    members, records = {}, []
+    for (target, label), locator in zip(TARGETS, paths):
+        if not locator or len(locator) > 4096:
+            raise Invalid("invalid Bazel output locator")
+        path = workspace / locator
+        resolved = path.resolve(strict=True)
+        if not resolved.is_relative_to(output_root):
+            raise Invalid("output escaped the isolated Bazel output root")
+        raw = read_file(path, budget)
+        if thin_platform(raw) != target:
+            raise Invalid("incomplete: output header differs from the requested target")
+        name = "thin/" + target
+        members[name] = raw
+        records.append({"target": target, "label": label, "path": name, "bytes": len(raw), "sha256": digest(raw)})
+    metadata = {"schema_version": 1, "diagnostic_only": True, **invocation,
+                "source_tree_sha": tree,
+                "version_file": version, "version_availability": "not_checked",
+                "files": records, "dependency_inventory": "unknown",
+                "embedded_platform_settings": "not_collected",
+                "build_graph_capture": "not_implemented",
+                "tool_versions": tool_versions(json.loads(read_file(args.tool_versions, budget, JSON_LIMIT), object_pairs_hook=pairs))}
+    members["build.json"] = json_bytes(metadata)
+    output = scratch_output(args.output)
+    output.parent.mkdir(parents=True, exist_ok=False)
+    output.write_bytes(make_zip(members, budget))
+
+
+def package(args, invocation):
+    budget = Budget()
+    expected = {"thin/" + target for target, _ in TARGETS} | {"build.json"}
+    members = transfer_members(read_file(args.transfer, budget), expected, budget)
+    if len(members["build.json"]) > JSON_LIMIT:
+        raise Invalid("incomplete: diagnostic JSON exceeds limit")
+    metadata = json.loads(members["build.json"], object_pairs_hook=pairs)
+    keys = {"schema_version", "diagnostic_only", *invocation, "source_tree_sha", "version_file", "version_availability", "files", "dependency_inventory", "embedded_platform_settings", "build_graph_capture", "tool_versions"}
+    if not isinstance(metadata, dict) or set(metadata) != keys or metadata.get("diagnostic_only") is not True or metadata.get("schema_version") != 1 or any(metadata.get(key) != value for key, value in invocation.items()) or metadata.get("version_file") != "1.5.5" or metadata.get("version_availability") != "not_checked" or metadata.get("dependency_inventory") != "unknown" or metadata.get("embedded_platform_settings") != "not_collected" or metadata.get("build_graph_capture") != "not_implemented":
+        raise Invalid("incomplete: transfer diagnostic identity/profile mismatch")
+    if not isinstance(metadata.get("source_tree_sha"), str) or not re.fullmatch(r"[0-9a-f]{40}", metadata["source_tree_sha"]):
+        raise Invalid("incomplete: malformed source-tree observation")
+    tool_versions(metadata["tool_versions"])
+    records = metadata.get("files", [])
+    if len(records) != len(TARGETS):
+        raise Invalid("incomplete: wrong thin output inventory")
+    for record, (target, label) in zip(records, TARGETS):
+        raw = members["thin/" + target]
+        if record != {"target": target, "label": label, "path": "thin/" + target, "bytes": len(raw), "sha256": digest(raw)} or thin_platform(raw) != target:
+            raise Invalid("incomplete: thin output changed across jobs")
+    output = scratch_output(args.output)
+    output.mkdir(parents=True, exist_ok=False)
+    thin = output / "thin"
+    thin.mkdir()
+    for target, _ in TARGETS:
+        (thin / target).write_bytes(members["thin/" + target])
+    universal = output / "darwin-universal"
+    subprocess.run(["/usr/bin/lipo", "-create", "-output", str(universal), str(thin / "darwin-amd64"), str(thin / "darwin-arm64")], check=True, timeout=60)
+    raw = read_file(universal, budget)
+    if raw[:8] != b"\xca\xfe\xba\xbe\0\0\0\x02":
+        raise Invalid("incomplete: unexpected universal Mach-O profile")
+    slices, spans, slice_records = [], [], []
+    for index in range(2):
+        cpu, subtype, offset, size, align = struct.unpack_from(">IIIII", raw, 8 + index * 20)
+        if align > 30 or offset < 48 or offset + size > len(raw) or not size or offset % (1 << align) or any(offset < end and start < offset + size for start, end in spans):
+            raise Invalid("incomplete: invalid universal slice")
+        body = raw[offset:offset + size]
+        target = thin_platform(body)
+        if (cpu, subtype) != struct.unpack_from("<II", body, 4) or target not in ("darwin-amd64", "darwin-arm64") or body != members["thin/" + target] or target in slices:
+            raise Invalid("incomplete: universal slice differs from thin bytes")
+        slices.append(target)
+        spans.append((offset, offset + size))
+        slice_records.append({"target": target, "offset": offset, "bytes": size, "sha256": digest(body)})
+    public_members = {"macadmins_extension/darwin/macadmins_extension.ext": raw,
+                      "macadmins_extension/linux/macadmins_extension.amd64.ext": members["thin/linux-amd64"],
+                      "macadmins_extension/linux/macadmins_extension.arm64.ext": members["thin/linux-arm64"],
+                      "macadmins_extension/windows/macadmins_extension.amd64.ext.exe": members["thin/windows-amd64"]}
+    archive = make_zip(public_members, budget)
+    (output / "macadmins_extension.zip").write_bytes(archive)
+    universal.unlink()  # Only this exact newly-created helper scratch file.
+    metadata["package"] = {"bytes": len(archive), "sha256": digest(archive),
+                           "members": [{"path": name, "bytes": len(body), "sha256": digest(body)} for name, body in sorted(public_members.items())]}
+    metadata["darwin_slices"] = slice_records
+    metadata["publication"] = "not_attempted"
+    metadata["signing"] = "no_certificate_or_signing_step"
+    metadata["platform_observation"] = "container_CPU_only_not_accepted_Go_OS_proof"
+    metadata["packaging_python"] = "Python %d.%d.%d" % sys.version_info[:3]
+    metadata["packaging_command"] = "/usr/bin/lipo -create (five validated thin outputs; two Darwin inputs)"
+    (output / "inventory.json").write_bytes(json_bytes(metadata))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    command = commands.add_parser("collect")
+    for name in ("workspace", "output-root", "output-files", "tool-versions", "source-tree", "output"):
+        command.add_argument("--" + name, required=True)
+    command = commands.add_parser("package")
+    command.add_argument("--transfer", required=True)
+    command.add_argument("--output", required=True)
+    args = parser.parse_args()
+    try:
+        {"collect": collect, "package": package}[args.command](args, context(os.environ))
+    except (Invalid, OSError, ValueError, TypeError, RecursionError, struct.error, zipfile.BadZipFile, subprocess.SubprocessError) as error:
+        print("unsigned diagnostic incomplete: " + str(error), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
