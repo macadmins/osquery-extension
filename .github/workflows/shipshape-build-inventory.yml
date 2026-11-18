@@ -73,7 +73,7 @@ jobs:
 
   build:
     needs: validate
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 30
     env:
       TRIAL_SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
@@ -150,7 +150,7 @@ jobs:
 
   package:
     needs: [validate, build]
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 10
     env:
       TRIAL_SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
