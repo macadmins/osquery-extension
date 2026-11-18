@@ -1,11 +1,14 @@
 """Inert fixtures for the proposed helper; no Bazel or extension execution."""
 
 import argparse
+from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
 import os
 from pathlib import Path
+import runpy
 import struct
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -65,7 +68,7 @@ class InventoryTests(unittest.TestCase):
         self.addCleanup(self.environment.stop)
         self.invocation = helper.context(self.env)
 
-    def fixture(self):
+    def fixture_args(self):
         workspace = self.root / "workspace"
         workspace.mkdir()
         (workspace / "VERSION").write_text("1.5.5\n")
@@ -82,6 +85,10 @@ class InventoryTests(unittest.TestCase):
         (self.root / "tree.txt").write_text("b" * 40)
         (self.root / "tools.json").write_text(json.dumps({"bazel": "bazel 7.4.1", "host_go": "go version go1.27.3 darwin/arm64", "python": "Python 3.9.6"}))
         args = argparse.Namespace(workspace=str(workspace), output_root=str(self.root / "root.txt"), output_files=str(self.root / "paths.txt"), source_tree=str(self.root / "tree.txt"), tool_versions=str(self.root / "tools.json"), output=str(self.root / "transfer" / helper.TRANSFER_NAME))
+        return args
+
+    def fixture(self):
+        args = self.fixture_args()
         helper.collect(args, self.invocation)
         return Path(args.output)
 
@@ -145,6 +152,168 @@ class InventoryTests(unittest.TestCase):
             budget.charge(4)
         with self.assertRaises(helper.Invalid):
             helper.pairs([("duplicate", 1), ("duplicate", 2)])
+
+    def test_cli_collect_and_package_real_validation(self):
+        args = self.fixture_args()
+        arguments = [str(Path(helper.__file__)), "collect"]
+        for name, value in vars(args).items():
+            arguments.extend(("--" + name.replace("_", "-"), value))
+        with patch.object(sys, "argv", arguments):
+            self.assertEqual(helper.main(), 0)
+        output = self.root / "cli-package"
+        arguments = [str(Path(helper.__file__)), "package", "--transfer", args.output,
+                     "--output", str(output)]
+        with patch.object(sys, "argv", arguments), patch.object(helper.subprocess, "run", side_effect=fake_lipo):
+            self.assertEqual(helper.main(), 0)
+        self.assertEqual(json.loads((output / "inventory.json").read_bytes())["dependency_inventory"], "unknown")
+        self.assertEqual(len(list((output / "thin").iterdir())), 5)
+
+    def test_cli_failures_report_incomplete_and_wrapper_exits_nonzero(self):
+        arguments = [str(Path(helper.__file__)), "package", "--transfer",
+                     str(self.root / "missing.zip"), "--output", str(self.root / "not-created")]
+        error = io.StringIO()
+        with patch.object(sys, "argv", arguments), redirect_stderr(error):
+            self.assertEqual(helper.main(), 1)
+        self.assertIn("unsigned diagnostic incomplete:", error.getvalue())
+        self.assertFalse((self.root / "not-created").exists())
+        # Execute only this controller-authored Python entry point, never a built file.
+        with patch.object(sys, "argv", arguments), redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as exited:
+                runpy.run_path(str(Path(helper.__file__).resolve()), run_name="__main__")
+        self.assertEqual(exited.exception.code, 1)
+        with patch.object(sys, "argv", [arguments[0], "package"]), redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as missing:
+                helper.main()
+        self.assertEqual(missing.exception.code, 2)
+        with patch.object(sys, "argv", [arguments[0], "--help"]), redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit) as helped:
+                helper.main()
+        self.assertEqual(helped.exception.code, 0)
+
+    def test_regular_file_changes_before_and_during_read_rejected(self):
+        target = self.root / "changing"
+        target.write_bytes(b"inert")
+        original_open = helper.os.open
+
+        def change_before_open(path, flags):
+            target.write_bytes(b"changed-size")
+            return original_open(path, flags)
+
+        with patch.object(helper.os, "open", side_effect=change_before_open):
+            with self.assertRaisesRegex(helper.Invalid, "changed before read"):
+                helper.read_file(target, helper.Budget())
+        target.write_bytes(b"inert")
+        original_fstat = helper.os.fstat
+
+        def truncate_after_fstat(descriptor):
+            metadata = original_fstat(descriptor)
+            target.write_bytes(b"x")
+            return metadata
+
+        with patch.object(helper.os, "fstat", side_effect=truncate_after_fstat):
+            with self.assertRaisesRegex(helper.Invalid, "changed during read"):
+                helper.read_file(target, helper.Budget())
+
+    def test_small_limits_and_invalid_executable_headers(self):
+        with patch.object(helper, "JSON_LIMIT", 8):
+            with self.assertRaisesRegex(helper.Invalid, "JSON exceeds limit"):
+                helper.json_bytes({"diagnostic": "inert"})
+        with patch.object(helper, "FILE_LIMIT", 4):
+            with self.assertRaisesRegex(helper.Invalid, "ZIP size exceeds limit"):
+                helper.BoundedBuffer().write(b"inert")
+        with self.assertRaisesRegex(helper.Invalid, "member size exceeds limit"):
+            helper.make_zip({"empty": b""}, helper.Budget())
+        for raw in (b"short", bytes(128), inert_thin("windows-amd64")[:80]):
+            with self.subTest(bytes=len(raw)), self.assertRaises(helper.Invalid):
+                helper.thin_platform(raw)
+
+    def test_zip_directory_and_unexpected_member_rejected(self):
+        with self.assertRaisesRegex(helper.Invalid, "directory missing"):
+            helper.transfer_members(b"inert-not-a-zip", {"expected"}, helper.Budget())
+        original = helper.make_zip({"expected": b"inert"}, helper.Budget())
+        directory = original.index(b"PK\x01\x02")
+        corrupt = bytearray(original)
+        corrupt[directory:directory + 4] = b"bad!"
+        with self.assertRaisesRegex(helper.Invalid, "invalid ZIP directory entry"):
+            helper.transfer_members(bytes(corrupt), {"expected"}, helper.Budget())
+        corrupt = bytearray(original)
+        struct.pack_into("<H", corrupt, directory + 32, 1)  # A comment beyond the fixed directory.
+        with self.assertRaisesRegex(helper.Invalid, "directory count mismatch"):
+            helper.transfer_members(bytes(corrupt), {"expected"}, helper.Budget())
+        unexpected = helper.make_zip({"unexpected": b"inert"}, helper.Budget())
+        with self.assertRaisesRegex(helper.Invalid, "unsafe transfer member"):
+            helper.transfer_members(unexpected, {"expected"}, helper.Budget())
+
+    def test_collect_rejects_changed_pins_paths_headers_and_tree(self):
+        args = self.fixture_args()
+        paths = Path(args.output_files).read_text().splitlines()
+        cases = ((Path(args.output_root), str(self.root), "unexpected Bazel output root"),
+                 (Path(args.output_files), "\n".join(paths[:4]), "exactly one output"),
+                 (Path(args.workspace) / "VERSION", "1.5.6", "baseline version/tool pin changed"),
+                 (Path(args.workspace) / ".bazelversion", "8.0.0", "baseline version/tool pin changed"),
+                 (Path(args.source_tree), "not-a-source-tree", "malformed source-tree"),
+                 (Path(args.output_files), "\n" + "\n".join(paths[1:]), "invalid Bazel output locator"),
+                 (Path(args.output_files), "\n".join([str(Path(args.workspace) / "VERSION"), *paths[1:]]), "output escaped"),
+                 (Path(paths[0]), inert_thin("darwin-arm64"), "header differs"))
+        for path, changed, message in cases:
+            original = path.read_bytes()
+            with self.subTest(message=message):
+                try:
+                    path.write_bytes(changed if isinstance(changed, bytes) else changed.encode())
+                    with self.assertRaisesRegex(helper.Invalid, message):
+                        helper.collect(args, self.invocation)
+                finally:
+                    path.write_bytes(original)
+        self.assertFalse(Path(args.output).exists())
+
+    def test_package_rejects_diagnostic_identity_tree_and_inventory_changes(self):
+        transfer = self.fixture()
+        expected = {"thin/" + target for target, _ in helper.TARGETS} | {"build.json"}
+        members = helper.transfer_members(transfer.read_bytes(), expected, helper.Budget())
+        original = json.loads(members["build.json"])
+        cases = (("diagnostic_only", False, "identity/profile mismatch"),
+                 ("source_sha", "b" * 40, "identity/profile mismatch"),
+                 ("dependency_inventory", "complete", "identity/profile mismatch"),
+                 ("source_tree_sha", "bad-tree", "malformed source-tree"),
+                 ("files", original["files"][:4], "wrong thin output inventory"))
+        for key, value, message in cases:
+            with self.subTest(field=key):
+                changed = dict(original, **{key: value})
+                members["build.json"] = helper.json_bytes(changed)
+                transfer.write_bytes(helper.make_zip(members, helper.Budget()))
+                with patch.object(helper.subprocess, "run") as run:
+                    with self.assertRaisesRegex(helper.Invalid, message):
+                        helper.package(argparse.Namespace(transfer=str(transfer), output=str(self.root / "rejected")), self.invocation)
+                    run.assert_not_called()
+        self.assertFalse((self.root / "rejected").exists())
+
+    def test_tool_version_unknown_and_universal_slice_changes_rejected(self):
+        versions = {"bazel": "bazel 7.4.1", "host_go": "go version go1.27.3 darwin/arm64", "python": "Python 3.9.6"}
+        for changed in ({}, dict(versions, bazel="bazel 8.0.0"), dict(versions, python=3)):
+            with self.subTest(versions=changed), self.assertRaisesRegex(helper.Invalid, "unexpected tool version"):
+                helper.tool_versions(changed)
+        transfer = self.fixture()
+
+        def changed_lipo(command, corruption):
+            fake_lipo(command)
+            path = Path(command[3])
+            raw = bytearray(path.read_bytes())
+            if corruption == "profile":
+                raw[0] = 0
+            elif corruption == "bounds":
+                struct.pack_into(">I", raw, 16, len(raw) + 1)
+            else:
+                offset = struct.unpack_from(">I", raw, 16)[0]
+                raw[offset + 100] ^= 1
+            path.write_bytes(raw)
+
+        for corruption, message in (("profile", "unexpected universal"), ("bounds", "invalid universal slice"), ("bytes", "differs from thin bytes")):
+            with self.subTest(corruption=corruption):
+                output = self.root / ("bad-universal-" + corruption)
+                with patch.object(helper.subprocess, "run", side_effect=lambda command, **options: changed_lipo(command, corruption)):
+                    with self.assertRaisesRegex(helper.Invalid, message):
+                        helper.package(argparse.Namespace(transfer=str(transfer), output=str(output)), self.invocation)
+                self.assertFalse((output / "inventory.json").exists())
 
     def test_current_source_guard_rejects_main_advancing_between_jobs(self):
         workflow = Path(__file__).parent / "shipshape-build-inventory.yml"
