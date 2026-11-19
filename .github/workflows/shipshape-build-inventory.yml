@@ -116,7 +116,7 @@ jobs:
           bazel="$RUNNER_TEMP/osquery-trial-tools/bazel"
           startup=(--nosystem_rc --nohome_rc "--output_user_root=$RUNNER_TEMP/osquery-trial-bazel")
           labels=(//:osquery-extension-mac-amd //:osquery-extension-mac-arm //:osquery-extension-linux-amd //:osquery-extension-linux-arm //:osquery-extension-win-amd)
-          "$bazel" "${startup[@]}" --version > "$RUNNER_TEMP/osquery-trial-bazel-version.txt"
+          "$bazel" --version > "$RUNNER_TEMP/osquery-trial-bazel-version.txt"
           git rev-parse 'HEAD^{tree}' > "$RUNNER_TEMP/osquery-trial-source-tree.txt"
           go version > "$RUNNER_TEMP/osquery-trial-go-version.txt"
           python3 --version > "$RUNNER_TEMP/osquery-trial-python-version.txt"
