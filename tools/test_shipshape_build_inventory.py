@@ -6,15 +6,25 @@ import io
 import json
 import os
 from pathlib import Path
+import random
 import runpy
+import stat
 import struct
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import zipfile
 
 import shipshape_build_inventory as helper
+
+
+def inert_zip(members):
+    """Fixture encoding honors the private encoder's already-charged contract."""
+    budget = helper.Budget()
+    budget.charge(sum(len(body) for body in members.values()))
+    return helper._make_zip(members, budget)
 
 
 def inert_thin(target):
@@ -133,14 +143,14 @@ class InventoryTests(unittest.TestCase):
         expected = {"thin/" + target for target, _ in helper.TARGETS} | {"build.json"}
         members = helper.transfer_members(transfer.read_bytes(), expected, helper.Budget())
         members["thin/linux-amd64"] += b"changed"
-        transfer.write_bytes(helper.make_zip(members, helper.Budget()))
+        transfer.write_bytes(inert_zip(members))
         with patch.object(helper.subprocess, "run") as run:
             with self.assertRaises(helper.Invalid):
                 helper.package(argparse.Namespace(transfer=str(transfer), output=str(self.root / "bad")), self.invocation)
             run.assert_not_called()
 
     def test_directory_bounds_and_shared_budget(self):
-        raw = bytearray(helper.make_zip({"expected": b"inert"}, helper.Budget()))
+        raw = bytearray(inert_zip({"expected": b"inert"}))
         struct.pack_into("<H", raw, len(raw) - 12, 65535)
         with patch.object(helper.zipfile, "ZipFile") as parser:
             with self.assertRaises(helper.Invalid):
@@ -222,7 +232,7 @@ class InventoryTests(unittest.TestCase):
             with self.assertRaisesRegex(helper.Invalid, "ZIP size exceeds limit"):
                 helper.BoundedBuffer().write(b"inert")
         with self.assertRaisesRegex(helper.Invalid, "member size exceeds limit"):
-            helper.make_zip({"empty": b""}, helper.Budget())
+            helper._make_zip({"empty": b""}, helper.Budget())
         for raw in (b"short", bytes(128), inert_thin("windows-amd64")[:80]):
             with self.subTest(bytes=len(raw)), self.assertRaises(helper.Invalid):
                 helper.thin_platform(raw)
@@ -230,7 +240,7 @@ class InventoryTests(unittest.TestCase):
     def test_zip_directory_and_unexpected_member_rejected(self):
         with self.assertRaisesRegex(helper.Invalid, "directory missing"):
             helper.transfer_members(b"inert-not-a-zip", {"expected"}, helper.Budget())
-        original = helper.make_zip({"expected": b"inert"}, helper.Budget())
+        original = inert_zip({"expected": b"inert"})
         directory = original.index(b"PK\x01\x02")
         corrupt = bytearray(original)
         corrupt[directory:directory + 4] = b"bad!"
@@ -240,7 +250,7 @@ class InventoryTests(unittest.TestCase):
         struct.pack_into("<H", corrupt, directory + 32, 1)  # A comment beyond the fixed directory.
         with self.assertRaisesRegex(helper.Invalid, "directory count mismatch"):
             helper.transfer_members(bytes(corrupt), {"expected"}, helper.Budget())
-        unexpected = helper.make_zip({"unexpected": b"inert"}, helper.Budget())
+        unexpected = inert_zip({"unexpected": b"inert"})
         with self.assertRaisesRegex(helper.Invalid, "unsafe transfer member"):
             helper.transfer_members(unexpected, {"expected"}, helper.Budget())
 
@@ -280,7 +290,7 @@ class InventoryTests(unittest.TestCase):
             with self.subTest(field=key):
                 changed = dict(original, **{key: value})
                 members["build.json"] = helper.json_bytes(changed)
-                transfer.write_bytes(helper.make_zip(members, helper.Budget()))
+                transfer.write_bytes(inert_zip(members))
                 with patch.object(helper.subprocess, "run") as run:
                     with self.assertRaisesRegex(helper.Invalid, message):
                         helper.package(argparse.Namespace(transfer=str(transfer), output=str(self.root / "rejected")), self.invocation)
@@ -348,6 +358,118 @@ class InventoryTests(unittest.TestCase):
         with patch("urllib.request.build_opener", return_value=Opener(True)):
             with self.assertRaises(SystemExit):
                 exec(code, {})
+
+    def test_observed_size_inert_package_counts_new_buffers_once(self):
+        # Only these observed byte lengths are reused. Contents are inert seeded
+        # noise/zeros, never downloaded binaries or production acceptance data.
+        sizes = (9683104, 9156930, 7553184, 7012512, 7735296)
+        args = self.fixture_args()
+        paths = Path(args.output_files).read_text().splitlines()
+        for index, ((target, _), size, path) in enumerate(zip(helper.TARGETS, sizes, paths)):
+            noise_size = int((size - 128) * 0.408)
+            body = inert_thin(target) + random.Random(index).randbytes(noise_size) + bytes(size - 128 - noise_size)
+            Path(path).write_bytes(body)
+        budget_type = helper.Budget
+        collect_budget = budget_type()
+        with patch.object(helper, "Budget", return_value=collect_budget) as constructor:
+            helper.collect(args, self.invocation)
+        constructor.assert_called_once_with()
+        transfer = Path(args.output)
+        with zipfile.ZipFile(transfer) as archive:
+            build_json_size = archive.getinfo("build.json").file_size
+        auxiliary = [Path(args.output_root), Path(args.output_files), Path(args.source_tree),
+                     Path(args.tool_versions), Path(args.workspace) / "VERSION", Path(args.workspace) / ".bazelversion"]
+        collect_used = sum(path.stat().st_size for path in auxiliary) + sum(sizes) + build_json_size + transfer.stat().st_size
+        self.assertEqual(collect_budget.remaining, helper.TOTAL_LIMIT - collect_used)
+
+        output = self.root / "observed-size-package"
+        package_budget = budget_type()
+        with patch.object(helper, "Budget", return_value=package_budget) as constructor, patch.object(helper.subprocess, "run", side_effect=fake_lipo):
+            helper.package(argparse.Namespace(transfer=str(transfer), output=str(output)), self.invocation)
+        constructor.assert_called_once_with()
+        metadata = json.loads((output / "inventory.json").read_bytes())
+        package_size = (output / "macadmins_extension.zip").stat().st_size
+        inventory_size = (output / "inventory.json").stat().st_size
+        universal_size = next(member["bytes"] for member in metadata["package"]["members"] if "/darwin/" in member["path"])
+        payload_size = sum(member["bytes"] for member in metadata["package"]["members"])
+        input_bytes = transfer.stat().st_size + sum(sizes) + build_json_size
+        refined_used = input_bytes + universal_size + package_size + inventory_size
+        old_used = input_bytes + universal_size + payload_size + package_size
+        self.assertGreater(old_used, helper.TOTAL_LIMIT)
+        self.assertLessEqual(refined_used, helper.TOTAL_LIMIT)
+        self.assertEqual(package_budget.remaining, helper.TOTAL_LIMIT - refined_used)
+        self.assertTrue(16000000 <= transfer.stat().st_size <= 17500000)
+        self.assertTrue(16000000 <= package_size <= 17500000)
+        self.assertEqual(metadata["dependency_inventory"], "unknown")
+        self.assertEqual(metadata["publication"], "not_attempted")
+        print("Inert observed-size regression: old=%d, refined=%d, shared_cap=%d bytes" % (old_used, refined_used, helper.TOTAL_LIMIT))
+
+    def test_shared_raw_and_expanded_cap_rejects_before_lipo(self):
+        transfer = self.fixture()
+        with zipfile.ZipFile(transfer) as archive:
+            expanded = sum(entry.file_size for entry in archive.infolist())
+        # Tiny private cap exercises the real raw + expansion path, without
+        # constructing oversized hostile data or changing production limits.
+        budget = helper.Budget(transfer.stat().st_size + expanded - 1)
+        output = self.root / "over-budget"
+        with patch.object(helper, "Budget", return_value=budget) as constructor, patch.object(helper.subprocess, "run") as lipo:
+            with self.assertRaisesRegex(helper.Invalid, "shared byte limit exceeded"):
+                helper.package(argparse.Namespace(transfer=str(transfer), output=str(output)), self.invocation)
+        constructor.assert_called_once_with()
+        lipo.assert_not_called()
+        self.assertFalse(output.exists())
+
+    def test_private_encoder_charges_new_zip_and_rejects_mutable_members(self):
+        body = bytes(range(256)) * 4
+        budget = helper.Budget()
+        budget.charge(len(body))
+        raw = helper._make_zip({"inert": body}, budget)
+        self.assertEqual(budget.remaining, helper.TOTAL_LIMIT - len(body) - len(raw))
+        short = helper.Budget(len(body) + len(raw) - 1)
+        short.charge(len(body))
+        with self.assertRaisesRegex(helper.Invalid, "shared byte limit exceeded"):
+            helper._make_zip({"inert": body}, short)
+        for mutable in (bytearray(b"inert"), memoryview(b"inert")):
+            with self.subTest(kind=type(mutable).__name__), self.assertRaises(helper.Invalid):
+                helper._make_zip({"inert": mutable}, helper.Budget())
+
+    def test_generated_json_consumes_shared_budget(self):
+        args = self.fixture_args()
+        paths = Path(args.output_files).read_text().splitlines()
+        auxiliary = [Path(args.output_root), Path(args.output_files), Path(args.source_tree),
+                     Path(args.tool_versions), Path(args.workspace) / "VERSION", Path(args.workspace) / ".bazelversion"]
+        acquired = sum(path.stat().st_size for path in auxiliary) + sum(Path(path).stat().st_size for path in paths)
+        budget_type = helper.Budget
+        with patch.object(helper, "Budget", return_value=budget_type(acquired)), patch.object(helper, "_make_zip") as encode:
+            with self.assertRaisesRegex(helper.Invalid, "shared byte limit exceeded"):
+                helper.collect(args, self.invocation)
+        encode.assert_not_called()
+        helper.collect(args, self.invocation)
+        transfer = Path(args.output)
+        baseline = self.root / "json-baseline"
+        baseline_budget = budget_type()
+        with patch.object(helper, "Budget", return_value=baseline_budget), patch.object(helper.subprocess, "run", side_effect=fake_lipo):
+            helper.package(argparse.Namespace(transfer=str(transfer), output=str(baseline)), self.invocation)
+        before_inventory = helper.TOTAL_LIMIT - baseline_budget.remaining - (baseline / "inventory.json").stat().st_size
+        rejected = self.root / "json-rejected"
+        with patch.object(helper, "Budget", return_value=budget_type(before_inventory)), patch.object(helper.subprocess, "run", side_effect=fake_lipo) as lipo:
+            with self.assertRaisesRegex(helper.Invalid, "shared byte limit exceeded"):
+                helper.package(argparse.Namespace(transfer=str(transfer), output=str(rejected)), self.invocation)
+        lipo.assert_called_once()
+        self.assertFalse((rejected / "inventory.json").exists())
+
+    def test_unchanged_file_limits_reject_before_large_allocation(self):
+        self.assertEqual(helper.FILE_LIMIT, 64 << 20)
+        self.assertEqual(helper.TOTAL_LIMIT, 128 << 20)
+        metadata = SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_size=helper.FILE_LIMIT + 1)
+        with patch.object(Path, "lstat", return_value=metadata), patch.object(helper.os, "open") as opened:
+            with self.assertRaises(helper.Invalid):
+                helper.read_file(self.root / "oversized", helper.Budget())
+        opened.assert_not_called()
+        output = helper.BoundedBuffer()
+        output.seek(helper.FILE_LIMIT)
+        with self.assertRaises(helper.Invalid):
+            output.write(b"x")
 
 
 if __name__ == "__main__":

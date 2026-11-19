@@ -1,0 +1,53 @@
+name: Unsigned inventory helper tests
+
+on:
+  pull_request:
+    paths:
+      - tools/shipshape_build_inventory.py
+      - tools/test_shipshape_build_inventory.py
+      - .github/workflows/shipshape-build-inventory.yml
+      - .github/workflows/shipshape-helper-tests.yml
+  push:
+    branches: [main]
+    paths:
+      - tools/shipshape_build_inventory.py
+      - tools/test_shipshape_build_inventory.py
+      - .github/workflows/shipshape-build-inventory.yml
+      - .github/workflows/shipshape-helper-tests.yml
+
+permissions:
+  contents: read
+
+jobs:
+  helper-unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Test inert fixtures and require 90 percent helper executable-line coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib, sys, trace, unittest
+          sys.path.insert(0, "tools")
+          tracer = trace.Trace(count=True, trace=False)
+          # Discovery and helper imports occur inside tracing, so the denominator
+          # includes module initialization as well as exercised function bodies.
+          result = tracer.runfunc(lambda: unittest.TextTestRunner().run(
+              unittest.defaultTestLoader.discover("tools", pattern="test_shipshape_build_inventory.py")))
+          source = str(pathlib.Path("tools/shipshape_build_inventory.py").resolve())
+          executable = trace._find_executable_linenos(source)
+          counts = tracer.results().counts
+          covered = sum(counts.get((source, line), 0) > 0 for line in executable)
+          percent = 100 * covered / len(executable) if executable else 0
+          print("Helper executable-line coverage: %d/%d = %.2f%% (minimum 90%%)" %
+                (covered, len(executable), percent))
+          if not result.wasSuccessful() or result.testsRun == 0 or percent < 90:
+              raise SystemExit(1)
+          PY
