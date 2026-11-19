@@ -1,3 +1,4 @@
+# Reusable action pinned to reviewed standalone source.
 name: Unsigned osquery build inventory (manual)
 
 on:
@@ -19,172 +20,49 @@ jobs:
   validate:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    outputs:
-      source_sha: ${{ steps.source.outputs.source_sha }}
     steps:
-      - name: Validate repository, workflow and exact current source
-        id: source
-        env:
-          TRIAL_SOURCE_SHA: ${{ inputs.source_sha }}
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: &guard-current-source |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json, os, re, urllib.request
-          source = os.environ["TRIAL_SOURCE_SHA"]
-          if not re.fullmatch(r"[0-9a-f]{40}", source):
-              raise SystemExit("source_sha must be forty lowercase hexadecimal characters")
-          expected = {
-              "GITHUB_REPOSITORY_ID": "273057431",
-              "GITHUB_REPOSITORY": "macadmins/osquery-extension",
-              "GITHUB_EVENT_NAME": "workflow_dispatch",
-              "GITHUB_REF": "refs/heads/main",
-              "GITHUB_SHA": source,
-              "GITHUB_WORKFLOW_SHA": source,
-              "GITHUB_WORKFLOW_REF": "macadmins/osquery-extension/.github/workflows/shipshape-build-inventory.yml@refs/heads/main",
-          }
-          if any(os.environ.get(key) != value for key, value in expected.items()):
-              raise SystemExit("repository/workflow/source context mismatch")
-          with open(os.environ["GITHUB_EVENT_PATH"], "rb") as event_file:
-              raw = event_file.read((1 << 20) + 1)
-          if len(raw) > 1 << 20 or json.loads(raw).get("inputs") != {"source_sha": source}:
-              raise SystemExit("unexpected or oversized dispatch inputs")
-          class NoRedirect(urllib.request.HTTPRedirectHandler):
-              def redirect_request(self, request, response, code, message, headers, new_url):
-                  raise ValueError("API redirects are unsupported")
-          opener = urllib.request.build_opener(NoRedirect())
-          def get(route):
-              request = urllib.request.Request("https://api.github.com/repos/macadmins/osquery-extension" + route,
-                  headers={"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
-                           **({"Authorization": "Bearer " + os.environ["GH_TOKEN"]} if os.environ.get("GH_TOKEN") else {})})
-              with opener.open(request, timeout=15) as response:
-                  raw = response.read((64 << 10) + 1)
-              if len(raw) > 64 << 10:
-                  raise ValueError("oversized repository metadata")
-              return json.loads(raw)
-          for _ in range(2):
-              repository, head = get(""), get("/git/ref/heads/main")
-              if repository["id"] != 273057431 or repository["full_name"] != "macadmins/osquery-extension" or repository["default_branch"] != "main" or repository["fork"] or head["object"]["sha"] != source:
-                  raise SystemExit("current default source changed or identity mismatched")
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              output.write("source_sha=" + source + "\n")
-          PY
+      - name: Validate exact current source and workflow
+        uses: macadmins/shipshape-action@0ec3587a63e1f0fc18ef0fd4e44f5b8753ab1149
+        with:
+          phase: validate
+          expected-repository: macadmins/osquery-extension
+          expected-repository-id: '273057431'
+          source-sha: ${{ inputs.source_sha }}
+          expected-workflow: .github/workflows/shipshape-build-inventory.yml
+          expected-branch: main
+          expected-version: '1.5.5'
 
   build:
     needs: validate
     runs-on: macos-15
     timeout-minutes: 30
-    env:
-      TRIAL_SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build and collect unsigned diagnostic outputs
+        uses: macadmins/shipshape-action@0ec3587a63e1f0fc18ef0fd4e44f5b8753ab1149
         with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-          fetch-depth: 1
-      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
-        with:
-          go-version: 1.27.3
-          cache: false
-      - name: Install exact existing Bazel version without privileged changes
-        shell: bash
-        run: |
-          set -euo pipefail
-          case "$RUNNER_ARCH" in
-            X64) asset=darwin-x86_64; checksum=52dd34c17cc97b3aa5bdfe3d45c4e3938226f23dd0bfb47beedd625a953f1f05 ;;
-            ARM64) asset=darwin-arm64; checksum=02b117b97d0921ae4d4f4e11d27e2c0930381df416e373435d5d0419c6a26f24 ;;
-            *) exit 1 ;;
-          esac
-          mkdir "$RUNNER_TEMP/osquery-trial-tools"
-          curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
-            --connect-timeout 20 --max-time 120 --max-filesize 70000000 \
-            --output "$RUNNER_TEMP/osquery-trial-tools/bazel" \
-            "https://github.com/bazelbuild/bazel/releases/download/7.4.1/bazel-7.4.1-$asset"
-          printf '%s  %s\n' "$checksum" "$RUNNER_TEMP/osquery-trial-tools/bazel" | shasum -a 256 -c -
-          chmod 700 "$RUNNER_TEMP/osquery-trial-tools/bazel"
-      - name: Recheck exact current source before candidate build commands
-        shell: bash
-        run: *guard-current-source
-      - name: Compile exactly the five shipped platform labels and collect bytes
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$TRIAL_SOURCE_SHA"
-          test "$(cat .bazelversion)" = 7.4.1
-          PYTHONDONTWRITEBYTECODE=1 python3 tools/test_shipshape_build_inventory.py
-          bazel="$RUNNER_TEMP/osquery-trial-tools/bazel"
-          startup=(--nosystem_rc --nohome_rc "--output_user_root=$RUNNER_TEMP/osquery-trial-bazel")
-          labels=(//:osquery-extension-mac-amd //:osquery-extension-mac-arm //:osquery-extension-linux-amd //:osquery-extension-linux-arm //:osquery-extension-win-amd)
-          "$bazel" --version > "$RUNNER_TEMP/osquery-trial-bazel-version.txt"
-          git rev-parse 'HEAD^{tree}' > "$RUNNER_TEMP/osquery-trial-source-tree.txt"
-          go version > "$RUNNER_TEMP/osquery-trial-go-version.txt"
-          python3 --version > "$RUNNER_TEMP/osquery-trial-python-version.txt"
-          python3 - <<'PY'
-          import json, os
-          from pathlib import Path
-          root = Path(os.environ["RUNNER_TEMP"])
-          versions = {key: (root / ("osquery-trial-" + name + "-version.txt")).read_text().strip()
-                      for key, name in (("bazel", "bazel"), ("host_go", "go"), ("python", "python"))}
-          (root / "osquery-trial-tools.json").write_text(json.dumps(versions))
-          PY
-          "$bazel" "${startup[@]}" build --noshow_progress "${labels[@]}"
-          "$bazel" "${startup[@]}" info output_path > "$RUNNER_TEMP/osquery-trial-output-root.txt"
-          : > "$RUNNER_TEMP/osquery-trial-output-files.txt"
-          for label in "${labels[@]}"; do
-            "$bazel" "${startup[@]}" cquery --output=files "$label" >> "$RUNNER_TEMP/osquery-trial-output-files.txt"
-          done
-          python3 tools/shipshape_build_inventory.py collect \
-            --workspace "$GITHUB_WORKSPACE" \
-            --output-root "$RUNNER_TEMP/osquery-trial-output-root.txt" \
-            --output-files "$RUNNER_TEMP/osquery-trial-output-files.txt" \
-            --tool-versions "$RUNNER_TEMP/osquery-trial-tools.json" \
-            --source-tree "$RUNNER_TEMP/osquery-trial-source-tree.txt" \
-            --output "$RUNNER_TEMP/osquery-trial-transfer/osquery-extension-thin-build-v1.zip"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          path: ${{ runner.temp }}/osquery-trial-transfer/osquery-extension-thin-build-v1.zip
-          archive: false
-          if-no-files-found: error
-          retention-days: 7
+          phase: build
+          expected-repository: macadmins/osquery-extension
+          expected-repository-id: '273057431'
+          source-sha: ${{ inputs.source_sha }}
+          expected-workflow: .github/workflows/shipshape-build-inventory.yml
+          expected-branch: main
+          expected-version: '1.5.5'
 
   package:
     needs: [validate, build]
+    permissions:
+      contents: read
+      actions: read
     runs-on: macos-15
     timeout-minutes: 10
-    env:
-      TRIAL_SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Package and retain unsigned diagnostic inventory
+        uses: macadmins/shipshape-action@0ec3587a63e1f0fc18ef0fd4e44f5b8753ab1149
         with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-          fetch-depth: 1
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: osquery-extension-thin-build-v1.zip
-          path: ${{ runner.temp }}/osquery-trial-download
-          skip-decompress: true
-          digest-mismatch: error
-      - name: Recheck exact current source before packaging
-        shell: bash
-        run: *guard-current-source
-      - name: Assemble unsigned package from bounded output bytes
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$TRIAL_SOURCE_SHA"
-          python3 tools/shipshape_build_inventory.py package \
-            --transfer "$RUNNER_TEMP/osquery-trial-download/osquery-extension-thin-build-v1.zip" \
-            --output "$RUNNER_TEMP/osquery-trial-inventory"
-      - name: Recheck current source after packaging
-        shell: bash
-        run: *guard-current-source
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: osquery-extension-build-inventory-v1-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/osquery-trial-inventory/
-          archive: true
-          if-no-files-found: error
-          include-hidden-files: false
-          retention-days: 7
+          phase: package
+          expected-repository: macadmins/osquery-extension
+          expected-repository-id: '273057431'
+          source-sha: ${{ inputs.source_sha }}
+          expected-workflow: .github/workflows/shipshape-build-inventory.yml
+          expected-branch: main
+          expected-version: '1.5.5'
