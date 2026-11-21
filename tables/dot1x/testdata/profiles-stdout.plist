@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Synthetic `/usr/bin/profiles -C -o stdout-xml` output (structure from macOS 27; names and UUIDs made up). -->
+<plist version="1.0">
+<dict>
+	<key>_computerlevel</key>
+	<array>
+		<dict>
+			<key>ProfileDisplayName</key><string>Corp Wi-Fi</string>
+			<key>ProfileIdentifier</key><string>com.example.wifi.corp</string>
+			<key>ProfileUUID</key><string>10000000-0000-0000-0000-000000000001</string>
+			<key>ProfileItems</key>
+			<array>
+				<dict>
+					<key>PayloadContent</key>
+					<dict>
+						<key>SSID_STR</key><string>CorpWiFi</string>
+						<key>EAPClientConfiguration</key>
+						<dict><key>AcceptEAPTypes</key><array><integer>13</integer></array></dict>
+					</dict>
+					<key>PayloadDisplayName</key><string>Wi-Fi</string>
+					<key>PayloadType</key><string>com.apple.wifi.managed</string>
+					<key>PayloadUUID</key><string>ABCDEF01-2345-6789-ABCD-EF0123456789</string>
+				</dict>
+				<dict>
+					<key>PayloadDisplayName</key><string>Root CA</string>
+					<key>PayloadType</key><string>com.apple.security.root</string>
+					<key>PayloadUUID</key><string>20000000-0000-0000-0000-000000000002</string>
+				</dict>
+			</array>
+		</dict>
+		<dict>
+			<key>ProfileDisplayName</key><string>Wired 802.1X</string>
+			<key>ProfileIdentifier</key><string>com.example.ethernet</string>
+			<key>ProfileUUID</key><string>10000000-0000-0000-0000-000000000003</string>
+			<key>ProfileVersion</key><integer>1</integer>
+			<key>ProfileItems</key>
+			<array>
+				<dict>
+					<key>PayloadDisplayName</key><string>Ethernet</string>
+					<key>PayloadType</key><string>com.apple.globalethernet.managed</string>
+					<key>PayloadUUID</key><string>30000000-0000-0000-0000-00000000000a</string>
+				</dict>
+			</array>
+		</dict>
+		<dict>
+			<key>ProfileDisplayName</key><string>App Settings</string>
+			<key>ProfileIdentifier</key><string>com.example.app</string>
+			<key>ProfileItems</key>
+			<array>
+				<dict>
+					<key>PayloadContent</key>
+					<dict><key>UserPassword</key><string>FAKE-SECRET-DO-NOT-READ</string></dict>
+					<key>PayloadType</key><string>com.apple.ManagedClient.preferences</string>
+					<key>PayloadUUID</key><string>40000000-0000-0000-0000-000000000004</string>
+				</dict>
+				<string>not a payload dict</string>
+			</array>
+		</dict>
+		<string>not a profile dict</string>
+	</array>
+	<key>testuser</key>
+	<array>
+		<dict>
+			<key>ProfileDisplayName</key><string>User Wi-Fi</string>
+			<key>ProfileIdentifier</key><string>com.example.wifi.user</string>
+			<key>ProfileItems</key>
+			<array>
+				<dict>
+					<key>PayloadType</key><string>com.apple.wifi.managed</string>
+					<key>PayloadUUID</key><string>50000000-0000-0000-0000-000000000005</string>
+				</dict>
+			</array>
+		</dict>
+	</array>
+	<key>_unrelated</key><integer>1</integer>
+</dict>
+</plist>
